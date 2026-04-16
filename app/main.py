@@ -3,10 +3,10 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
-from pydantic import BaseModel
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging
+from app.api.routers import health, users, commitments, integrations
 
 logger = logging.getLogger(__name__)
 
@@ -26,18 +26,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
-class HealthResponse(BaseModel):
-    status: str
-    message: str
-
-
-@app.get("/", response_model=HealthResponse)
-async def root() -> dict:
-    return {"status": "online", "message": "Digital Twin Core is active and ready."}
+# Register routers
+app.include_router(health.router)
+app.include_router(users.router)
+app.include_router(commitments.router)
+app.include_router(integrations.router)
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -1,10 +1,21 @@
+from typing import Optional
+
 from cryptography.fernet import Fernet
 
-from app.core.config import get_settings
+_fernet_instance: Optional[Fernet] = None
+
+
+def init_fernet(key: str) -> None:
+    """Initialize the Fernet instance with the given key. Called at app startup."""
+    global _fernet_instance
+    _fernet_instance = Fernet(key.encode())
 
 
 def _get_fernet() -> Fernet:
-    return Fernet(get_settings().fernet_key.encode())
+    if _fernet_instance is None:
+        from app.core.config import get_settings
+        init_fernet(get_settings().fernet_key)
+    return _fernet_instance
 
 
 def encrypt_token(plaintext: str) -> str:
@@ -19,3 +30,9 @@ def decrypt_token(ciphertext: str) -> str:
     if not ciphertext:
         return ""
     return _get_fernet().decrypt(ciphertext.encode()).decode()
+
+
+def reset_fernet() -> None:
+    """Reset the Fernet instance. Used in tests."""
+    global _fernet_instance
+    _fernet_instance = None

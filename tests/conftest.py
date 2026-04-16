@@ -13,8 +13,10 @@ from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.main import app
 from app.models.base import Base
+from app.utils.encryption import init_fernet, reset_fernet
 
 TEST_DB_URL = "sqlite+aiosqlite://"  # in-memory
+TEST_FERNET_KEY = "UoVz65iZZwomYZKNPeWYK_sCieozQPLoezZuUlQwzis="
 
 
 def get_test_settings() -> Settings:
@@ -23,8 +25,13 @@ def get_test_settings() -> Settings:
         database_url_sync="sqlite://",
         app_env="testing",
         debug=False,
-        fernet_key="dGVzdC1mZXJuZXQta2V5LXRoYXQtaXMtMzItYnl0ZXM9",  # valid base64, 44 chars
+        fernet_key=TEST_FERNET_KEY,
     )
+
+
+# Initialize Fernet with test key at module load time
+reset_fernet()
+init_fernet(TEST_FERNET_KEY)
 
 
 test_engine = create_async_engine(TEST_DB_URL, echo=False)

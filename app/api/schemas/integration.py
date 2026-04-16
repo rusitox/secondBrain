@@ -27,5 +27,6 @@ class IntegrationRead(BaseModel):
     last_sync_at: Optional[datetime]
     is_active: bool
     created_at: datetime
+    updated_at: datetime
 
     model_config = {"from_attributes": True}

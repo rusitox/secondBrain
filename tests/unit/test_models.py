@@ -91,6 +91,7 @@ class TestCommitmentSchemas:
         assert update.status == CommitmentStatus.COMPLETED
 
     def test_commitment_read(self) -> None:
+        now = datetime.now(timezone.utc)
         c = CommitmentRead(
             id=uuid.uuid4(),
             user_id=uuid.uuid4(),
@@ -99,7 +100,8 @@ class TestCommitmentSchemas:
             due_date=None,
             status=CommitmentStatus.PENDING,
             priority=3,
-            created_at=datetime.now(timezone.utc),
+            created_at=now,
+            updated_at=now,
         )
         assert c.status == CommitmentStatus.PENDING
 
@@ -170,13 +172,15 @@ class TestIntegrationSchemas:
 
     def test_integration_read_no_tokens(self) -> None:
         """IntegrationRead should not expose tokens."""
+        now = datetime.now(timezone.utc)
         i = IntegrationRead(
             id=uuid.uuid4(),
             user_id=uuid.uuid4(),
             platform=Platform.OUTLOOK,
             last_sync_at=None,
             is_active=True,
-            created_at=datetime.now(timezone.utc),
+            created_at=now,
+            updated_at=now,
         )
         assert not hasattr(i, "access_token")
         assert not hasattr(i, "refresh_token")
