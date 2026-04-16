@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging
-from app.api.routers import health, users, commitments, integrations
+from app.api.routers import health, users, commitments, integrations, ingestion, query
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,8 @@ app.include_router(health.router)
 app.include_router(users.router)
 app.include_router(commitments.router)
 app.include_router(integrations.router)
+app.include_router(ingestion.router)
+app.include_router(query.router)
 
 
 if __name__ == "__main__":
