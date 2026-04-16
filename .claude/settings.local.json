@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Skill(claude-bootstrap)"
+      "Skill(claude-bootstrap)",
+      "Bash(gh auth:*)",
+      "Bash(gh repo:*)",
+      "Bash(git push:*)",
+      "Skill(sync)",
+      "Bash(git *)",
+      "Bash(python *)"
     ]
   }
 }
