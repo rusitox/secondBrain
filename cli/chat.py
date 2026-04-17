@@ -8,7 +8,9 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from cli.alerts import AlertManager
 from cli.api_client import APIClient, APIError
+from cli.background import BackgroundSync
 from cli.commands import CommandRouter
 from cli.config import CLIConfig, DEFAULT_CONFIG_DIR
 from cli.display import (
@@ -64,14 +66,25 @@ class ChatSession:
         self._api = api
         self._config = config
         self._router = CommandRouter(api=api, config=config)
+        self._alerts = AlertManager()
+        self._background = BackgroundSync(
+            api=api, config=config, on_sync_result=self._alerts.on_sync_result,
+        )
         self._prompt_session = _create_prompt_session()
 
     async def run(self) -> None:
-        """Run the chat loop."""
+        """Run the chat loop with background sync."""
         try:
             await self._show_welcome()
 
+            # Start background sync if platforms are connected
+            if self._config.platforms_connected:
+                await self._background.start()
+
             while True:
+                # Show any pending alerts from background sync
+                self._alerts.show_pending()
+
                 try:
                     user_input = await self._get_input()
                 except (EOFError, KeyboardInterrupt):
@@ -91,6 +104,7 @@ class ChatSession:
                 else:
                     await self._handle_query(user_input)
         finally:
+            await self._background.stop()
             await self._api.close()
             console.print("[muted]Goodbye![/muted]")
 
