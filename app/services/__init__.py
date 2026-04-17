@@ -9,4 +9,6 @@ __all__ = [
     "retrieval",
     "llm",
     "commitments",
+    "agent",
+    "briefing",
 ]
