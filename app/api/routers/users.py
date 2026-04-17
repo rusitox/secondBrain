@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_id, get_db
+from app.api.schemas.identity import UserStats
 from app.api.schemas.user import UserCreate, UserRead, UserUpdate
 from app.services import user_service
+from app.services import stats_service
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -85,3 +87,19 @@ async def delete_user(
             detail="User not found",
         )
     await user_service.delete_user(db, user)
+
+
+@router.get("/{user_id}/stats", response_model=UserStats)
+async def get_user_stats(
+    user_id: uuid.UUID,
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> UserStats:
+    """Get aggregated statistics for the user."""
+    if user_id != current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot access another user's stats",
+        )
+    stats = await stats_service.get_user_stats(db, user_id)
+    return UserStats(**stats)

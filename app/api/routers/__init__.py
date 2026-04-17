@@ -1,1 +1,1 @@
-__all__ = ["health", "users", "commitments", "integrations", "ingestion", "query", "agent", "briefing"]
+__all__ = ["health", "users", "commitments", "integrations", "ingestion", "query", "agent", "briefing", "identity"]

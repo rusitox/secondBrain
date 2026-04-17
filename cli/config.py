@@ -1,0 +1,101 @@
+"""CLI configuration — persisted in ~/.secondbrain/config.json."""
+import json
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_CONFIG_DIR = Path.home() / ".secondbrain"
+DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
+DEFAULT_SERVER_URL = "http://localhost:8000"
+
+
+@dataclass
+class CLIConfig:
+    """Persisted CLI configuration."""
+
+    server_url: str = DEFAULT_SERVER_URL
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    onboarding_completed: bool = False
+    onboarding_step: int = 0
+    platforms_connected: List[str] = field(default_factory=list)
+    identity_configured: bool = False
+    initial_import_done: bool = False
+    preferences: Dict[str, Any] = field(default_factory=dict)
+
+    _config_path: Path = field(default=DEFAULT_CONFIG_FILE, repr=False)
+
+    @classmethod
+    def load(cls, config_path: Optional[Path] = None) -> "CLIConfig":
+        """Load config from disk, or return defaults if not found."""
+        path = config_path or DEFAULT_CONFIG_FILE
+        if not path.exists():
+            config = cls(_config_path=path)
+            return config
+
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to read config from %s: %s", path, e)
+            return cls(_config_path=path)
+
+        return cls(
+            server_url=raw.get("server_url", DEFAULT_SERVER_URL),
+            user_id=raw.get("user_id"),
+            user_name=raw.get("user_name"),
+            user_email=raw.get("user_email"),
+            onboarding_completed=raw.get("onboarding_completed", False),
+            onboarding_step=raw.get("onboarding_step", 0),
+            platforms_connected=raw.get("platforms_connected", []),
+            identity_configured=raw.get("identity_configured", False),
+            initial_import_done=raw.get("initial_import_done", False),
+            preferences=raw.get("preferences", {}),
+            _config_path=path,
+        )
+
+    def save(self) -> None:
+        """Persist config to disk."""
+        self._config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "server_url": self.server_url,
+            "user_id": self.user_id,
+            "user_name": self.user_name,
+            "user_email": self.user_email,
+            "onboarding_completed": self.onboarding_completed,
+            "onboarding_step": self.onboarding_step,
+            "platforms_connected": self.platforms_connected,
+            "identity_configured": self.identity_configured,
+            "initial_import_done": self.initial_import_done,
+            "preferences": self.preferences,
+        }
+        self._config_path.write_text(
+            json.dumps(data, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        # Restrict permissions — config may contain user_id and server URL
+        try:
+            self._config_path.chmod(0o600)
+        except OSError:
+            pass  # Windows or restricted filesystem
+        logger.debug("Config saved to %s", self._config_path)
+
+    def reset(self) -> None:
+        """Reset config to defaults (keeps server_url and config path)."""
+        server = self.server_url
+        path = self._config_path
+        self.user_id = None
+        self.user_name = None
+        self.user_email = None
+        self.onboarding_completed = False
+        self.onboarding_step = 0
+        self.platforms_connected = []
+        self.identity_configured = False
+        self.initial_import_done = False
+        self.preferences = {}
+        self.server_url = server
+        self._config_path = path
+        self.save()

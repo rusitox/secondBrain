@@ -11,4 +11,6 @@ __all__ = [
     "commitments",
     "agent",
     "briefing",
+    "identity_service",
+    "stats_service",
 ]
