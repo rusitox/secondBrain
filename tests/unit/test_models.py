@@ -97,6 +97,7 @@ class TestCommitmentSchemas:
             user_id=uuid.uuid4(),
             document_id=None,
             commitment_text="Do something",
+            owner="unknown",
             due_date=None,
             status=CommitmentStatus.PENDING,
             priority=3,

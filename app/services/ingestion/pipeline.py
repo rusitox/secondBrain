@@ -1,12 +1,13 @@
 """Ingestion pipeline orchestrator.
 
-Flow: raw text → clean → chunk → embed → upsert to DB.
+Flow: raw text → clean → chunk → embed → upsert to DB → detect commitments.
 Handles deduplication via (user_id, source, source_id) unique index.
 """
 import uuid
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,32 +17,42 @@ from app.services.ingestion.cleaner import clean_text
 from app.services.ingestion.chunker import chunk_text
 from app.services.ingestion.embedder import Embedder
 
+if TYPE_CHECKING:
+    from app.services.commitments.detector import CommitmentDetector
+
 logger = logging.getLogger(__name__)
 
 
+@dataclass
 class IngestionResult:
     """Result of an ingestion run."""
 
-    def __init__(self) -> None:
-        self.documents_created: int = 0
-        self.documents_updated: int = 0
-        self.documents_skipped: int = 0
-        self.chunks_total: int = 0
+    documents_created: int = 0
+    documents_updated: int = 0
+    documents_skipped: int = 0
+    chunks_total: int = 0
+    commitments_detected: int = 0
 
-    def to_dict(self) -> Dict[str, int]:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "documents_created": self.documents_created,
             "documents_updated": self.documents_updated,
             "documents_skipped": self.documents_skipped,
             "chunks_total": self.chunks_total,
+            "commitments_detected": self.commitments_detected,
         }
 
 
 class IngestionPipeline:
     """Orchestrates the full ingestion flow."""
 
-    def __init__(self, embedder: Embedder) -> None:
+    def __init__(
+        self,
+        embedder: Embedder,
+        commitment_detector: Optional["CommitmentDetector"] = None,
+    ) -> None:
         self._embedder = embedder
+        self._commitment_detector = commitment_detector
 
     async def ingest_raw(
         self,
@@ -80,9 +91,10 @@ class IngestionPipeline:
         embeddings = await self._embedder.embed_texts(chunks)
 
         # Step 4: Upsert each chunk as a document
+        doc_ids: List[uuid.UUID] = []
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
             chunk_source_id = source_id if len(chunks) == 1 else f"{source_id}#chunk{i}"
-            await self._upsert_document(
+            doc_id = await self._upsert_document(
                 db=db,
                 user_id=user_id,
                 content=chunk,
@@ -92,8 +104,23 @@ class IngestionPipeline:
                 metadata=metadata,
                 result=result,
             )
+            if doc_id is not None:
+                doc_ids.append(doc_id)
 
         await db.flush()
+
+        # Step 5: Detect commitments (only on newly created documents, once per text)
+        if self._commitment_detector and doc_ids:
+            timestamp = metadata.get("timestamp", "")
+            commitments = await self._commitment_detector.detect_and_store(
+                db=db,
+                user_id=user_id,
+                document_id=doc_ids[0],
+                text=cleaned,
+                timestamp=timestamp,
+            )
+            result.commitments_detected += len(commitments)
+
         return result
 
     async def ingest_batch(
@@ -122,6 +149,7 @@ class IngestionPipeline:
             result.documents_updated += item_result.documents_updated
             result.documents_skipped += item_result.documents_skipped
             result.chunks_total += item_result.chunks_total
+            result.commitments_detected += item_result.commitments_detected
 
         return result
 
@@ -135,8 +163,11 @@ class IngestionPipeline:
         source_id: str,
         metadata: Dict[str, Any],
         result: IngestionResult,
-    ) -> None:
-        """Insert or update a document based on (user_id, source, source_id)."""
+    ) -> Optional[uuid.UUID]:
+        """Insert or update a document based on (user_id, source, source_id).
+
+        Returns the document ID for newly created documents, None for updates.
+        """
         # Check for existing document
         existing = await db.execute(
             select(Document).where(
@@ -154,6 +185,7 @@ class IngestionPipeline:
             doc.metadata_ = metadata
             result.documents_updated += 1
             logger.debug("Updated document %s (source=%s, source_id=%s)", doc.id, source, source_id)
+            return None
         else:
             # Create new
             doc = Document(
@@ -168,3 +200,4 @@ class IngestionPipeline:
             db.add(doc)
             result.documents_created += 1
             logger.debug("Created document (source=%s, source_id=%s)", source, source_id)
+            return doc.id

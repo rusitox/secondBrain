@@ -32,6 +32,7 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         nullable=True,
     )
     commitment_text: Mapped[str] = mapped_column(Text, nullable=False)
+    owner: Mapped[str] = mapped_column(Text, default="unknown")
     due_date: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

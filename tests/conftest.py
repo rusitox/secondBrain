@@ -107,6 +107,7 @@ def _create_sqlite_tables(connection) -> None:
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
             commitment_text TEXT NOT NULL,
+            owner TEXT DEFAULT 'unknown',
             due_date TIMESTAMP,
             status TEXT DEFAULT 'pending',
             priority INTEGER DEFAULT 3,

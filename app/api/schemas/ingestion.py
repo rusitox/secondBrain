@@ -20,6 +20,7 @@ class IngestResult(BaseModel):
     documents_updated: int
     documents_skipped: int
     chunks_total: int
+    commitments_detected: int = 0
 
 
 class SyncStatusResponse(BaseModel):

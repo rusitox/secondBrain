@@ -11,6 +11,7 @@ class CommitmentCreate(BaseModel):
     user_id: uuid.UUID
     document_id: Optional[uuid.UUID] = None
     commitment_text: str
+    owner: str = "unknown"
     due_date: Optional[datetime] = None
     priority: int = Field(default=3, ge=1, le=5)
 
@@ -26,6 +27,7 @@ class CommitmentRead(BaseModel):
     user_id: uuid.UUID
     document_id: Optional[uuid.UUID]
     commitment_text: str
+    owner: str
     due_date: Optional[datetime]
     status: CommitmentStatus
     priority: int

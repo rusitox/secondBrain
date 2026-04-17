@@ -1,5 +1,15 @@
+"""Commitment API endpoints.
+
+POST /commitments/ — create a commitment
+GET /commitments/ — list commitments (with optional status/due_before filters)
+GET /commitments/filter/pending — list pending commitments
+GET /commitments/filter/overdue — list overdue commitments
+GET /commitments/{commitment_id} — get a specific commitment
+PATCH /commitments/{commitment_id} — update a commitment
+DELETE /commitments/{commitment_id} — delete a commitment
+"""
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -45,6 +55,32 @@ async def list_commitments(
 ) -> List[CommitmentRead]:
     commitments = await commitment_service.list_commitments(
         db, current_user_id, status=commitment_status, due_before=due_before
+    )
+    return [CommitmentRead.model_validate(c) for c in commitments]
+
+
+# Filter routes MUST be defined BEFORE /{commitment_id} to avoid route shadowing
+@router.get("/filter/pending", response_model=List[CommitmentRead])
+async def list_pending_commitments(
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> List[CommitmentRead]:
+    """List all pending commitments for the current user."""
+    commitments = await commitment_service.list_commitments(
+        db, current_user_id, status=CommitmentStatus.PENDING,
+    )
+    return [CommitmentRead.model_validate(c) for c in commitments]
+
+
+@router.get("/filter/overdue", response_model=List[CommitmentRead])
+async def list_overdue_commitments(
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> List[CommitmentRead]:
+    """List all pending commitments that are past their due date."""
+    now = datetime.now(timezone.utc)
+    commitments = await commitment_service.list_commitments(
+        db, current_user_id, status=CommitmentStatus.PENDING, due_before=now,
     )
     return [CommitmentRead.model_validate(c) for c in commitments]
 

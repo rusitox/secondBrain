@@ -7,6 +7,7 @@ GET /ingest/status/{integration_id} — check sync status
 import uuid
 import logging
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Optional
 
 import httpx
@@ -20,8 +21,10 @@ from app.services import integration_service
 from app.services.connectors.msgraph import MSGraphConnector
 from app.services.connectors.slack import SlackConnector
 from app.services.connectors.fathom import FathomConnector
+from app.services.commitments.detector import CommitmentDetector
 from app.services.ingestion.embedder import Embedder
 from app.services.ingestion.pipeline import IngestionPipeline
+from app.services.llm.claude_client import ClaudeClient
 
 logger = logging.getLogger(__name__)
 
@@ -34,17 +37,19 @@ _CONNECTORS = {
     "fathom": FathomConnector,
 }
 
-# Module-level pipeline singleton (lazy-initialized)
-_pipeline: Optional[IngestionPipeline] = None
-
-
+@lru_cache(maxsize=1)
 def _get_pipeline() -> IngestionPipeline:
-    global _pipeline
-    if _pipeline is None:
-        settings = get_settings()
-        embedder = Embedder(api_key=settings.openai_api_key)
-        _pipeline = IngestionPipeline(embedder=embedder)
-    return _pipeline
+    settings = get_settings()
+    embedder = Embedder(api_key=settings.openai_api_key)
+    # Wire in commitment detection if Claude API key is available
+    commitment_detector: Optional[CommitmentDetector] = None
+    if settings.claude_api_key:
+        claude_client = ClaudeClient(api_key=settings.claude_api_key)
+        commitment_detector = CommitmentDetector(claude_client)
+    return IngestionPipeline(
+        embedder=embedder,
+        commitment_detector=commitment_detector,
+    )
 
 
 @router.post("/raw", response_model=IngestResult, status_code=status.HTTP_201_CREATED)

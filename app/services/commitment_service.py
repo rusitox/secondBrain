@@ -15,6 +15,7 @@ async def create_commitment(db: AsyncSession, data: CommitmentCreate) -> Commitm
         user_id=data.user_id,
         document_id=data.document_id,
         commitment_text=data.commitment_text,
+        owner=data.owner,
         due_date=data.due_date,
         priority=data.priority,
     )

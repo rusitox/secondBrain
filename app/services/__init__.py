@@ -8,4 +8,5 @@ __all__ = [
     "connectors",
     "retrieval",
     "llm",
+    "commitments",
 ]
