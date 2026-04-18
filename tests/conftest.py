@@ -111,6 +111,7 @@ def _create_sqlite_tables(connection) -> None:
             due_date TIMESTAMP,
             status TEXT DEFAULT 'pending',
             priority INTEGER DEFAULT 3,
+            notion_page_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )

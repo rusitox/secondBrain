@@ -80,3 +80,19 @@ class BackgroundSync:
                 logger.warning("Background sync failed for %s: %s", platform, e.detail)
             except Exception:
                 logger.exception("Unexpected error in background sync for %s", platform)
+
+        # Notion commitment sync (if enabled)
+        notion_cfg = self._config.notion
+        if notion_cfg and notion_cfg.get("enabled") and notion_cfg.get("commitments_db_id"):
+            try:
+                result = await self._api.sync_notion_commitments(
+                    workspace_config=notion_cfg,
+                )
+                created = result.get("created_in_notion", 0)
+                if created > 0:
+                    self._on_sync_result("notion", {
+                        "commitments_synced": created,
+                    })
+                logger.info("Background Notion commitment sync completed")
+            except (APIError, Exception):
+                logger.exception("Notion commitment sync failed")

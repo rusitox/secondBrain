@@ -238,6 +238,110 @@ class TestSettingsCommand:
         await router.dispatch("/settings")
 
 
+class TestNotionCommand:
+    @pytest.mark.asyncio
+    async def test_notion_status_not_connected(self) -> None:
+        api = _make_api()
+        config = _make_config(notion=None)
+        router = CommandRouter(api=api, config=config)
+        await router.dispatch("/notion status")
+        # Should print "not connected" without error
+
+    @pytest.mark.asyncio
+    async def test_notion_status_connected(self) -> None:
+        api = _make_api()
+        config = _make_config(notion={
+            "enabled": True,
+            "read_mode": "all",
+            "root_page_url": "https://notion.so/test",
+        })
+        router = CommandRouter(api=api, config=config)
+        await router.dispatch("/notion status")
+        # Should show panel without error
+
+    @pytest.mark.asyncio
+    async def test_notion_connect(self) -> None:
+        api = _make_api()
+        config = _make_config()
+        router = CommandRouter(api=api, config=config)
+        with patch("cli.notion_setup.NotionSetup.connect", new_callable=AsyncMock, return_value=True) as mock_connect:
+            await router.dispatch("/notion connect")
+            mock_connect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_notion_disconnect(self) -> None:
+        api = _make_api()
+        config = _make_config()
+        router = CommandRouter(api=api, config=config)
+        with patch("cli.notion_setup.NotionSetup.disconnect") as mock_disconnect:
+            await router.dispatch("/notion disconnect")
+            mock_disconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_notion_sync_not_connected(self) -> None:
+        api = _make_api()
+        config = _make_config(notion=None)
+        router = CommandRouter(api=api, config=config)
+        await router.dispatch("/notion sync")
+        api.sync_platform.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_notion_sync_connected(self) -> None:
+        api = _make_api()
+        api.sync_notion_commitments = AsyncMock(return_value={
+            "created_in_notion": 1, "updated_in_notion": 0,
+            "updated_locally": 0, "errors": [],
+        })
+        notion_cfg = {"enabled": True, "commitments_db_id": "db-123"}
+        config = _make_config(notion=notion_cfg)
+        router = CommandRouter(api=api, config=config)
+        await router.dispatch("/notion sync")
+        api.sync_platform.assert_awaited_once_with("notion")
+        api.sync_notion_commitments.assert_awaited_once_with(
+            workspace_config=notion_cfg,
+        )
+
+    @pytest.mark.asyncio
+    async def test_notion_workspace_opens_url(self) -> None:
+        api = _make_api()
+        config = _make_config(notion={
+            "enabled": True,
+            "root_page_url": "https://notion.so/test",
+        })
+        router = CommandRouter(api=api, config=config)
+        with patch("webbrowser.open") as mock_open:
+            await router.dispatch("/notion workspace")
+            mock_open.assert_called_once_with("https://notion.so/test")
+
+
+class TestPrepCommand:
+    @pytest.mark.asyncio
+    async def test_prep_no_args(self) -> None:
+        api = _make_api()
+        router = CommandRouter(api=api, config=_make_config())
+        await router.dispatch("/prep")
+        api.agent_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_prep_generates_content(self) -> None:
+        api = _make_api()
+        api.agent_query = AsyncMock(return_value={
+            "answer": "## Meeting Prep\nKey points here",
+        })
+        router = CommandRouter(api=api, config=_make_config())
+        await router.dispatch("/prep Q3 Planning")
+        api.agent_query.assert_awaited_once()
+        call_args = api.agent_query.call_args[0][0]
+        assert "Q3 Planning" in call_args
+
+    @pytest.mark.asyncio
+    async def test_prep_no_user(self) -> None:
+        api = _make_api()
+        router = CommandRouter(api=api, config=_make_config(user_id=None))
+        await router.dispatch("/prep Test Meeting")
+        api.agent_query.assert_not_awaited()
+
+
 class TestApiErrorHandling:
     @pytest.mark.asyncio
     async def test_api_error_caught(self) -> None:

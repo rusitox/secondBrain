@@ -3,7 +3,7 @@ import uuid
 from typing import TYPE_CHECKING, Optional
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Integer, Text, ForeignKey
+from sqlalchemy import DateTime, Enum, Integer, String, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -41,6 +41,9 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         default=CommitmentStatus.PENDING,
     )
     priority: Mapped[int] = mapped_column(Integer, default=3)
+    notion_page_id: Mapped[Optional[str]] = mapped_column(
+        String(36), nullable=True, default=None,
+    )
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="commitments")

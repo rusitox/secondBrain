@@ -31,6 +31,7 @@ class CommitmentRead(BaseModel):
     due_date: Optional[datetime]
     status: CommitmentStatus
     priority: int
+    notion_page_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

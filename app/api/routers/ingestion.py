@@ -23,6 +23,9 @@ from app.services.connectors.slack import SlackConnector
 from app.services.connectors.fathom import FathomConnector
 from app.services.connectors.teams import TeamsConnector
 from app.services.connectors.notion import NotionConnector
+from app.services.notion.config import NotionWorkspaceConfig
+from app.services.notion.publisher import NotionPublisher
+from app.services.notion.sync import NotionSync
 from app.services.commitments.detector import CommitmentDetector
 from app.services.ingestion.embedder import Embedder
 from app.services.ingestion.pipeline import IngestionPipeline
@@ -169,3 +172,116 @@ async def get_sync_status(
         is_active=integration.is_active,
         last_sync_at=integration.last_sync_at.isoformat() if integration.last_sync_at else None,
     )
+
+
+def _get_notion_token_and_config(
+    notion_integ: "Integration",
+    workspace_config: dict,
+) -> tuple:
+    """Extract decrypted token and workspace config.
+
+    The workspace config comes from the CLI request body since
+    it is stored client-side, not on the Integration model.
+    """
+    token = integration_service.get_decrypted_token(notion_integ)
+    ws_config = NotionWorkspaceConfig.from_dict(workspace_config)
+    return token, ws_config
+
+
+async def _find_notion_integration(
+    db: AsyncSession, user_id: uuid.UUID,
+) -> "Integration":
+    """Find the active Notion integration or raise 404."""
+    integrations = await integration_service.list_integrations(
+        db, user_id, platform=None,
+    )
+    for integ in integrations:
+        if integ.platform.value == "notion" and integ.is_active:
+            return integ
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="No active Notion integration found",
+    )
+
+
+@router.post("/notion/sync-commitments")
+async def sync_notion_commitments(
+    workspace_config: dict,
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Bidirectional sync of commitments with Notion.
+
+    The workspace_config is sent from the CLI since it stores
+    the Notion workspace IDs (root page, database IDs) locally.
+    """
+    notion_integ = await _find_notion_integration(db, current_user_id)
+    token, ws_config = _get_notion_token_and_config(notion_integ, workspace_config)
+
+    if not ws_config.commitments_db_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Notion workspace not set up — no commitments database",
+        )
+
+    publisher = NotionPublisher(token, ws_config)
+    sync = NotionSync(publisher)
+
+    try:
+        result = await sync.sync_commitments(db, current_user_id)
+    except (httpx.HTTPError, RuntimeError) as e:
+        logger.error("Notion commitment sync failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Notion sync failed: %s" % str(e),
+        )
+
+    return {
+        "created_in_notion": result.created_in_notion,
+        "updated_in_notion": result.updated_in_notion,
+        "updated_locally": result.updated_locally,
+        "errors": result.errors,
+    }
+
+
+@router.post("/notion/publish-briefing")
+async def publish_briefing_to_notion(
+    workspace_config: dict,
+    briefing_text: str = "",
+    date: str = "",
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Publish a briefing to Notion.
+
+    Accepts the already-generated briefing text to avoid regenerating.
+    The workspace_config is sent from the CLI.
+    """
+    notion_integ = await _find_notion_integration(db, current_user_id)
+    token, ws_config = _get_notion_token_and_config(notion_integ, workspace_config)
+
+    if not ws_config.briefings_db_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Notion workspace not set up — no briefings database",
+        )
+
+    if not briefing_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No briefing text provided",
+        )
+
+    date_str = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    publisher = NotionPublisher(token, ws_config)
+    try:
+        url = await publisher.publish_briefing(briefing_text, date_str)
+    except (httpx.HTTPError, RuntimeError) as e:
+        logger.error("Failed to publish briefing to Notion: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to publish briefing to Notion",
+        )
+
+    return {"url": url, "date": date_str}

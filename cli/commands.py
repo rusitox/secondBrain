@@ -42,6 +42,8 @@ class CommandRouter:
         "/identity": "View or edit your profile",
         "/settings": "View or edit preferences",
         "/setup": "Re-run onboarding wizard",
+        "/notion": "Notion integration (connect|disconnect|status|sync|workspace)",
+        "/prep": "Generate meeting prep (/prep Meeting Name)",
         "/server": "Server management (start|stop|restart|status|logs)",
         "/help": "Show available commands",
         "/quit": "Exit secondBrain",
@@ -94,6 +96,8 @@ class CommandRouter:
             "/identity": self._cmd_identity,
             "/settings": self._cmd_settings,
             "/setup": self._cmd_setup,
+            "/notion": self._cmd_notion,
+            "/prep": self._cmd_prep,
             "/server": self._cmd_server,
             "/help": self._cmd_help,
             "/quit": self._cmd_quit,
@@ -114,6 +118,9 @@ class CommandRouter:
         with spinner("Generating briefing..."):
             result = await self._api.get_briefing(user_id)
 
+        # Publish to Notion if enabled
+        await self._publish_briefing_to_notion(result)
+
         # Format briefing sections
         briefing = result.get("briefing", result)
         if isinstance(briefing, dict):
@@ -132,6 +139,40 @@ class CommandRouter:
             print_markdown(briefing)
         else:
             print_info("No briefing content available.")
+
+    async def _publish_briefing_to_notion(
+        self, briefing_result: Dict[str, Any],
+    ) -> None:
+        """Publish a briefing to Notion if enabled. Non-blocking on failure."""
+        notion_cfg = self._config.notion
+        if not notion_cfg or not notion_cfg.get("enabled"):
+            return
+        if not notion_cfg.get("briefings_db_id"):
+            return
+
+        # Extract briefing text from result
+        briefing_text = ""
+        briefing = briefing_result.get("briefing", briefing_result)
+        if isinstance(briefing, dict):
+            briefing_text = briefing.get("briefing_text", "")
+        elif isinstance(briefing, str):
+            briefing_text = briefing
+        if not briefing_text:
+            return
+
+        try:
+            from datetime import datetime, timezone
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            result = await self._api.publish_briefing_to_notion(
+                workspace_config=notion_cfg,
+                briefing_text=briefing_text,
+                date=date_str,
+            )
+            url = result.get("url", "")
+            if url:
+                print_muted("Published to Notion: %s" % url)
+        except APIError as e:
+            logger.warning("Failed to publish briefing to Notion: %s", e.detail)
 
     async def _cmd_commitments(self, args: List[str]) -> None:
         """List pending commitments."""
@@ -314,6 +355,118 @@ class CommandRouter:
         self._config.onboarding_completed = False
         flow = OnboardingFlow(api=self._api, config=self._config)
         await flow.run()
+
+    async def _cmd_notion(self, args: List[str]) -> None:
+        """Notion integration management."""
+        from cli.notion_setup import NotionSetup
+
+        subcmd = args[0].lower() if args else "status"
+        setup = NotionSetup(self._api, self._config)
+
+        if subcmd == "connect":
+            await setup.connect()
+
+        elif subcmd == "disconnect":
+            setup.disconnect()
+
+        elif subcmd == "sync":
+            if not self._config.notion or not self._config.notion.get("enabled"):
+                print_warning("Notion is not connected. Use /notion connect first.")
+                return
+            # Sync reading (ingest new pages)
+            with spinner("Syncing Notion pages..."):
+                try:
+                    result = await self._api.sync_platform("notion")
+                    docs = result.get("documents_created", 0)
+                    updated = result.get("documents_updated", 0)
+                    print_success(
+                        "Notion read sync: %d new, %d updated" % (docs, updated)
+                    )
+                except APIError as e:
+                    print_error("Notion read sync failed: %s" % e.detail)
+            # Sync commitments bidirectionally
+            await self._notion_commitment_sync()
+
+        elif subcmd == "workspace":
+            notion_cfg = self._config.notion or {}
+            url = notion_cfg.get("root_page_url", "")
+            if url:
+                import webbrowser
+                webbrowser.open(url)
+                print_info("Opening workspace in browser...")
+            else:
+                print_warning("No workspace URL available.")
+
+        else:  # status
+            notion_cfg = self._config.notion or {}
+            enabled = notion_cfg.get("enabled", False)
+            if not enabled:
+                print_info("Notion is not connected. Use /notion connect to set up.")
+                return
+            lines = [
+                "  Status: Connected",
+                "  Read mode: %s" % notion_cfg.get("read_mode", "all"),
+                "  Last read sync: %s" % (notion_cfg.get("last_read_sync") or "never"),
+                "  Last write sync: %s" % (notion_cfg.get("last_write_sync") or "never"),
+            ]
+            url = notion_cfg.get("root_page_url", "")
+            if url:
+                lines.append("  Workspace: %s" % url)
+            print_panel("\n".join(lines), title="Notion Integration", style="cyan")
+
+    async def _notion_commitment_sync(self) -> None:
+        """Run bidirectional commitment sync with Notion."""
+        notion_cfg = self._config.notion
+        if not notion_cfg or not notion_cfg.get("enabled"):
+            return
+        if not notion_cfg.get("commitments_db_id"):
+            return
+
+        with spinner("Syncing commitments with Notion..."):
+            try:
+                result = await self._api.sync_notion_commitments(
+                    workspace_config=notion_cfg,
+                )
+                created = result.get("created_in_notion", 0)
+                updated_n = result.get("updated_in_notion", 0)
+                updated_l = result.get("updated_locally", 0)
+                print_success(
+                    "Commitment sync: %d created, %d updated in Notion, %d updated locally"
+                    % (created, updated_n, updated_l)
+                )
+                errors = result.get("errors", [])
+                for err in errors:
+                    print_warning(err)
+            except APIError as e:
+                print_error("Commitment sync failed: %s" % e.detail)
+
+    async def _cmd_prep(self, args: List[str]) -> None:
+        """Generate meeting prep."""
+        if not args:
+            print_warning("Usage: /prep <meeting name or topic>")
+            return
+
+        user_id = self._config.user_id
+        if not user_id:
+            print_error("No user configured. Run /setup first.")
+            return
+
+        meeting_topic = " ".join(args)
+        with spinner("Preparing for: %s..." % meeting_topic):
+            try:
+                result = await self._api.agent_query(
+                    "Prepare a brief for my meeting about: %s. "
+                    "Include relevant context from my documents, "
+                    "any pending commitments with attendees, "
+                    "and key talking points." % meeting_topic
+                )
+                answer = result.get("answer", result.get("response", ""))
+                if answer:
+                    print_markdown(answer)
+                else:
+                    print_info("No prep content generated.")
+            except APIError as e:
+                print_error("Meeting prep failed: %s" % e.detail)
 
     async def _cmd_server(self, args: List[str]) -> None:
         """Server management: start, stop, restart, status, logs."""

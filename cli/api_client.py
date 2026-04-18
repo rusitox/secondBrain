@@ -253,3 +253,32 @@ class APIClient:
     async def delete_commitment(self, commitment_id: str) -> None:
         """Delete a commitment."""
         await self._request("DELETE", f"/commitments/{commitment_id}")
+
+    # --- Notion ---
+
+    async def sync_notion_commitments(
+        self, workspace_config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Bidirectional sync of commitments with Notion."""
+        return await self._request(
+            "POST", "/ingest/notion/sync-commitments",
+            json={"workspace_config": workspace_config},
+            timeout=_SYNC_TIMEOUT,
+        )
+
+    async def publish_briefing_to_notion(
+        self,
+        workspace_config: Dict[str, Any],
+        briefing_text: str,
+        date: str = "",
+    ) -> Dict[str, Any]:
+        """Publish a briefing to Notion."""
+        return await self._request(
+            "POST", "/ingest/notion/publish-briefing",
+            json={
+                "workspace_config": workspace_config,
+                "briefing_text": briefing_text,
+                "date": date,
+            },
+            timeout=_SYNC_TIMEOUT,
+        )
