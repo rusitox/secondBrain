@@ -18,6 +18,7 @@ class Platform(str, enum.Enum):
     OUTLOOK = "outlook"
     TEAMS = "teams"
     FATHOM = "fathom"
+    NOTION = "notion"
 
 
 class Integration(UUIDMixin, TimestampMixin, Base):

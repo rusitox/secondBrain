@@ -40,6 +40,12 @@ _TEAMS_PATTERNS: List[Pattern] = [
     re.compile(r"\[Meeting\] .+ has (joined|left).*\n?"),
 ]
 
+# Notion block artifacts (block IDs are already excluded by blocks_to_text;
+# only whitespace normalization is needed here)
+_NOTION_PATTERNS: List[Pattern] = [
+    re.compile(r"\n{3,}"),  # excessive newlines from block conversion
+]
+
 # Fathom transcript patterns
 _FATHOM_PATTERNS: List[Pattern] = [
     re.compile(r"^\d{2}:\d{2}:\d{2}\.\d+ --> \d{2}:\d{2}:\d{2}\.\d+\s*\n", re.MULTILINE),
@@ -84,6 +90,12 @@ def clean_teams(text: str) -> str:
     return _normalize_whitespace(result)
 
 
+def clean_notion(text: str) -> str:
+    """Clean Notion content: remove block UUIDs, normalize whitespace."""
+    result = _apply_patterns(text, _NOTION_PATTERNS)
+    return _normalize_whitespace(result)
+
+
 def clean_fathom(text: str) -> str:
     """Clean Fathom transcript: remove timestamps, VTT/SRT headers."""
     result = _apply_patterns(text, _FATHOM_PATTERNS)
@@ -104,6 +116,7 @@ _CLEANERS: Dict[str, Callable[[str], str]] = {
     "slack": clean_slack,
     "teams": clean_teams,
     "fathom": clean_fathom,
+    "notion": clean_notion,
 }
 
 

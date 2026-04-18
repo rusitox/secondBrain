@@ -4,6 +4,7 @@ import pytest
 from app.services.ingestion.cleaner import (
     clean_email,
     clean_fathom,
+    clean_notion,
     clean_slack,
     clean_teams,
     clean_text,
@@ -151,3 +152,28 @@ class TestCleanText:
         text = "Hey <@U123>"
         result = clean_text(text, "Slack")
         assert "<@U123>" not in result
+
+
+class TestCleanNotion:
+    def test_collapse_excessive_newlines(self) -> None:
+        text = "First paragraph\n\n\n\n\nSecond paragraph"
+        result = clean_notion(text)
+        assert "\n\n\n" not in result
+        assert "First paragraph" in result
+        assert "Second paragraph" in result
+
+    def test_preserves_uuids_in_content(self) -> None:
+        text = "The ticket ID is 550e8400-e29b-41d4-a716-446655440000 in Jira."
+        result = clean_notion(text)
+        assert "550e8400-e29b-41d4-a716-446655440000" in result
+
+    def test_basic_whitespace_normalization(self) -> None:
+        text = "Hello    world"
+        result = clean_notion(text)
+        assert result == "Hello world"
+
+    def test_clean_text_routes_notion(self) -> None:
+        text = "Some\n\n\n\n\ncontent"
+        result = clean_text(text, "notion")
+        assert "\n\n\n" not in result
+        assert "Some" in result

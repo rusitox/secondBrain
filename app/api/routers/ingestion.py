@@ -21,6 +21,8 @@ from app.services import integration_service
 from app.services.connectors.msgraph import MSGraphConnector
 from app.services.connectors.slack import SlackConnector
 from app.services.connectors.fathom import FathomConnector
+from app.services.connectors.teams import TeamsConnector
+from app.services.connectors.notion import NotionConnector
 from app.services.commitments.detector import CommitmentDetector
 from app.services.ingestion.embedder import Embedder
 from app.services.ingestion.pipeline import IngestionPipeline
@@ -35,6 +37,8 @@ _CONNECTORS = {
     "outlook": MSGraphConnector,
     "slack": SlackConnector,
     "fathom": FathomConnector,
+    "teams": TeamsConnector,
+    "notion": NotionConnector,
 }
 
 @lru_cache(maxsize=1)
