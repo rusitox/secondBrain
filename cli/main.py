@@ -20,6 +20,13 @@ def parse_args() -> argparse.Namespace:
         description="secondBrain — Your AI Chief of Staff",
     )
     parser.add_argument(
+        "command",
+        nargs="?",
+        default=None,
+        choices=["install"],
+        help="Subcommand: 'install' to run the installer",
+    )
+    parser.add_argument(
         "--server",
         default=None,
         help="Backend server URL (default: http://localhost:8000)",
@@ -56,6 +63,30 @@ async def async_main(args: argparse.Namespace) -> int:
         config.reset()
         print_info("Configuration reset. Starting fresh.")
 
+    # Handle install subcommand
+    if args.command == "install":
+        from cli.installer import Installer
+        installer = Installer(config=config)
+        success = await installer.run()
+        if not success:
+            return 1
+        # After install, continue to onboarding
+        # Update API client with potentially new server URL
+        api = APIClient(
+            server_url=config.server_url,
+            user_id=config.user_id,
+        )
+        from cli.onboarding import OnboardingFlow
+        flow = OnboardingFlow(api=api, config=config)
+        completed = await flow.run()
+        if not completed:
+            print_info("Onboarding incomplete. Run again to continue.")
+            return 0
+        from cli.chat import ChatSession
+        session = ChatSession(api=api, config=config)
+        await session.run()
+        return 0
+
     # Warn if sending tokens over plain HTTP to a remote server
     if (
         config.server_url.startswith("http://")
@@ -74,20 +105,55 @@ async def async_main(args: argparse.Namespace) -> int:
         user_id=config.user_id,
     )
 
-    # Check backend connectivity
+    # Check backend connectivity — try auto-start if installed
     from cli.display import spinner
     with spinner("Connecting to backend..."):
         connected = await api.health_check()
 
-    if not connected:
-        print_error(
-            f"Cannot reach backend at {config.server_url}\n"
-            "  Make sure the server is running:\n"
-            "    python -m uvicorn app.main:app --reload\n"
-            "\n"
-            "  Or specify a different URL:\n"
-            "    python -m cli --server http://host:port"
+    if not connected and config.installed:
+        # Auto-start: try to bring up DB + server
+        from cli.server import ServerManager
+        server = ServerManager(config)
+
+        print_info("Backend not running. Starting it...")
+
+        if not server.is_db_running():
+            with spinner("Starting database..."):
+                db_ok = await server.start_db()
+            if not db_ok:
+                print_error("Failed to start database. Is Docker running?")
+                return 1
+
+        with spinner("Starting backend server..."):
+            srv_ok = await server.start_server()
+        if not srv_ok:
+            print_error("Failed to start backend server.")
+            return 1
+
+        # Update API client with potentially new URL
+        api = APIClient(
+            server_url=config.server_url,
+            user_id=config.user_id,
         )
+        with spinner("Connecting to backend..."):
+            connected = await api.health_check()
+
+    if not connected:
+        if not config.installed:
+            print_error(
+                "secondBrain is not installed yet.\n"
+                "  Run the installer first:\n"
+                "    python -m cli install"
+            )
+        else:
+            print_error(
+                f"Cannot reach backend at {config.server_url}\n"
+                "  Make sure Docker is running, then try:\n"
+                "    python -m cli install  (to reinstall)\n"
+                "\n"
+                "  Or specify a different URL:\n"
+                "    python -m cli --server http://host:port"
+            )
         return 1
 
     # Route to onboarding or chat

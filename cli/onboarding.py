@@ -51,6 +51,7 @@ from cli.prompts import (
     WELCOME_SUBTITLE,
     WELCOME_TITLE,
 )
+from cli.notion_setup import NotionSetup
 from cli.validators import (
     parse_selection,
     validate_email,
@@ -247,6 +248,14 @@ class OnboardingFlow:
             print_success("Platforms connected: " + ", ".join(names))
         else:
             print_info("No platforms connected yet. You can add them later with /connect.")
+
+        # Offer Notion as optional integration
+        console.print()
+        console.rule("Notion Integration (Optional)")
+        console.print()
+        notion_setup = NotionSetup(self._api, self._config)
+        await notion_setup.run_onboarding_step()
+
         return True
 
     async def _connect_platform(self, platform: str) -> bool:

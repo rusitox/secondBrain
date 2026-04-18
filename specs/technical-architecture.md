@@ -18,9 +18,10 @@
 The system uses a modular connector architecture to ingest text from multiple sources:
 
 - **Connectors:**
-    - `MSGraphConnector`: Handles OAuth2 flow for Outlook (Emails/Calendar) and Teams Chat.
-    - `SlackConnector`: Uses Bot Tokens to read channels and DMs.
-    - `FathomConnector`: Processes text exports/API of meeting transcripts.
+    - `MSGraphConnector`: Handles OAuth2 flow for Outlook (Emails and Calendar events).
+    - `TeamsConnector`: Handles Microsoft Teams chat messages (1:1 and group chats) via MS Graph API with rate limiting and retry.
+    - `SlackConnector`: Uses Bot Tokens to read channels and DMs with cursor pagination and rate limit handling.
+    - `FathomConnector`: Processes meeting transcripts via Fathom API.
 - **Processing Flow:**
     - **Cleaning:** Remove noise (signatures, boilerplate).
     - **Chunking:** Use `RecursiveCharacterTextSplitter` from LangChain to split long transcripts/emails into semantic chunks (approx. 500-1000 tokens).

@@ -42,6 +42,7 @@ class CommandRouter:
         "/identity": "View or edit your profile",
         "/settings": "View or edit preferences",
         "/setup": "Re-run onboarding wizard",
+        "/server": "Server management (start|stop|restart|status|logs)",
         "/help": "Show available commands",
         "/quit": "Exit secondBrain",
     }
@@ -93,6 +94,7 @@ class CommandRouter:
             "/identity": self._cmd_identity,
             "/settings": self._cmd_settings,
             "/setup": self._cmd_setup,
+            "/server": self._cmd_server,
             "/help": self._cmd_help,
             "/quit": self._cmd_quit,
             "/exit": self._cmd_quit,
@@ -312,6 +314,59 @@ class CommandRouter:
         self._config.onboarding_completed = False
         flow = OnboardingFlow(api=self._api, config=self._config)
         await flow.run()
+
+    async def _cmd_server(self, args: List[str]) -> None:
+        """Server management: start, stop, restart, status, logs."""
+        from cli.server import ServerManager
+        server = ServerManager(self._config)
+
+        if not args:
+            args = ["status"]
+
+        subcmd = args[0].lower()
+
+        if subcmd == "status":
+            db_status = "Running" if server.is_db_running() else "Stopped"
+            srv_pid = server.get_server_pid()
+            srv_status = "Running (PID %d)" % srv_pid if srv_pid else "Stopped"
+            print_panel(
+                "  Database: %s\n  Backend:  %s" % (db_status, srv_status),
+                title="Server Status",
+                style="cyan",
+            )
+        elif subcmd == "start":
+            if not server.is_db_running():
+                with spinner("Starting database..."):
+                    db_ok = await server.start_db()
+                if db_ok:
+                    print_success("Database started.")
+                else:
+                    print_error("Failed to start database.")
+                    return
+            with spinner("Starting backend..."):
+                srv_ok = await server.start_server()
+            if srv_ok:
+                print_success("Backend started (PID %s)." % server.get_server_pid())
+            else:
+                print_error("Failed to start backend.")
+        elif subcmd == "stop":
+            server.stop_server()
+            await server.stop_db()
+            print_success("Server and database stopped.")
+        elif subcmd == "restart":
+            with spinner("Restarting backend..."):
+                ok = await server.restart_server()
+            if ok:
+                print_success("Backend restarted (PID %s)." % server.get_server_pid())
+            else:
+                print_error("Failed to restart backend.")
+        elif subcmd == "logs":
+            line_count = int(args[1]) if len(args) > 1 else 50
+            logs = server.read_logs(lines=line_count)
+            console.print(logs)
+        else:
+            print_warning("Unknown subcommand: %s" % subcmd)
+            print_info("Usage: /server [start|stop|restart|status|logs]")
 
     async def _cmd_help(self, args: List[str]) -> None:
         """Show available commands."""

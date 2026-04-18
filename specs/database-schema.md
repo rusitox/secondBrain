@@ -48,10 +48,11 @@ Relational table to track explicit promises extracted from interactions.
 - `user_id`: UUID (FK -> users.id)
 - `document_id`: UUID (FK -> documents.id) - Link to the source text
 - `commitment_text`: Text (e.g., "Send the budget report by Friday")
-- `due_date`: Timestamp
+- `owner`: Text (who made the commitment, default "unknown")
+- `due_date`: Timestamp (nullable)
 - `status`: Enum ('pending', 'completed', 'cancelled')
-- `priority`: Integer
-- `created_at`: Timestamp
+- `priority`: Integer (1-5, default 3)
+- `created_at`, `updated_at`: Timestamp with timezone
 
 ---
 

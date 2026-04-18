@@ -77,16 +77,16 @@ Phase 3 (Ingestion Pipeline)
 
 ## Phase 3: Ingestion Pipeline — Connectors, Cleaning, Chunking, Embedding
 
-**Objetivo**: Pipeline completo de ingesta: texto crudo → documento con embedding en DB. Tres conectores (MSGraph, Slack, Fathom).
+**Objetivo**: Pipeline completo de ingesta: texto crudo → documento con embedding en DB. Cuatro conectores (MSGraph, Teams, Slack, Fathom).
 
 **Archivos a crear:**
 
 | Área | Archivos |
 |---|---|
 | Pipeline | `app/services/ingestion/__init__.py`, `app/services/ingestion/cleaner.py` (limpieza por source), `app/services/ingestion/chunker.py` (RecursiveCharacterTextSplitter, 800 chars, 100 overlap), `app/services/ingestion/embedder.py` (OpenAI batch + retry), `app/services/ingestion/pipeline.py` (orquestador: clean→chunk→embed→upsert) |
-| Connectors | `app/services/connectors/__init__.py`, `app/services/connectors/base.py` (ABC), `app/services/connectors/msgraph.py` (OAuth2, emails, calendar, Teams), `app/services/connectors/slack.py` (Bot token, cursor pagination, rate limiting), `app/services/connectors/fathom.py` (API/export) |
+| Connectors | `app/services/connectors/__init__.py`, `app/services/connectors/base.py` (ABC), `app/services/connectors/msgraph.py` (OAuth2, emails, calendar), `app/services/connectors/teams.py` (MS Graph, chats 1:1 y grupales, rate limiting), `app/services/connectors/slack.py` (Bot token, cursor pagination, rate limiting), `app/services/connectors/fathom.py` (API/export) |
 | API | `app/api/routers/ingestion.py` (`POST /ingest/raw`, `POST /ingest/sync/{platform}`, `GET /ingest/status/{integration_id}`) |
-| Tests | `tests/unit/test_cleaning.py`, `tests/unit/test_chunking.py`, `tests/unit/test_embedder.py`, `tests/integration/test_ingestion_pipeline.py`, `tests/integration/test_msgraph_connector.py`, `tests/integration/test_slack_connector.py`, `tests/integration/test_fathom_connector.py` |
+| Tests | `tests/unit/test_cleaning.py`, `tests/unit/test_chunking.py`, `tests/unit/test_embedder.py`, `tests/integration/test_ingestion_pipeline.py`, `tests/integration/test_msgraph_connector.py`, `tests/integration/test_teams_connector.py`, `tests/integration/test_slack_connector.py`, `tests/integration/test_fathom_connector.py` |
 
 **Decisiones clave:**
 - Dedup por `(user_id, source, source_id)` — re-sync actualiza en vez de duplicar

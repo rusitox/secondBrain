@@ -27,6 +27,15 @@ class CLIConfig:
     initial_import_done: bool = False
     preferences: Dict[str, Any] = field(default_factory=dict)
 
+    # Installer fields
+    installed: bool = False
+    db_port: int = 5432
+    server_port: int = 8000
+    server_pid: Optional[int] = None
+
+    # Notion integration
+    notion: Optional[Dict[str, Any]] = None
+
     _config_path: Path = field(default=DEFAULT_CONFIG_FILE, repr=False)
 
     @classmethod
@@ -54,6 +63,11 @@ class CLIConfig:
             identity_configured=raw.get("identity_configured", False),
             initial_import_done=raw.get("initial_import_done", False),
             preferences=raw.get("preferences", {}),
+            installed=raw.get("installed", False),
+            db_port=raw.get("db_port", 5432),
+            server_port=raw.get("server_port", 8000),
+            server_pid=raw.get("server_pid"),
+            notion=raw.get("notion"),
             _config_path=path,
         )
 
@@ -71,6 +85,11 @@ class CLIConfig:
             "identity_configured": self.identity_configured,
             "initial_import_done": self.initial_import_done,
             "preferences": self.preferences,
+            "installed": self.installed,
+            "db_port": self.db_port,
+            "server_port": self.server_port,
+            "server_pid": self.server_pid,
+            "notion": self.notion,
         }
         self._config_path.write_text(
             json.dumps(data, indent=2, default=str) + "\n",
@@ -84,9 +103,14 @@ class CLIConfig:
         logger.debug("Config saved to %s", self._config_path)
 
     def reset(self) -> None:
-        """Reset config to defaults (keeps server_url and config path)."""
+        """Reset config to defaults (keeps server_url, install state, and config path)."""
         server = self.server_url
         path = self._config_path
+        installed = self.installed
+        db_port = self.db_port
+        server_port = self.server_port
+        server_pid = self.server_pid
+        notion = self.notion
         self.user_id = None
         self.user_name = None
         self.user_email = None
@@ -97,5 +121,10 @@ class CLIConfig:
         self.initial_import_done = False
         self.preferences = {}
         self.server_url = server
+        self.installed = installed
+        self.db_port = db_port
+        self.server_port = server_port
+        self.server_pid = server_pid
+        self.notion = notion
         self._config_path = path
         self.save()

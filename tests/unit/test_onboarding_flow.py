@@ -113,7 +113,8 @@ class TestStepPlatforms:
         config = _make_config(user_id="user-123")
         flow = OnboardingFlow(api=api, config=config)
 
-        with patch("cli.onboarding._ask", return_value="s"):
+        with patch("cli.onboarding._ask", return_value="s"), \
+             patch("cli.onboarding.NotionSetup.run_onboarding_step", return_value=True):
             result = await flow._step_platforms()
 
         assert result is True
@@ -133,7 +134,8 @@ class TestStepPlatforms:
                 return "2"  # Select Slack
             return "xoxb-1234-5678-abcdefghij"  # Token
 
-        with patch("cli.onboarding._ask", side_effect=mock_ask):
+        with patch("cli.onboarding._ask", side_effect=mock_ask), \
+             patch("cli.onboarding.NotionSetup.run_onboarding_step", return_value=True):
             result = await flow._step_platforms()
 
         assert result is True
@@ -154,7 +156,8 @@ class TestStepPlatforms:
                 return "1, 2"  # Select Outlook and Slack
             return "xoxb-some-long-valid-token-12345"  # Token for each
 
-        with patch("cli.onboarding._ask", side_effect=mock_ask):
+        with patch("cli.onboarding._ask", side_effect=mock_ask), \
+             patch("cli.onboarding.NotionSetup.run_onboarding_step", return_value=True):
             result = await flow._step_platforms()
 
         assert result is True
@@ -394,7 +397,8 @@ class TestFullFlow:
 
         with patch("cli.onboarding._ask", side_effect=mock_ask):
             with patch("cli.onboarding._ask_choice", side_effect=choice_responses):
-                result = await flow.run()
+                with patch("cli.onboarding.NotionSetup.run_onboarding_step", return_value=True):
+                    result = await flow.run()
 
         assert result is True
         assert config.onboarding_completed is True

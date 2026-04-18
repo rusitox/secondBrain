@@ -83,6 +83,11 @@ Tests contra servicios reales (DB local, APIs mockeadas a nivel HTTP).
 - [ ] **MSGraphConnector**: OAuth2 flow completo (auth code → token → refresh)
 - [ ] **MSGraphConnector**: Paginación de emails y eventos de calendario
 - [ ] **MSGraphConnector**: Manejo de token expirado → refresh automático
+- [ ] **TeamsConnector**: Lectura de chats 1:1 y grupales via MS Graph API
+- [ ] **TeamsConnector**: Paginación con `@odata.nextLink`
+- [ ] **TeamsConnector**: Rate limiting (429) → retry con backoff exponencial
+- [ ] **TeamsConnector**: Filtrado de mensajes del sistema (`messageType != "message"`)
+- [ ] **TeamsConnector**: Manejo de `from: null` (mensajes de bot/sistema)
 - [ ] **SlackConnector**: Lectura de channels y DMs con Bot Token
 - [ ] **SlackConnector**: Paginación con cursor
 - [ ] **SlackConnector**: Rate limiting (429) → retry con backoff
@@ -159,6 +164,7 @@ tests/
 ├── integration/
 │   ├── test_database.py
 │   ├── test_msgraph_connector.py
+│   ├── test_teams_connector.py
 │   ├── test_slack_connector.py
 │   ├── test_fathom_connector.py
 │   └── test_ingestion_pipeline.py
