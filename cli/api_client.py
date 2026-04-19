@@ -254,6 +254,47 @@ class APIClient:
         """Delete a commitment."""
         await self._request("DELETE", f"/commitments/{commitment_id}")
 
+    # --- Preferences / Onboarding / Notion Config ---
+
+    async def get_preferences(self) -> Dict[str, Any]:
+        """Get full preferences, onboarding state, and Notion config."""
+        return await self._request("GET", "/users/me/preferences")
+
+    async def update_preferences(self, prefs: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge keys into server-side preferences."""
+        return await self._request("PATCH", "/users/me/preferences", json={
+            "preferences": prefs,
+        })
+
+    async def get_onboarding(self) -> Dict[str, Any]:
+        """Get onboarding step and completed status."""
+        return await self._request("GET", "/users/me/onboarding")
+
+    async def update_onboarding(
+        self,
+        step: Optional[int] = None,
+        completed: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Update onboarding step and/or completed flag."""
+        payload: Dict[str, Any] = {}
+        if step is not None:
+            payload["step"] = step
+        if completed is not None:
+            payload["completed"] = completed
+        return await self._request("PATCH", "/users/me/onboarding", json=payload)
+
+    async def get_notion_config(self) -> Dict[str, Any]:
+        """Get Notion workspace config from server."""
+        return await self._request("GET", "/users/me/notion-config")
+
+    async def update_notion_config(
+        self, config: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Replace Notion config on server."""
+        return await self._request("PUT", "/users/me/notion-config", json={
+            "config": config,
+        })
+
     # --- Notion ---
 
     async def sync_notion_commitments(

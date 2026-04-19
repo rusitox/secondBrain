@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from cli.api_client import APIClient
+import httpx
+
+from cli.api_client import APIClient, APIError
 from cli.config import CLIConfig, DEFAULT_CONFIG_FILE
 from cli.display import console, print_error, print_welcome, print_info
 
@@ -155,6 +157,13 @@ async def async_main(args: argparse.Namespace) -> int:
                 "    python -m cli --server http://host:port"
             )
         return 1
+
+    # Sync state from server (best-effort)
+    try:
+        server_state = await api.get_preferences()
+        config.apply_server_state(server_state)
+    except (httpx.HTTPError, APIError, KeyError, ValueError):
+        pass  # Server may not support this yet — use local state
 
     # Route to onboarding or chat
     if not config.onboarding_completed:

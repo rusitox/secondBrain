@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, EmailStr, field_validator
 
@@ -59,3 +59,47 @@ class UserRead(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# --- Onboarding ---
+
+class OnboardingState(BaseModel):
+    step: int
+    completed: bool
+
+
+class OnboardingUpdate(BaseModel):
+    step: Optional[int] = None
+    completed: Optional[bool] = None
+
+    @field_validator("step")
+    @classmethod
+    def validate_step(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and (v < 0 or v > 10):
+            raise ValueError("step must be between 0 and 10")
+        return v
+
+
+# --- Preferences ---
+
+class UserPreferencesResponse(BaseModel):
+    preferences: Dict[str, Any]
+    onboarding: OnboardingState
+    notion_config: Optional[Dict[str, Any]] = None
+
+
+class UserPreferencesUpdate(BaseModel):
+    """Partial update — merges into existing preferences."""
+    preferences: Dict[str, Any]
+
+
+# --- Notion Config ---
+
+class NotionConfigResponse(BaseModel):
+    """Notion workspace config response."""
+    config: Optional[Dict[str, Any]] = None
+
+
+class NotionConfigUpdate(BaseModel):
+    """Replace entire Notion config."""
+    config: Optional[Dict[str, Any]] = None

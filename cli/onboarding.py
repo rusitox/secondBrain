@@ -12,6 +12,8 @@ State is persisted in CLIConfig so the wizard can resume after interruption.
 import logging
 from typing import Callable, List, Optional
 
+import httpx
+
 from cli.api_client import APIClient, APIError
 from cli.config import CLIConfig
 from cli.display import (
@@ -145,13 +147,26 @@ class OnboardingFlow:
                 return False
             self._config.onboarding_step = step_num
             self._config.save()
+            await self._sync_onboarding_to_server(step_num, completed=False)
             console.print()
 
         # Mark completed
         self._config.onboarding_completed = True
         self._config.save()
+        await self._sync_onboarding_to_server(
+            self._config.onboarding_step, completed=True,
+        )
         await self._show_summary()
         return True
+
+    async def _sync_onboarding_to_server(
+        self, step: int, completed: bool,
+    ) -> None:
+        """Persist onboarding state to server (best-effort)."""
+        try:
+            await self._api.update_onboarding(step=step, completed=completed)
+        except (APIError, httpx.HTTPError, OSError):
+            pass  # Server may not support this yet — local state is authoritative
 
     def _handle_resume(self) -> str:
         """Handle resume from interrupted onboarding. Returns action: c/r/s."""
@@ -544,6 +559,12 @@ class OnboardingFlow:
         self._config.preferences["briefing_hour"] = hour
         self._config.preferences["briefing_minute"] = minute
         self._config.preferences["alert_mode"] = alert_mode
+
+        # Sync preferences to server
+        try:
+            await self._api.update_preferences(self._config.preferences)
+        except (APIError, httpx.HTTPError, OSError):
+            pass  # Best-effort sync
 
         print_success(
             "Briefing scheduled at %02d:%02d. Alert mode: %s."

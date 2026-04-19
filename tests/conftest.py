@@ -56,6 +56,10 @@ def _create_sqlite_tables(connection) -> None:
             email TEXT UNIQUE NOT NULL,
             full_name TEXT NOT NULL,
             timezone TEXT DEFAULT 'UTC',
+            onboarding_completed INTEGER DEFAULT 0,
+            onboarding_step INTEGER DEFAULT 0,
+            preferences_json TEXT,
+            notion_config_json TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )

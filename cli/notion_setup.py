@@ -169,6 +169,12 @@ class NotionSetup:
         self._config.notion = notion_config
         self._config.save()
 
+        # Sync Notion config to server
+        try:
+            await self._api.update_notion_config(notion_config)
+        except (APIError, httpx.HTTPError, OSError):
+            pass  # Best-effort sync
+
         # Add notion to platforms_connected for background sync
         if "notion" not in self._config.platforms_connected:
             self._config.platforms_connected.append("notion")

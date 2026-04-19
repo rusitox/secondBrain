@@ -36,7 +36,18 @@ class CLIConfig:
     # Notion integration
     notion: Optional[Dict[str, Any]] = None
 
+    # API key (added for Phase 5, prepared now)
+    api_key: Optional[str] = None
+
     _config_path: Path = field(default=DEFAULT_CONFIG_FILE, repr=False)
+
+    @property
+    def is_remote_mode(self) -> bool:
+        """True if server_url is not localhost."""
+        url = self.server_url.lower()
+        return not any(
+            h in url for h in ("localhost", "127.0.0.1", "0.0.0.0")
+        )
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "CLIConfig":
@@ -68,6 +79,7 @@ class CLIConfig:
             server_port=raw.get("server_port", 8000),
             server_pid=raw.get("server_pid"),
             notion=raw.get("notion"),
+            api_key=raw.get("api_key"),
             _config_path=path,
         )
 
@@ -90,6 +102,7 @@ class CLIConfig:
             "server_port": self.server_port,
             "server_pid": self.server_pid,
             "notion": self.notion,
+            "api_key": self.api_key,
         }
         self._config_path.write_text(
             json.dumps(data, indent=2, default=str) + "\n",
@@ -127,4 +140,23 @@ class CLIConfig:
         self.server_pid = server_pid
         self.notion = notion
         self._config_path = path
+        self.save()
+
+    def apply_server_state(self, data: Dict[str, Any]) -> None:
+        """Apply state fetched from GET /users/me/preferences to local cache.
+
+        Called on CLI startup to sync server state into local config.
+        """
+        onboarding = data.get("onboarding", {})
+        self.onboarding_step = onboarding.get("step", self.onboarding_step)
+        self.onboarding_completed = onboarding.get("completed", self.onboarding_completed)
+
+        server_prefs = data.get("preferences", {})
+        if server_prefs:
+            self.preferences = {**self.preferences, **server_prefs}
+
+        notion = data.get("notion_config")
+        if notion is not None:
+            self.notion = notion
+
         self.save()
