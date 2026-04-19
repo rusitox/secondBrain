@@ -25,6 +25,18 @@ router = APIRouter(prefix="/users", tags=["users"])
 # --- /users/me endpoints (must be before /{user_id} to avoid route conflict) ---
 
 
+@router.get("/me", response_model=UserRead)
+async def get_current_user(
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> UserRead:
+    """Return the currently authenticated user's profile."""
+    user = await user_service.get_user(db, current_user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserRead.model_validate(user)
+
+
 @router.get("/me/preferences", response_model=UserPreferencesResponse)
 async def get_my_preferences(
     current_user_id: uuid.UUID = Depends(get_current_user_id),

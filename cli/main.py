@@ -25,8 +25,8 @@ def parse_args() -> argparse.Namespace:
         "command",
         nargs="?",
         default=None,
-        choices=["install"],
-        help="Subcommand: 'install' to run the installer",
+        choices=["install", "login", "logout"],
+        help="Subcommand: 'install', 'login', or 'logout'",
     )
     parser.add_argument(
         "--server",
@@ -65,6 +65,17 @@ async def async_main(args: argparse.Namespace) -> int:
         config.reset()
         print_info("Configuration reset. Starting fresh.")
 
+    # Handle login/logout subcommands
+    if args.command == "login":
+        from cli.auth import login
+        success = await login(config)
+        return 0 if success else 1
+
+    if args.command == "logout":
+        from cli.auth import logout
+        await logout(config)
+        return 0
+
     # Handle install subcommand
     if args.command == "install":
         from cli.installer import Installer
@@ -101,19 +112,31 @@ async def async_main(args: argparse.Namespace) -> int:
             "  Consider using HTTPS for non-localhost connections."
         )
 
+    # Remote mode: require login, skip local server management
+    if config.is_remote_mode:
+        if not config.api_key:
+            print_error(
+                "Not logged in. Run:\n"
+                "    secondbrain login\n"
+                "  or:\n"
+                "    python -m cli login"
+            )
+            return 1
+
     # Create API client
     api = APIClient(
         server_url=config.server_url,
         user_id=config.user_id,
+        api_key=config.api_key,
     )
 
-    # Check backend connectivity — try auto-start if installed
+    # Check backend connectivity
     from cli.display import spinner
     with spinner("Connecting to backend..."):
         connected = await api.health_check()
 
-    if not connected and config.installed:
-        # Auto-start: try to bring up DB + server
+    if not connected and not config.is_remote_mode and config.installed:
+        # Auto-start: try to bring up DB + server (local mode only)
         from cli.server import ServerManager
         server = ServerManager(config)
 
@@ -136,12 +159,19 @@ async def async_main(args: argparse.Namespace) -> int:
         api = APIClient(
             server_url=config.server_url,
             user_id=config.user_id,
+            api_key=config.api_key,
         )
         with spinner("Connecting to backend..."):
             connected = await api.health_check()
 
     if not connected:
-        if not config.installed:
+        if config.is_remote_mode:
+            print_error(
+                "Cannot reach server at %s\n"
+                "  Check your network connection and server URL.\n"
+                "  To change the server: secondbrain login" % config.server_url
+            )
+        elif not config.installed:
             print_error(
                 "secondBrain is not installed yet.\n"
                 "  Run the installer first:\n"
@@ -149,12 +179,12 @@ async def async_main(args: argparse.Namespace) -> int:
             )
         else:
             print_error(
-                f"Cannot reach backend at {config.server_url}\n"
+                "Cannot reach backend at %s\n"
                 "  Make sure Docker is running, then try:\n"
                 "    python -m cli install  (to reinstall)\n"
                 "\n"
                 "  Or specify a different URL:\n"
-                "    python -m cli --server http://host:port"
+                "    python -m cli --server http://host:port" % config.server_url
             )
         return 1
 

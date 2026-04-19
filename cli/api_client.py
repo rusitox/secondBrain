@@ -23,9 +23,15 @@ class APIError(Exception):
 class APIClient:
     """Async HTTP client for the secondBrain API."""
 
-    def __init__(self, server_url: str, user_id: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        server_url: str,
+        user_id: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> None:
         self._base_url = server_url.rstrip("/")
         self._user_id = user_id
+        self._api_key = api_key
         self._client: Optional[httpx.AsyncClient] = None
 
     def set_user_id(self, user_id: str) -> None:
@@ -47,7 +53,9 @@ class APIClient:
     def _headers(self) -> Dict[str, str]:
         """Build request headers."""
         headers: Dict[str, str] = {}
-        if self._user_id:
+        if self._api_key:
+            headers["Authorization"] = "Bearer %s" % self._api_key
+        elif self._user_id:
             headers["X-User-Id"] = self._user_id
         return headers
 
@@ -95,6 +103,10 @@ class APIClient:
             return False
 
     # --- Users ---
+
+    async def get_me(self) -> Dict[str, Any]:
+        """Get the currently authenticated user's profile."""
+        return await self._request("GET", "/users/me")
 
     async def create_user(
         self, email: str, full_name: str, timezone: str = "UTC"

@@ -12,6 +12,21 @@ DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
 DEFAULT_SERVER_URL = "http://localhost:8000"
 
 
+def _check_file_permissions(path: Path) -> None:
+    """Warn if config file is readable by group or others (unix only)."""
+    try:
+        import stat
+        mode = path.stat().st_mode
+        if mode & (stat.S_IRGRP | stat.S_IROTH):
+            logger.warning(
+                "Config file %s is readable by other users (mode %o). "
+                "Run: chmod 600 %s",
+                path, stat.S_IMODE(mode), path,
+            )
+    except (OSError, AttributeError):
+        pass  # Windows or filesystem that doesn't support unix permissions
+
+
 @dataclass
 class CLIConfig:
     """Persisted CLI configuration."""
@@ -56,6 +71,9 @@ class CLIConfig:
         if not path.exists():
             config = cls(_config_path=path)
             return config
+
+        # Warn if config file permissions are too open (unix only)
+        _check_file_permissions(path)
 
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -127,6 +145,7 @@ class CLIConfig:
         self.user_id = None
         self.user_name = None
         self.user_email = None
+        self.api_key = None
         self.onboarding_completed = False
         self.onboarding_step = 0
         self.platforms_connected = []
