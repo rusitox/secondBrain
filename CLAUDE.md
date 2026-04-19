@@ -18,7 +18,7 @@ A personal knowledge management system (AI Chief of Staff / Digital Twin) based 
 ```bash
 python -m uvicorn app.main:app --reload   # Start dev server
 python -m cli                             # Start CLI chat interface
-mypy .                                    # Type check
+mypy app/ cli/ --ignore-missing-imports   # Type check
 pytest tests/                             # Run all tests
 pytest tests/unit/                        # Unit tests only
 pytest tests/integration/                 # Integration tests only
@@ -35,13 +35,14 @@ FastAPI backend with async SQLAlchemy, organized in layers:
 - **`app/api/routers/`** — REST endpoints: health, users, commitments, integrations, ingestion, query, agent, briefing, identity
 - **`app/api/schemas/`** — Pydantic request/response models
 - **`app/services/`** — Business logic:
-  - `connectors/` — Platform connectors: MSGraph (Outlook email+calendar), Teams (chat), Slack, Fathom
+  - `connectors/` — Platform connectors: MSGraph (Outlook), Teams, Slack, Fathom, Notion
   - `ingestion/` — Pipeline: cleaner → chunker → embedder → upsert
   - `retrieval/` — Semantic search with metadata filters
   - `llm/` — Claude client + prompt templates
   - `commitments/` — AI-powered commitment detection
   - `agent/` — LangChain agent with tools (memory retriever, task manager, style analyzer, calendar sync)
   - `briefing/` — Daily briefing generator + scheduler
+  - `notion/` — Notion publisher, bidirectional sync, weekly digest, block parsing, workspace config
 
 ### CLI (`cli/`)
 Terminal-based chat interface consuming the REST API:
@@ -49,12 +50,14 @@ Terminal-based chat interface consuming the REST API:
 - **`cli/main.py`** — Entry point, event loop
 - **`cli/onboarding.py`** — 5-step resumable onboarding wizard
 - **`cli/chat.py`** — Main chat loop with agent queries
-- **`cli/commands.py`** — Slash command router (`/briefing`, `/sync`, `/commitments`, etc.)
-- **`cli/background.py`** — Periodic background sync
+- **`cli/commands.py`** — Slash command router (16 commands: `/briefing`, `/sync`, `/commitments`, `/notion`, `/digest`, `/prep`, `/server`, etc.)
+- **`cli/background.py`** — Periodic background sync + weekly digest scheduler
 - **`cli/alerts.py`** — Proactive commitment alerts
+- **`cli/notion_setup.py`** — Notion OAuth and workspace setup
 - **`cli/api_client.py`** — Async httpx wrapper for all API calls
 - **`cli/config.py`** — Local config persistence (`~/.secondbrain/config.json`)
 - **`cli/display.py`** — Rich console formatting
+- **`cli/server.py`** — Server lifecycle management
 
 ### Connectors
 | Connector | Class | Source | Data |
@@ -63,6 +66,16 @@ Terminal-based chat interface consuming the REST API:
 | Teams | `TeamsConnector` | `teams` | 1:1 and group chat messages |
 | Slack | `SlackConnector` | `slack` | Channel and DM messages |
 | Fathom | `FathomConnector` | `fathom` | Meeting transcripts |
+| Notion | `NotionConnector` | `notion` | Pages + database items |
+
+### Notion Services (`app/services/notion/`)
+| Module | Description |
+|---|---|
+| `publisher.py` | `NotionPublisher` — creates/updates pages and databases via Notion API |
+| `sync.py` | `NotionSync` — bidirectional commitment sync with last-write-wins conflict resolution |
+| `digest.py` | `WeeklyDigestGenerator` — generates weekly summary using Claude with fallback |
+| `blocks.py` | Markdown-to-Notion block conversion and Notion block-to-text extraction |
+| `config.py` | `NotionWorkspaceConfig` — workspace IDs (root page, databases) |
 
 ## Conventions
 
@@ -82,10 +95,11 @@ Terminal-based chat interface consuming the REST API:
 - `app/core/database.py` — Async engine, session factory
 - `app/models/` — SQLAlchemy models (Base, UUIDMixin, TimestampMixin)
 - `app/api/routers/` — API endpoints (9 routers)
-- `app/services/connectors/` — Platform connectors (4: outlook, teams, slack, fathom)
+- `app/services/connectors/` — Platform connectors (5: outlook, teams, slack, fathom, notion)
 - `app/services/ingestion/pipeline.py` — Central data flow
 - `app/services/retrieval/search.py` — Hybrid vector search
-- `cli/` — CLI chat interface
+- `app/services/notion/` — Notion publisher, sync, digest
+- `cli/` — CLI chat interface (16 slash commands)
 - `requirements.txt` — Dependencies
 - `specs/` — Product specs, implementation plans, QA plan
 - `tests/` — Unit, integration, and E2E tests
