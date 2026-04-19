@@ -116,10 +116,23 @@ def _create_sqlite_tables(connection) -> None:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            key_hash TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            name TEXT NOT NULL,
+            last_used_at TIMESTAMP,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
 
 
 def _drop_sqlite_tables(connection) -> None:
-    for table in ["commitments", "documents", "integrations", "identities", "users"]:
+    for table in ["api_keys", "commitments", "documents", "integrations", "identities", "users"]:
         connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
 
 

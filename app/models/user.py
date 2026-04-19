@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
+    from app.models.api_key import APIKey
     from app.models.commitment import Commitment
     from app.models.document import Document
     from app.models.identity import Identity
@@ -30,5 +31,8 @@ class User(UUIDMixin, TimestampMixin, Base):
         back_populates="user", cascade="all, delete-orphan"
     )
     commitments: Mapped[List["Commitment"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    api_keys: Mapped[List["APIKey"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
