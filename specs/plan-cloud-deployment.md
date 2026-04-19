@@ -9,12 +9,12 @@
 
 ## Goal
 
-Deploy secondBrain to an Oracle Cloud free-tier ARM VM with Docker Compose, nginx, and Let's Encrypt SSL, then adapt the CLI to connect remotely with API key authentication.
+Deploy secondBrain to an Oracle Cloud free-tier ARM VM with Docker Compose and nginx (behind Tailscale), then adapt the CLI to connect remotely with API key authentication.
 
 ## Scope
 
-- **IN:** API key auth, server-side sync, server-side user state, Docker containerization for Oracle Cloud VPS, nginx + SSL, systemd service, CLI login flow, CLI pip packaging
-- **OUT:** Multi-user support (this is single-user), Terraform/IaC automation (manual VM provision), custom domain purchase (assumed already owned or will acquire), CI/CD pipeline (deploy manually via script), mobile/web client
+- **IN:** API key auth, server-side sync, server-side user state, Docker containerization for Oracle Cloud VPS, GitHub Actions CI/CD (build + push to GHCR), nginx reverse proxy (HTTP only — Tailscale handles encryption), systemd service, CLI login flow, CLI pip packaging
+- **OUT:** Multi-user support (this is single-user), Terraform/IaC automation (manual VM provision), SSL/TLS certificates (Tailscale provides end-to-end encryption), mobile/web client
 
 ---
 
@@ -25,8 +25,8 @@ The original spec suggests phases 1-5 in order. For Oracle Cloud VPS, we reorder
 **Phase 4 (Containerization) -> Phase 1 (Auth) -> Phase 2 (Server Sync) -> Phase 3 (Server State) -> Phase 5 (CLI Packaging)**
 
 Rationale:
-1. **Phase 4 first** because we need a deployed server to test against. Containerization has zero dependencies on the other phases -- the current codebase runs fine in Docker as-is.
-2. **Phase 1 immediately after** because the server is on the public internet after Phase 4. We cannot leave `X-User-Id` as the only auth mechanism on a publicly reachable server. Phase 1 is a security gate.
+1. **Phase 4 first** because we need a deployed server to test against. Containerization has zero dependencies on the other phases — the current codebase runs fine in Docker as-is.
+2. **Phase 1 next** to establish proper API key auth. Although Tailscale keeps the server private, API keys enable multi-device identity and are required for the CLI login flow.
 3. **Phases 2 and 3** build on Phase 1 (auth is a prerequisite for all new endpoints).
 4. **Phase 5 last** because it needs a deployed, authenticated server to test the login flow end-to-end.
 
@@ -34,49 +34,42 @@ We add a **Phase 0** for Oracle Cloud VM provisioning (manual, but documented).
 
 ---
 
-## Phase 0: Oracle Cloud VM Provisioning (Manual)
+## Phase 0: Oracle Cloud VM Provisioning — COMPLETE
 
-### Goal
-Provision and harden an Oracle Cloud ARM VM ready to host Docker containers.
+### Status: Done (pre-existing VM)
 
-### Tasks
+The Oracle Cloud ARM VM already exists and runs another API. Infrastructure is in place:
 
-- [ ] **0.1** Create Oracle Cloud account (free tier)
-- [ ] **0.2** Provision an Ampere A1 Compute instance:
-  - Shape: `VM.Standard.A1.Flex` (ARM)
-  - OCPUs: 2 (of 4 free), RAM: 12GB (of 24 free) -- leaves headroom for a second instance later
-  - OS: Ubuntu 22.04 (aarch64) -- canonical choice, best Docker support on ARM
-  - Boot volume: 50GB (free tier allows up to 200GB total)
-  - SSH key: generate a dedicated `secondbrain-oci` key pair
-- [ ] **0.3** Configure Oracle Cloud networking:
-  - VCN security list: open inbound TCP ports 22 (SSH), 80 (HTTP), 443 (HTTPS)
-  - All other inbound ports remain closed
-  - Default outbound: allow all (needed for API calls to OpenAI, Anthropic, MS Graph, Slack)
-- [ ] **0.4** Initial server hardening:
-  - `apt update && apt upgrade`
-  - Install Docker Engine (not Docker Desktop) + Docker Compose plugin
-  - Install `certbot` (standalone mode for initial cert, then nginx plugin)
-  - Configure `ufw` firewall: allow 22, 80, 443 (belt-and-suspenders with OCI security list)
-  - Set up a non-root user (`deploy`) with Docker group membership
-  - Disable password auth in sshd, keep key-only
-  - Set hostname to `secondbrain`
-- [ ] **0.5** DNS setup:
-  - Point a subdomain (e.g., `brain.yourdomain.com`) A record to the VM's public IP
-  - Wait for propagation (needed before Let's Encrypt cert issuance)
-- [ ] **0.6** Document the provisioning steps in `docs/oracle-cloud-setup.md`
+- [x] Oracle Cloud free-tier ARM VM provisioned
+- [x] Docker Engine + Docker Compose installed and running
+- [x] Ports open in OCI security lists
+- [x] Nginx running (shared with other API)
+- [x] **Tailscale** provides point-to-point encrypted networking between all devices
 
-### Estimated complexity: Low (manual, one-time)
-### Testing: SSH in, run `docker --version`, `curl http://localhost` should fail (nothing running yet)
+### Tailscale Impact on Architecture
+
+Tailscale uses WireGuard to create an encrypted mesh network. This changes several assumptions:
+
+1. **No SSL/Let's Encrypt needed** — Tailscale traffic is already encrypted end-to-end. Nginx proxies as plain HTTP within the tailnet.
+2. **No public internet exposure** — The server is only reachable from devices on the tailnet. This eliminates the attack surface that made Phase 1 (auth) urgent.
+3. **Simplified nginx** — No port 443, no certificate management, no HSTS. Just a `server` block proxying to the API container.
+4. **DNS is Tailscale MagicDNS** — Access via `<hostname>` or Tailscale IP, no need for a public domain or A records.
+5. **Phase 1 (auth) is still recommended** — even in a private network, API key auth prevents accidental misuse and enables multi-device identity. But it's not a security emergency.
+
+### What remains for Phase 4
+- Add a server block to the **existing** nginx for secondbrain (not install a new nginx)
+- No SSL config, no certbot, no `init-ssl.sh`
+- No `secondbrain-initial.conf` (HTTP-only for cert issuance) — not needed
 
 ---
 
 ## Phase 4: Containerization and Deployment (Reordered to execute first)
 
 ### Goal
-Package the FastAPI app as a Docker image, set up Docker Compose with PostgreSQL + nginx, deploy to Oracle Cloud VM with SSL.
+Package the FastAPI app as a Docker image, set up Docker Compose with PostgreSQL, and configure the existing nginx on the VM to reverse-proxy to the container (plain HTTP — Tailscale encrypts the transport).
 
 ### Estimated complexity: Medium
-### Dependencies: Phase 0 (VM exists, Docker installed, DNS pointing)
+### Dependencies: Phase 0 (VM exists, Docker installed, Tailscale connected)
 
 ### Tasks
 
@@ -105,64 +98,39 @@ Three services:
 - Healthcheck: `pg_isready -U secondbrain`
 
 **`api` service:**
-- Build context: `.` (uses the `Dockerfile` from 4.1)
+- Image: `ghcr.io/rusitox/secondbrain:latest` (pulled from GHCR, built by GitHub Actions)
 - Depends on: `db` (healthy)
 - Environment: reads from `.env.prod` file
   - `DATABASE_URL=postgresql+asyncpg://secondbrain:${DB_PASSWORD}@db:5432/secondbrain`
   - `DATABASE_URL_SYNC=postgresql://secondbrain:${DB_PASSWORD}@db:5432/secondbrain`
   - `APP_ENV=production`
   - `FERNET_KEY`, `OPENAI_API_KEY`, `CLAUDE_API_KEY` from `.env.prod`
-- Port: only expose `8000` on the Docker network (not to host) -- nginx handles external traffic
+- Port: `8000:8000` on the host — nginx on the host proxies to this port
 - Restart: `unless-stopped`
 - Healthcheck: `curl -f http://localhost:8000/health || exit 1`
-- Command override for migrations on startup: use an entrypoint script that runs `alembic upgrade head` then starts uvicorn
+- Entrypoint script runs `alembic upgrade head` then starts uvicorn
 
-**`nginx` service:**
-- Image: `nginx:1.27-alpine` (has ARM64 images)
-- Volumes:
-  - `./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro`
-  - `./infra/nginx/conf.d/:/etc/nginx/conf.d/:ro`
-  - `certbot-etc:/etc/letsencrypt:ro`
-  - `certbot-var:/var/lib/letsencrypt`
-  - `certbot-webroot:/var/www/certbot:ro`
-- Ports: `80:80`, `443:443`
-- Depends on: `api`
-- Restart: `unless-stopped`
+**No nginx service in Docker Compose** — the VM's existing nginx handles reverse-proxying. The API container exposes port 8000 to the host, and nginx forwards to it.
 
-**Volumes:** `secondbrain-pgdata`, `certbot-etc`, `certbot-var`, `certbot-webroot`
+**Volumes:** `secondbrain-pgdata`
 
-**Networks:** Default bridge network is sufficient (all services can reach each other by service name).
+**Networks:** Default bridge network is sufficient (db and api can reach each other by service name).
 
 #### 4.3 Create nginx configuration
 
-**File:** `infra/nginx/nginx.conf` (new)
+**File:** `infra/nginx/secondbrain.conf` (new)
 
-Top-level nginx config:
-- `worker_processes auto;` (uses all available CPUs)
-- `events { worker_connections 1024; }`
-- `include /etc/nginx/conf.d/*.conf;`
+Server block to add to the **existing** nginx on the VM (not a standalone nginx):
 
-**File:** `infra/nginx/conf.d/secondbrain.conf` (new)
+- `server_name secondbrain;` (or Tailscale hostname)
+- `listen 8080;` (pick a port not used by the other API; nginx on the host proxies to the Docker container)
+- `location /` proxies to `http://127.0.0.1:8000` with standard proxy headers (`X-Real-IP`, `X-Forwarded-For`)
+- Client max body size: `10m` (for ingestion payloads)
+- Gzip: enabled for JSON responses
 
-Server blocks:
-- **Port 80 server block:**
-  - Serve `/.well-known/acme-challenge/` from `/var/www/certbot` (Let's Encrypt HTTP-01 challenge)
-  - All other requests: `return 301 https://$host$request_uri;`
+**No SSL needed** — Tailscale encrypts all traffic end-to-end via WireGuard.
 
-- **Port 443 server block:**
-  - `server_name brain.yourdomain.com;` (parameterize via env or document to edit)
-  - SSL certificate paths: `/etc/letsencrypt/live/brain.yourdomain.com/fullchain.pem` and `privkey.pem`
-  - SSL settings: TLS 1.2+, strong ciphers, HSTS header
-  - `location /` proxies to `http://api:8000` with standard proxy headers (`X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`)
-  - Rate limiting: `limit_req_zone` for auth endpoints (10 req/min)
-  - Client max body size: `10m` (for ingestion payloads)
-  - Gzip: enabled for JSON responses
-
-**File:** `infra/nginx/conf.d/secondbrain-initial.conf` (new)
-
-Temporary HTTP-only config used for initial cert issuance (before SSL cert exists):
-- Port 80 only, serves ACME challenge directory
-- After cert is obtained, this file is replaced by the full `secondbrain.conf`
+**Deployment:** Copy this file to `/etc/nginx/sites-enabled/secondbrain.conf` on the VM and `nginx -s reload`.
 
 #### 4.4 Create entrypoint script
 
@@ -188,34 +156,41 @@ DATABASE_URL_SYNC=postgresql://secondbrain:${DB_PASSWORD}@db:5432/secondbrain
 FERNET_KEY=<generate-with-python>
 OPENAI_API_KEY=<your-key>
 CLAUDE_API_KEY=<your-key>
-DOMAIN=brain.yourdomain.com
 ```
 
 Add `.env.prod` to `.gitignore`.
 
-#### 4.6 Create deployment script
+#### 4.6 Create GitHub Actions workflow
+
+**File:** `.github/workflows/build-and-push.yml` (new)
+
+GitHub Actions workflow that builds the Docker image and pushes to GHCR:
+
+**Trigger:** Push to `main` branch (only when `app/`, `requirements.txt`, `Dockerfile`, or `alembic/` change)
+
+**Steps:**
+1. Checkout code
+2. Set up Docker Buildx
+3. Login to GHCR (`ghcr.io`) using `GITHUB_TOKEN`
+4. Build multi-platform image (`linux/amd64,linux/arm64`) — ARM64 for Oracle Cloud, AMD64 for local testing
+5. Tag as `ghcr.io/rusitox/secondbrain:latest` and `ghcr.io/rusitox/secondbrain:<sha-short>`
+6. Push to GHCR
+
+**Note:** `GITHUB_TOKEN` has built-in write access to GHCR for the same repo. No additional secrets needed.
+
+#### 4.7 Create deployment script
 
 **File:** `infra/deploy.sh` (new)
 
-Bash script to deploy from a local machine to the Oracle Cloud VM:
-1. Accept `--host` and `--user` arguments (default: `deploy@brain.yourdomain.com`)
-2. `rsync` the project directory to the VM (excluding `.git`, `venv`, `__pycache__`, `.env`, `node_modules`)
-3. SSH into the VM and run:
+Lightweight script to pull the latest image and restart on the VM:
+1. Accept `--host` argument (default: Tailscale hostname of the VM)
+2. SSH into the VM and run:
    - `cd /opt/secondbrain`
-   - `docker compose -f docker-compose.prod.yml build`
+   - `docker compose -f docker-compose.prod.yml pull`
    - `docker compose -f docker-compose.prod.yml up -d`
-4. Verify deployment: `curl -f https://brain.yourdomain.com/health`
+3. Verify deployment: `curl -f http://localhost:8000/health`
 
-#### 4.7 Create SSL certificate issuance script
-
-**File:** `infra/init-ssl.sh` (new)
-
-One-time script to obtain the initial Let's Encrypt certificate:
-1. Start nginx with the HTTP-only config (`secondbrain-initial.conf`)
-2. Run `certbot certonly --webroot -w /var/www/certbot -d brain.yourdomain.com --email mariano.ortega@gmail.com --agree-tos`
-3. Swap nginx config to the full SSL version (`secondbrain.conf`)
-4. Reload nginx
-5. Set up certbot auto-renewal cron (certbot's systemd timer handles this on Ubuntu, but verify)
+No `rsync` needed — the image comes from GHCR. Only `docker-compose.prod.yml`, `.env.prod`, and `infra/` files need to be on the VM (one-time setup).
 
 #### 4.8 Create systemd service
 
@@ -269,6 +244,7 @@ Keep the existing `/health` endpoint as a simple 200 OK for nginx/Docker health 
 
 #### 4.11 Create backup script
 
+
 **File:** `infra/backup.sh` (new)
 
 Automated PostgreSQL backup script:
@@ -281,14 +257,12 @@ Automated PostgreSQL backup script:
 ### Files to create (Phase 4):
 | File | Purpose |
 |---|---|
-| `Dockerfile` | API server container |
-| `docker-compose.prod.yml` | Production stack (db + api + nginx) |
-| `infra/nginx/nginx.conf` | Top-level nginx config |
-| `infra/nginx/conf.d/secondbrain.conf` | SSL reverse proxy config |
-| `infra/nginx/conf.d/secondbrain-initial.conf` | HTTP-only config for cert issuance |
+| `Dockerfile` | API server container (multi-stage, ARM64-compatible) |
+| `docker-compose.prod.yml` | Production stack (db + api, image from GHCR) |
+| `.github/workflows/build-and-push.yml` | CI: build Docker image + push to GHCR |
+| `infra/nginx/secondbrain.conf` | Nginx server block (HTTP reverse proxy for host nginx) |
 | `infra/docker-entrypoint.sh` | Migration + startup script |
-| `infra/deploy.sh` | Deployment automation |
-| `infra/init-ssl.sh` | Initial Let's Encrypt cert |
+| `infra/deploy.sh` | Pull + restart on VM (via Tailscale SSH) |
 | `infra/backup.sh` | PostgreSQL backup cron |
 | `infra/secondbrain.service` | Systemd unit |
 | `.env.prod.example` | Env var template |
@@ -302,11 +276,11 @@ Automated PostgreSQL backup script:
 | `.gitignore` | Add `.env.prod`, `backups/` |
 
 ### Testing strategy (Phase 4):
-1. **Local:** `docker compose -f docker-compose.prod.yml build` succeeds on ARM Mac (same arch as OCI)
-2. **Local:** `docker compose -f docker-compose.prod.yml up` and `curl http://localhost/health` returns 200
-3. **VM:** Deploy to OCI, verify `curl https://brain.yourdomain.com/health` returns 200
-4. **VM:** Verify SSL certificate is valid: `openssl s_client -connect brain.yourdomain.com:443`
-5. **VM:** Verify systemd service: `sudo systemctl restart secondbrain && curl https://brain.yourdomain.com/health`
+1. **Local:** `docker build -t secondbrain:test .` succeeds on ARM Mac (same arch as OCI)
+2. **Local:** `docker compose -f docker-compose.prod.yml up` and `curl http://localhost:8000/health` returns 200
+3. **CI:** Push to `main`, verify GitHub Actions builds and pushes to `ghcr.io/rusitox/secondbrain:latest`
+4. **VM:** `infra/deploy.sh` pulls new image, verify `curl http://<tailscale-hostname>:8080/health` returns 200 (via nginx)
+5. **VM:** Verify systemd service: `sudo systemctl restart secondbrain && curl http://localhost:8000/health`
 6. **VM:** Verify backup script runs: `sudo /opt/secondbrain/infra/backup.sh && ls -la /opt/secondbrain/backups/`
 
 ---
@@ -314,10 +288,10 @@ Automated PostgreSQL backup script:
 ## Phase 1: Authentication (API Keys)
 
 ### Goal
-Replace `X-User-Id` header with `Authorization: Bearer sb_...` API key authentication so the publicly-exposed server is secure.
+Replace `X-User-Id` header with `Authorization: Bearer sb_...` API key authentication. While Tailscale keeps the server off the public internet, API key auth enables proper multi-device identity and prevents accidental misuse.
 
 ### Estimated complexity: Medium
-### Dependencies: Phase 4 (server is deployed, but currently unprotected -- do Phase 1 ASAP after Phase 4)
+### Dependencies: Phase 4 (server is deployed)
 
 ### Key Design Decisions
 
@@ -492,7 +466,7 @@ Add `from app.api.routers import auth` and `app.include_router(auth.router)`.
    - Use key to access a protected endpoint
    - Revoke key, verify subsequent requests fail
    - List keys, verify plaintext is never returned
-3. **Manual on VM:** Generate a key via bootstrap script, use it with `curl -H "Authorization: Bearer sb_live_..."` against the deployed server
+3. **Manual on VM:** Generate a key via bootstrap script, use it with `curl -H "Authorization: Bearer sb_live_..." http://<tailscale-hostname>:8080/health` against the deployed server
 
 ---
 
@@ -764,7 +738,7 @@ Add new subcommands to `argparse`:
 **File:** `cli/auth.py` (new)
 
 Login flow:
-1. Prompt for server URL (default: `https://brain.yourdomain.com`)
+1. Prompt for server URL (default: `http://<tailscale-hostname>:8080`)
 2. Prompt for API key (masked input, like a password)
 3. Validate by calling `GET /health` with the key in `Authorization: Bearer` header
 4. If valid: store `server_url` and `api_key` in `~/.secondbrain/config.json`
@@ -867,10 +841,10 @@ After all phases are implemented:
 
 2. **Import to production DB:**
    ```bash
-   # Copy to VM
-   scp local-backup.sql deploy@brain.yourdomain.com:/tmp/
+   # Copy to VM via Tailscale
+   scp local-backup.sql <tailscale-hostname>:/tmp/
    # Import (the prod DB container)
-   ssh deploy@brain.yourdomain.com
+   ssh <tailscale-hostname>
    docker exec -i secondbrain-db-prod psql -U secondbrain secondbrain < /tmp/local-backup.sql
    ```
 
@@ -878,7 +852,7 @@ After all phases are implemented:
 
 4. **Generate API key:**
    ```bash
-   ssh deploy@brain.yourdomain.com
+   ssh <tailscale-hostname>
    cd /opt/secondbrain
    docker exec -it secondbrain-api python -m app.cli.create_api_key --user-id <UUID> --name "initial"
    ```
@@ -897,10 +871,10 @@ After all phases are implemented:
 | Risk | Severity | Mitigation |
 |---|---|---|
 | **Oracle Cloud free tier limits** | Low | ARM A1 gets 4 OCPU + 24GB RAM for free; our usage is well under. Monitor with `docker stats`. Oracle may change free tier terms -- keep backups portable. |
-| **API key in plaintext config** | Medium | `chmod 600` on config file. Future: macOS Keychain / Linux secret-service integration. Document that API key = full account access. |
-| **ARM compatibility** | Low | All Docker images used (`python:3.11-slim`, `pgvector/pgvector:pg16`, `nginx:alpine`) have official `linux/arm64` builds. Test locally on Apple Silicon Mac (same arch). |
-| **No CI/CD** | Medium | Manual deploy via `infra/deploy.sh`. Acceptable for single-user tool. Future: GitHub Actions -> SSH deploy on push to `main`. |
-| **SSL cert renewal** | Low | Certbot auto-renewal via systemd timer (Ubuntu default). Add a monitoring check: if cert expires in <7 days, log a warning in health endpoint. |
+| **API key in plaintext config** | Low | `chmod 600` on config file. Server only accessible via Tailscale, reducing exposure. Future: macOS Keychain integration. |
+| **ARM compatibility** | Low | All Docker images used (`python:3.11-slim`, `pgvector/pgvector:pg16`) have official `linux/arm64` builds. Test locally on Apple Silicon Mac (same arch). |
+| **GHCR availability** | Low | GitHub has 99.9%+ uptime. If GHCR is down, the VM keeps running the last pulled image. Can fallback to local `docker build` if needed. |
+| **Tailscale dependency** | Low | If Tailscale goes down, server is unreachable. Fallback: direct SSH via Oracle Cloud console. Tailscale has excellent uptime and the mesh is self-healing. |
 | **VM goes down** | Medium | Systemd auto-restarts Docker Compose on reboot. For longer outages: Oracle Cloud has 99.9% SLA on free tier compute. Backups run daily to local disk; consider offsite backup to OCI Object Storage (free tier: 10GB). |
 | **Database on same VM** | Medium | Single point of failure. Acceptable for personal use. Daily `pg_dump` backups mitigate data loss. Future: migrate to Supabase or separate DB instance if needed. |
 | **Breaking change to `get_current_user_id` signature** | Low | Adding `db` parameter changes the FastAPI dependency. Since all routers already use `Depends(get_current_user_id)`, FastAPI resolves the sub-dependencies automatically. Test all routers after the change. |
@@ -912,11 +886,11 @@ After all phases are implemented:
 
 Lightweight monitoring appropriate for a single-user personal tool:
 
-1. **Health check endpoint** (`/health/detailed`) -- already planned in Phase 4
-2. **Uptime monitoring** -- Use a free service like UptimeRobot or Healthchecks.io to ping `https://brain.yourdomain.com/health` every 5 minutes. Alert via email/Telegram on failure.
-3. **Docker logs** -- `docker compose -f docker-compose.prod.yml logs -f` for live debugging
-4. **Disk space** -- Add to `infra/backup.sh`: warn if disk usage > 80%
-5. **Sync health** -- The `GET /sync/status` endpoint shows if syncs are failing. Future: add a "sync has not run in 2 hours" alert to the briefing.
+1. **Health check endpoint** (`/health/detailed`) — already planned in Phase 4
+2. **Uptime monitoring** — Since the server is on Tailscale (not public), use a cron on a tailnet device to ping `http://<tailscale-hostname>:8080/health`. Or use Healthchecks.io with a push model (the server pings out).
+3. **Docker logs** — `docker compose -f docker-compose.prod.yml logs -f` for live debugging
+4. **Disk space** — Add to `infra/backup.sh`: warn if disk usage > 80%
+5. **Sync health** — The `GET /sync/status` endpoint shows if syncs are failing. Future: add a "sync has not run in 2 hours" alert to the briefing.
 
 ---
 
@@ -927,13 +901,11 @@ Lightweight monitoring appropriate for a single-user personal tool:
 | File | Phase | Purpose |
 |---|---|---|
 | `Dockerfile` | 4 | API server container |
-| `docker-compose.prod.yml` | 4 | Production stack |
-| `infra/nginx/nginx.conf` | 4 | Nginx top-level config |
-| `infra/nginx/conf.d/secondbrain.conf` | 4 | SSL reverse proxy |
-| `infra/nginx/conf.d/secondbrain-initial.conf` | 4 | HTTP-only for cert issuance |
+| `docker-compose.prod.yml` | 4 | Production stack (db + api from GHCR) |
+| `.github/workflows/build-and-push.yml` | 4 | CI: build + push to GHCR |
+| `infra/nginx/secondbrain.conf` | 4 | Nginx server block (HTTP reverse proxy) |
 | `infra/docker-entrypoint.sh` | 4 | Migration + startup |
-| `infra/deploy.sh` | 4 | Deployment script |
-| `infra/init-ssl.sh` | 4 | Let's Encrypt setup |
+| `infra/deploy.sh` | 4 | Pull + restart (via Tailscale SSH) |
 | `infra/backup.sh` | 4 | PostgreSQL backup |
 | `infra/secondbrain.service` | 4 | Systemd unit |
 | `.env.prod.example` | 4 | Env var template |

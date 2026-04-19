@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     claude_api_key: str = ""
 
+    # CORS
+    cors_origins: str = ""  # comma-separated list of allowed origins
+
     # Security — required for token encryption
     fernet_key: str
 
