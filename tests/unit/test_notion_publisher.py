@@ -1,4 +1,5 @@
 """Unit tests for NotionPublisher (mocked HTTP)."""
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -79,7 +80,88 @@ class TestPublisherInit:
         config = NotionWorkspaceConfig(commitments_db_id=None)
         publisher = NotionPublisher("ntn_test", config)
         with pytest.raises(RuntimeError, match="Commitments database not set up"):
-            import asyncio
             asyncio.get_event_loop().run_until_complete(
                 publisher.create_commitment_row({"commitment_text": "test"})
             )
+
+    def test_publish_weekly_digest_requires_db(self) -> None:
+        config = NotionWorkspaceConfig(briefings_db_id=None)
+        publisher = NotionPublisher("ntn_test", config)
+        with pytest.raises(RuntimeError, match="Briefings database not set up"):
+            asyncio.get_event_loop().run_until_complete(
+                publisher.publish_weekly_digest("digest", "2026-04-13", "2026-04-18")
+            )
+
+    def test_publish_meeting_prep_requires_db(self) -> None:
+        config = NotionWorkspaceConfig(meeting_prep_db_id=None)
+        publisher = NotionPublisher("ntn_test", config)
+        with pytest.raises(RuntimeError, match="Meeting Prep database not set up"):
+            asyncio.get_event_loop().run_until_complete(
+                publisher.publish_meeting_prep("Meeting", "prep text", "2026-04-18")
+            )
+
+
+class TestPublishWeeklyDigest:
+    @pytest.mark.asyncio
+    async def test_publishes_to_notion(self) -> None:
+        config = NotionWorkspaceConfig(briefings_db_id="db-briefings-123")
+        publisher = NotionPublisher("ntn_test", config)
+
+        mock_page = {"url": "https://notion.so/digest-page"}
+        with patch.object(publisher, "_api_call", new_callable=AsyncMock, return_value=mock_page):
+            url = await publisher.publish_weekly_digest(
+                "## Week in Review\nGood week.", "2026-04-13", "2026-04-18",
+            )
+
+        assert url == "https://notion.so/digest-page"
+
+    @pytest.mark.asyncio
+    async def test_sends_correct_payload(self) -> None:
+        config = NotionWorkspaceConfig(briefings_db_id="db-briefings-123")
+        publisher = NotionPublisher("ntn_test", config)
+
+        mock_call = AsyncMock(return_value={"url": "https://notion.so/page"})
+        with patch.object(publisher, "_api_call", mock_call):
+            await publisher.publish_weekly_digest(
+                "Digest text", "2026-04-13", "2026-04-18",
+            )
+
+        # _api_call(client, headers, "POST", url, json_body)
+        payload = mock_call.call_args[0][4]
+        assert payload["parent"]["database_id"] == "db-briefings-123"
+        assert "Weekly Digest" in payload["properties"]["Name"]["title"][0]["text"]["content"]
+        assert payload["properties"]["Date"]["date"]["start"] == "2026-04-13"
+        assert payload["properties"]["Date"]["date"]["end"] == "2026-04-18"
+
+
+class TestPublishMeetingPrep:
+    @pytest.mark.asyncio
+    async def test_publishes_to_notion(self) -> None:
+        config = NotionWorkspaceConfig(meeting_prep_db_id="db-prep-456")
+        publisher = NotionPublisher("ntn_test", config)
+
+        mock_page = {"url": "https://notion.so/prep-page"}
+        with patch.object(publisher, "_api_call", new_callable=AsyncMock, return_value=mock_page):
+            url = await publisher.publish_meeting_prep(
+                "Q3 Planning", "Key points here", "2026-04-18",
+            )
+
+        assert url == "https://notion.so/prep-page"
+
+    @pytest.mark.asyncio
+    async def test_sends_correct_payload(self) -> None:
+        config = NotionWorkspaceConfig(meeting_prep_db_id="db-prep-456")
+        publisher = NotionPublisher("ntn_test", config)
+
+        mock_call = AsyncMock(return_value={"url": "https://notion.so/page"})
+        with patch.object(publisher, "_api_call", mock_call):
+            await publisher.publish_meeting_prep(
+                "Sprint Review", "Talking points", "2026-04-18",
+            )
+
+        # _api_call(client, headers, "POST", url, json_body)
+        payload = mock_call.call_args[0][4]
+        assert payload["parent"]["database_id"] == "db-prep-456"
+        assert payload["properties"]["Name"]["title"][0]["text"]["content"] == "Sprint Review"
+        assert payload["properties"]["Date"]["date"]["start"] == "2026-04-18"
+        assert payload["properties"]["Status"]["select"]["name"] == "Prepared"

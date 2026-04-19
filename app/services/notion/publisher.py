@@ -202,6 +202,69 @@ class NotionPublisher:
             )
             logger.info("Updated commitment row: %s", notion_page_id)
 
+    async def publish_weekly_digest(self, digest_text: str, week_start: str, week_end: str) -> str:
+        """Publish a weekly digest as a page in the Briefings database.
+
+        Args:
+            digest_text: The digest content (markdown-ish text).
+            week_start: Start of week in YYYY-MM-DD format.
+            week_end: End of week in YYYY-MM-DD format.
+
+        Returns:
+            The URL of the created Notion page.
+        """
+        if not self._config.briefings_db_id:
+            raise RuntimeError("Briefings database not set up")
+
+        title = "Weekly Digest \u2014 %s to %s" % (week_start, week_end)
+        blocks = text_to_blocks(digest_text)
+
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            headers = self._build_headers()
+            page = await self._api_call(client, headers, "POST", NOTION_API_BASE + "/pages", {
+                "parent": {"database_id": self._config.briefings_db_id},
+                "properties": {
+                    "Name": {"title": [{"text": {"content": title}}]},
+                    "Date": {"date": {"start": week_start, "end": week_end}},
+                    "Status": {"select": {"name": "Published"}},
+                },
+                "children": blocks[:100],
+            })
+            url = page.get("url", "")
+            logger.info("Published weekly digest %s to %s: %s", week_start, week_end, url)
+            return url
+
+    async def publish_meeting_prep(self, title: str, prep_text: str, date_str: str) -> str:
+        """Publish a meeting prep page in the Meeting Prep database.
+
+        Args:
+            title: Meeting name/topic.
+            prep_text: The meeting prep content.
+            date_str: Date string in YYYY-MM-DD format.
+
+        Returns:
+            The URL of the created Notion page.
+        """
+        if not self._config.meeting_prep_db_id:
+            raise RuntimeError("Meeting Prep database not set up")
+
+        blocks = text_to_blocks(prep_text)
+
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            headers = self._build_headers()
+            page = await self._api_call(client, headers, "POST", NOTION_API_BASE + "/pages", {
+                "parent": {"database_id": self._config.meeting_prep_db_id},
+                "properties": {
+                    "Name": {"title": [{"text": {"content": title}}]},
+                    "Date": {"date": {"start": date_str}},
+                    "Status": {"select": {"name": "Prepared"}},
+                },
+                "children": blocks[:100],
+            })
+            url = page.get("url", "")
+            logger.info("Published meeting prep '%s': %s", title, url)
+            return url
+
     async def get_workspace_url(self) -> str:
         """Return the URL of the root workspace page."""
         if not self._config.root_page_id:

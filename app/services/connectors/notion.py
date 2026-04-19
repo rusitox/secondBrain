@@ -173,7 +173,11 @@ class NotionConnector(BaseConnector):
         url: str,
         json_body: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Make a Notion API call with rate limiting and retry on 429."""
+        """Make a Notion API call with rate limiting and retry on 429.
+
+        Non-retryable status codes (401, 403, 404) raise immediately
+        with a descriptive message so callers can handle them.
+        """
         last_error: Optional[Exception] = None
 
         for attempt in range(MAX_RETRIES):
@@ -197,8 +201,27 @@ class NotionConnector(BaseConnector):
                     await asyncio.sleep(retry_after)
                     continue
 
+                # Non-retryable errors — raise immediately
+                if resp.status_code == 401:
+                    raise RuntimeError(
+                        "Notion token is invalid or revoked. "
+                        "Re-connect with /notion connect."
+                    )
+                if resp.status_code == 403:
+                    raise RuntimeError(
+                        "Notion integration lacks permission for this resource. "
+                        "Check your Notion connection sharing settings."
+                    )
+                if resp.status_code == 404:
+                    raise RuntimeError(
+                        "Notion resource not found — it may have been deleted. "
+                        "Run /notion workspace to reconfigure."
+                    )
+
                 resp.raise_for_status()
                 return resp.json()
+            except RuntimeError:
+                raise
             except httpx.HTTPError as e:
                 last_error = e
                 delay = BASE_DELAY * (2 ** attempt)

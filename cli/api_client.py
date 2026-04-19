@@ -282,3 +282,39 @@ class APIClient:
             },
             timeout=_SYNC_TIMEOUT,
         )
+
+    async def publish_digest_to_notion(
+        self,
+        workspace_config: Dict[str, Any],
+        week_start: str = "",
+        week_end: str = "",
+    ) -> Dict[str, Any]:
+        """Generate and publish a weekly digest to Notion."""
+        return await self._request(
+            "POST", "/ingest/notion/publish-digest",
+            json={
+                "workspace_config": workspace_config,
+                "week_start": week_start,
+                "week_end": week_end,
+            },
+            timeout=_SYNC_TIMEOUT,
+        )
+
+    async def publish_meeting_prep_to_notion(
+        self,
+        workspace_config: Dict[str, Any],
+        title: str,
+        prep_text: str,
+        date: str = "",
+    ) -> Dict[str, Any]:
+        """Publish meeting prep to Notion."""
+        return await self._request(
+            "POST", "/ingest/notion/publish-meeting-prep",
+            json={
+                "workspace_config": workspace_config,
+                "title": title,
+                "prep_text": prep_text,
+                "date": date,
+            },
+            timeout=_SYNC_TIMEOUT,
+        )

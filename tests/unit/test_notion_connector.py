@@ -98,3 +98,49 @@ class TestNotionConnectorPlatform:
     def test_platform_name(self) -> None:
         connector = NotionConnector()
         assert connector.platform == "notion"
+
+
+class TestNotionConnectorErrorHandling:
+    """Test that 401, 403, 404 raise immediately without retries."""
+
+    @pytest.mark.asyncio
+    async def test_401_raises_token_revoked(self) -> None:
+        connector = NotionConnector()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        with pytest.raises(RuntimeError, match="token is invalid or revoked"):
+            await connector._api_call(
+                mock_client, {"Authorization": "Bearer bad"}, "GET",
+                "https://api.notion.com/v1/users/me",
+            )
+
+    @pytest.mark.asyncio
+    async def test_403_raises_permission_error(self) -> None:
+        connector = NotionConnector()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        with pytest.raises(RuntimeError, match="lacks permission"):
+            await connector._api_call(
+                mock_client, {"Authorization": "Bearer x"}, "GET",
+                "https://api.notion.com/v1/pages/abc",
+            )
+
+    @pytest.mark.asyncio
+    async def test_404_raises_not_found(self) -> None:
+        connector = NotionConnector()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with pytest.raises(RuntimeError, match="not found"):
+            await connector._api_call(
+                mock_client, {"Authorization": "Bearer x"}, "POST",
+                "https://api.notion.com/v1/databases/abc/query",
+            )

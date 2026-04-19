@@ -28,3 +28,29 @@ class SyncStatusResponse(BaseModel):
     platform: str
     is_active: bool
     last_sync_at: Optional[str]
+
+
+# --- Notion request schemas ---
+
+
+class NotionSyncCommitmentsRequest(BaseModel):
+    workspace_config: Dict[str, Any]
+
+
+class NotionPublishBriefingRequest(BaseModel):
+    workspace_config: Dict[str, Any]
+    briefing_text: str
+    date: str = ""
+
+
+class NotionPublishDigestRequest(BaseModel):
+    workspace_config: Dict[str, Any]
+    week_start: str = ""
+    week_end: str = ""
+
+
+class NotionPublishMeetingPrepRequest(BaseModel):
+    workspace_config: Dict[str, Any]
+    title: str
+    prep_text: str
+    date: str = ""

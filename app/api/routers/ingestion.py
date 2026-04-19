@@ -15,7 +15,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_id, get_db
-from app.api.schemas.ingestion import IngestRawRequest, IngestResult, SyncStatusResponse
+from app.models.integration import Integration
+from app.api.schemas.ingestion import (
+    IngestRawRequest,
+    IngestResult,
+    NotionPublishBriefingRequest,
+    NotionPublishDigestRequest,
+    NotionPublishMeetingPrepRequest,
+    NotionSyncCommitmentsRequest,
+    SyncStatusResponse,
+)
 from app.core.config import get_settings
 from app.services import integration_service
 from app.services.connectors.msgraph import MSGraphConnector
@@ -175,7 +184,7 @@ async def get_sync_status(
 
 
 def _get_notion_token_and_config(
-    notion_integ: "Integration",
+    notion_integ: Integration,
     workspace_config: dict,
 ) -> tuple:
     """Extract decrypted token and workspace config.
@@ -190,7 +199,7 @@ def _get_notion_token_and_config(
 
 async def _find_notion_integration(
     db: AsyncSession, user_id: uuid.UUID,
-) -> "Integration":
+) -> Integration:
     """Find the active Notion integration or raise 404."""
     integrations = await integration_service.list_integrations(
         db, user_id, platform=None,
@@ -206,7 +215,7 @@ async def _find_notion_integration(
 
 @router.post("/notion/sync-commitments")
 async def sync_notion_commitments(
-    workspace_config: dict,
+    body: NotionSyncCommitmentsRequest,
     current_user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -216,7 +225,7 @@ async def sync_notion_commitments(
     the Notion workspace IDs (root page, database IDs) locally.
     """
     notion_integ = await _find_notion_integration(db, current_user_id)
-    token, ws_config = _get_notion_token_and_config(notion_integ, workspace_config)
+    token, ws_config = _get_notion_token_and_config(notion_integ, body.workspace_config)
 
     if not ws_config.commitments_db_id:
         raise HTTPException(
@@ -246,9 +255,7 @@ async def sync_notion_commitments(
 
 @router.post("/notion/publish-briefing")
 async def publish_briefing_to_notion(
-    workspace_config: dict,
-    briefing_text: str = "",
-    date: str = "",
+    body: NotionPublishBriefingRequest,
     current_user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -258,7 +265,7 @@ async def publish_briefing_to_notion(
     The workspace_config is sent from the CLI.
     """
     notion_integ = await _find_notion_integration(db, current_user_id)
-    token, ws_config = _get_notion_token_and_config(notion_integ, workspace_config)
+    token, ws_config = _get_notion_token_and_config(notion_integ, body.workspace_config)
 
     if not ws_config.briefings_db_id:
         raise HTTPException(
@@ -266,17 +273,17 @@ async def publish_briefing_to_notion(
             detail="Notion workspace not set up — no briefings database",
         )
 
-    if not briefing_text:
+    if not body.briefing_text:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No briefing text provided",
         )
 
-    date_str = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_str = body.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     publisher = NotionPublisher(token, ws_config)
     try:
-        url = await publisher.publish_briefing(briefing_text, date_str)
+        url = await publisher.publish_briefing(body.briefing_text, date_str)
     except (httpx.HTTPError, RuntimeError) as e:
         logger.error("Failed to publish briefing to Notion: %s", e)
         raise HTTPException(
@@ -285,3 +292,102 @@ async def publish_briefing_to_notion(
         )
 
     return {"url": url, "date": date_str}
+
+
+@router.post("/notion/publish-digest")
+async def publish_digest_to_notion(
+    body: NotionPublishDigestRequest,
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Generate and publish a weekly digest to Notion."""
+    notion_integ = await _find_notion_integration(db, current_user_id)
+    token, ws_config = _get_notion_token_and_config(notion_integ, body.workspace_config)
+
+    if not ws_config.briefings_db_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Notion workspace not set up — no briefings database",
+        )
+
+    # Generate digest
+    from app.services.notion.digest import WeeklyDigestGenerator
+
+    settings = get_settings()
+    if not settings.claude_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Claude API key not configured",
+        )
+
+    claude_client = ClaudeClient(api_key=settings.claude_api_key)
+    generator = WeeklyDigestGenerator(claude_client)
+
+    ws = None
+    we = None
+    if body.week_start:
+        ws = datetime.fromisoformat(body.week_start).replace(tzinfo=timezone.utc)
+    if body.week_end:
+        we = datetime.fromisoformat(body.week_end).replace(tzinfo=timezone.utc)
+
+    try:
+        digest = await generator.generate(
+            db=db, user_id=current_user_id, week_start=ws, week_end=we,
+        )
+    except Exception as e:
+        logger.error("Failed to generate digest: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to generate weekly digest",
+        )
+
+    # Publish to Notion
+    publisher = NotionPublisher(token, ws_config)
+    try:
+        url = await publisher.publish_weekly_digest(
+            digest.digest_text, digest.week_start, digest.week_end,
+        )
+    except (httpx.HTTPError, RuntimeError) as e:
+        logger.error("Failed to publish digest to Notion: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to publish digest to Notion",
+        )
+
+    return {
+        "url": url,
+        "week_start": digest.week_start,
+        "week_end": digest.week_end,
+        "stats": digest.to_dict(),
+    }
+
+
+@router.post("/notion/publish-meeting-prep")
+async def publish_meeting_prep_to_notion(
+    body: NotionPublishMeetingPrepRequest,
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Publish meeting prep to Notion."""
+    notion_integ = await _find_notion_integration(db, current_user_id)
+    token, ws_config = _get_notion_token_and_config(notion_integ, body.workspace_config)
+
+    if not ws_config.meeting_prep_db_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Notion workspace not set up — no meeting prep database",
+        )
+
+    date_str = body.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    publisher = NotionPublisher(token, ws_config)
+    try:
+        url = await publisher.publish_meeting_prep(body.title, body.prep_text, date_str)
+    except (httpx.HTTPError, RuntimeError) as e:
+        logger.error("Failed to publish meeting prep to Notion: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to publish meeting prep to Notion",
+        )
+
+    return {"url": url, "title": body.title, "date": date_str}

@@ -341,6 +341,82 @@ class TestPrepCommand:
         await router.dispatch("/prep Test Meeting")
         api.agent_query.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_prep_publishes_to_notion(self) -> None:
+        api = _make_api()
+        api.agent_query = AsyncMock(return_value={
+            "answer": "## Meeting Prep\nKey points here",
+        })
+        api.publish_meeting_prep_to_notion = AsyncMock(return_value={
+            "url": "https://notion.so/prep-123",
+        })
+        router = CommandRouter(api=api, config=_make_config(
+            notion={"enabled": True, "meeting_prep_db_id": "db-123"},
+        ))
+        await router.dispatch("/prep Sprint Review")
+        api.publish_meeting_prep_to_notion.assert_awaited_once()
+        call_kwargs = api.publish_meeting_prep_to_notion.call_args[1]
+        assert call_kwargs["title"] == "Sprint Review"
+
+    @pytest.mark.asyncio
+    async def test_prep_skips_notion_when_disabled(self) -> None:
+        api = _make_api()
+        api.agent_query = AsyncMock(return_value={
+            "answer": "## Meeting Prep\nContent",
+        })
+        api.publish_meeting_prep_to_notion = AsyncMock()
+        router = CommandRouter(api=api, config=_make_config(notion=None))
+        await router.dispatch("/prep Test Meeting")
+        api.publish_meeting_prep_to_notion.assert_not_awaited()
+
+
+class TestDigestCommand:
+    @pytest.mark.asyncio
+    async def test_digest_not_connected(self) -> None:
+        api = _make_api()
+        router = CommandRouter(api=api, config=_make_config(notion=None))
+        await router.dispatch("/digest")
+        api.publish_digest_to_notion.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_digest_not_enabled(self) -> None:
+        api = _make_api()
+        router = CommandRouter(api=api, config=_make_config(
+            notion={"enabled": False},
+        ))
+        await router.dispatch("/digest")
+        api.publish_digest_to_notion.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_digest_publishes(self) -> None:
+        api = _make_api()
+        api.publish_digest_to_notion = AsyncMock(return_value={
+            "url": "https://notion.so/digest-123",
+            "stats": {
+                "commitments_completed": 2,
+                "commitments_new": 1,
+                "commitments_pending": 3,
+                "commitments_overdue": 0,
+            },
+        })
+        router = CommandRouter(api=api, config=_make_config(
+            notion={"enabled": True, "briefings_db_id": "db-123"},
+        ))
+        await router.dispatch("/digest")
+        api.publish_digest_to_notion.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_digest_api_error(self) -> None:
+        api = _make_api()
+        api.publish_digest_to_notion = AsyncMock(
+            side_effect=APIError(502, "Notion down"),
+        )
+        router = CommandRouter(api=api, config=_make_config(
+            notion={"enabled": True, "briefings_db_id": "db-123"},
+        ))
+        # Should not raise
+        await router.dispatch("/digest")
+
 
 class TestApiErrorHandling:
     @pytest.mark.asyncio

@@ -43,6 +43,7 @@ class CommandRouter:
         "/settings": "View or edit preferences",
         "/setup": "Re-run onboarding wizard",
         "/notion": "Notion integration (connect|disconnect|status|sync|workspace)",
+        "/digest": "Generate and publish weekly digest",
         "/prep": "Generate meeting prep (/prep Meeting Name)",
         "/server": "Server management (start|stop|restart|status|logs)",
         "/help": "Show available commands",
@@ -97,6 +98,7 @@ class CommandRouter:
             "/settings": self._cmd_settings,
             "/setup": self._cmd_setup,
             "/notion": self._cmd_notion,
+            "/digest": self._cmd_digest,
             "/prep": self._cmd_prep,
             "/server": self._cmd_server,
             "/help": self._cmd_help,
@@ -440,6 +442,36 @@ class CommandRouter:
             except APIError as e:
                 print_error("Commitment sync failed: %s" % e.detail)
 
+    async def _cmd_digest(self, args: List[str]) -> None:
+        """Generate and publish weekly digest."""
+        notion_cfg = self._config.notion
+        if not notion_cfg or not notion_cfg.get("enabled"):
+            print_warning("Notion is not connected. Use /notion connect first.")
+            return
+
+        with spinner("Generating weekly digest..."):
+            try:
+                result = await self._api.publish_digest_to_notion(
+                    workspace_config=notion_cfg,
+                )
+                url = result.get("url", "")
+                stats = result.get("stats", {})
+                print_success("Weekly digest published!")
+                if url:
+                    print_info("View in Notion: %s" % url)
+                if stats:
+                    print_muted(
+                        "Completed: %d | New: %d | Pending: %d | Overdue: %d"
+                        % (
+                            stats.get("commitments_completed", 0),
+                            stats.get("commitments_new", 0),
+                            stats.get("commitments_pending", 0),
+                            stats.get("commitments_overdue", 0),
+                        )
+                    )
+            except APIError as e:
+                print_error("Digest failed: %s" % e.detail)
+
     async def _cmd_prep(self, args: List[str]) -> None:
         """Generate meeting prep."""
         if not args:
@@ -463,10 +495,34 @@ class CommandRouter:
                 answer = result.get("answer", result.get("response", ""))
                 if answer:
                     print_markdown(answer)
+                    # Publish to Notion if enabled
+                    await self._publish_prep_to_notion(meeting_topic, answer)
                 else:
                     print_info("No prep content generated.")
             except APIError as e:
                 print_error("Meeting prep failed: %s" % e.detail)
+
+    async def _publish_prep_to_notion(self, topic: str, prep_text: str) -> None:
+        """Publish meeting prep to Notion if enabled. Non-blocking on failure."""
+        notion_cfg = self._config.notion
+        if not notion_cfg or not notion_cfg.get("enabled"):
+            return
+        if not notion_cfg.get("meeting_prep_db_id"):
+            return
+        try:
+            from datetime import datetime, timezone
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            result = await self._api.publish_meeting_prep_to_notion(
+                workspace_config=notion_cfg,
+                title=topic,
+                prep_text=prep_text,
+                date=date_str,
+            )
+            url = result.get("url", "")
+            if url:
+                print_muted("Published to Notion: %s" % url)
+        except APIError as e:
+            logger.warning("Failed to publish meeting prep to Notion: %s", e.detail)
 
     async def _cmd_server(self, args: List[str]) -> None:
         """Server management: start, stop, restart, status, logs."""
