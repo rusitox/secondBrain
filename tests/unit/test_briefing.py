@@ -154,7 +154,8 @@ class TestBriefingScheduler:
         # Should be True or False depending on APScheduler install
         assert isinstance(scheduler.is_available, bool)
 
-    def test_start_shutdown(self) -> None:
+    @pytest.mark.asyncio
+    async def test_start_shutdown(self) -> None:
         scheduler = BriefingScheduler()
         # Should not raise even without APScheduler
         if scheduler.is_available:

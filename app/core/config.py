@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = ""  # comma-separated list of allowed origins
 
+    # Sync scheduler (only enable in production or explicitly)
+    enable_sync_scheduler: bool = False
+
     # Security — required for token encryption
     fernet_key: str
 

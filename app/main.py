@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging
-from app.api.routers import health, users, commitments, integrations, ingestion, query, agent, briefing, identity, auth
+from app.api.routers import health, users, commitments, integrations, ingestion, query, agent, briefing, identity, auth, sync
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Running in production mode. "
             "API key auth not yet configured — all endpoints use X-User-Id header."
         )
+
+    # Start sync scheduler if enabled
+    sync_scheduler = None
+    if settings.is_production or settings.enable_sync_scheduler:
+        from app.services.sync.scheduler import SyncScheduler
+        sync_scheduler = SyncScheduler()
+        if sync_scheduler.is_available:
+            await sync_scheduler.start()
+            app.state.sync_scheduler = sync_scheduler  # type: ignore[arg-type]
+            logger.info("Server-side sync scheduler started")
+        else:
+            logger.warning("Sync scheduler requested but APScheduler not installed")
+
     yield
+
+    # Shutdown sync scheduler
+    if sync_scheduler and sync_scheduler.is_running:
+        await sync_scheduler.shutdown()
+
     logger.info("Shutting down %s", settings.app_name)
 
 
@@ -86,6 +104,7 @@ app.include_router(query.router)
 app.include_router(agent.router)
 app.include_router(briefing.router)
 app.include_router(identity.router)
+app.include_router(sync.router)
 
 
 if __name__ == "__main__":

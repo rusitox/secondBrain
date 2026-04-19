@@ -39,9 +39,29 @@ class BackgroundSync:
         return self._running
 
     async def start(self) -> None:
-        """Start the background sync loop."""
+        """Start the background sync loop.
+
+        If the server has server-side sync active, skip client-side sync
+        and let the server handle it.
+        """
         if self._running:
             return
+
+        # Check if server-side sync is active
+        try:
+            client = self._api._get_client()
+            resp = await client.get(
+                self._api._base_url + "/sync/status",
+                headers=self._api._headers(),
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("scheduler_active", False):
+                    logger.info("Server-side sync active, skipping client-side sync")
+                    return
+        except Exception:
+            pass  # Server may not support /sync/status yet — fall through to client sync
+
         self._running = True
         self._task = asyncio.ensure_future(self._loop())
 

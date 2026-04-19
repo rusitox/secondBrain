@@ -37,5 +37,13 @@ class Integration(UUIDMixin, TimestampMixin, Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Sync scheduling columns
+    sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sync_interval_minutes: Mapped[int] = mapped_column(default=30)
+    last_sync_status: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True
+    )
+    last_sync_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Relationships
     user: Mapped["User"] = relationship(back_populates="integrations")

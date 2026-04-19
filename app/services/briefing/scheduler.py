@@ -31,13 +31,13 @@ class BriefingScheduler:
     def start(self) -> None:
         """Start the scheduler."""
         if self._scheduler and HAS_APSCHEDULER:
-            self._scheduler.start()  # type: ignore[union-attr]
+            self._scheduler.start()  # type: ignore[attr-defined]
             logger.info("Briefing scheduler started")
 
     def shutdown(self) -> None:
         """Shutdown the scheduler."""
         if self._scheduler and HAS_APSCHEDULER:
-            self._scheduler.shutdown(wait=False)  # type: ignore[union-attr]
+            self._scheduler.shutdown(wait=False)  # type: ignore[attr-defined]
             logger.info("Briefing scheduler stopped")
 
     def schedule_briefing(
@@ -65,7 +65,7 @@ class BriefingScheduler:
             return False
 
         trigger = CronTrigger(hour=hour, minute=minute, timezone=timezone_str)  # type: ignore[possibly-undefined]
-        self._scheduler.add_job(  # type: ignore[union-attr]
+        self._scheduler.add_job(  # type: ignore[attr-defined]
             func, trigger=trigger, id=job_id, replace_existing=True,
         )
         logger.info(
@@ -79,7 +79,7 @@ class BriefingScheduler:
         if not self._scheduler or not HAS_APSCHEDULER:
             return False
         try:
-            self._scheduler.remove_job(job_id)  # type: ignore[union-attr]
+            self._scheduler.remove_job(job_id)  # type: ignore[attr-defined]
             logger.info("Removed briefing job %s", job_id)
             return True
         except (JobLookupError, KeyError):
