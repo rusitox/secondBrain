@@ -1,3 +1,10 @@
+# Production compose — run with an env file:
+#   docker compose -f docker-compose.prod.yml --env-file /opt/secondbrain/.env.prod up -d
+#
+# Required vars: see .env.prod.example
+# IMAGE_TAG defaults to "latest", override with:
+#   IMAGE_TAG=sha-abc1234 docker compose -f docker-compose.prod.yml ...
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -11,23 +18,31 @@ services:
       - secondbrain-pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U secondbrain"]
-      interval: 5s
-      timeout: 3s
+      interval: 10s
+      timeout: 5s
       retries: 5
+    networks:
+      - internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   api:
-    image: ghcr.io/rusitox/secondbrain:latest
+    image: ghcr.io/rusitox/secondbrain:${IMAGE_TAG:-latest}
     container_name: secondbrain-api
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    env_file:
-      - .env.prod
     environment:
+      APP_ENV: production
       DATABASE_URL: postgresql+asyncpg://secondbrain:${DB_PASSWORD}@db:5432/secondbrain
       DATABASE_URL_SYNC: postgresql+psycopg2://secondbrain:${DB_PASSWORD}@db:5432/secondbrain
-      APP_ENV: production
+      FERNET_KEY: ${FERNET_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
@@ -36,6 +51,17 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+    networks:
+      - internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   secondbrain-pgdata:
+
+networks:
+  internal:
+    driver: bridge

@@ -118,7 +118,11 @@ Terminal-based chat interface consuming the REST API:
 - `cli/` — CLI chat interface (16 slash commands, login/logout, installer)
 - `pyproject.toml` — CLI package config (`pip install .` for remote-only installs)
 - `Dockerfile` — Multi-stage build for deployment
-- `.github/workflows/build-and-push.yml` — CI/CD pipeline to GHCR
+- `.github/workflows/ci.yml` — CI pipeline (mypy + pytest)
+- `.github/workflows/deploy.yml` — Build Docker image → GHCR → deploy via self-hosted runner
+- `docker-compose.prod.yml` — Production stack (parameterized with --env-file)
+- `infra/` — Deploy script, backup script, nginx config, systemd service, entrypoint
+- `app/cli/create_api_key.py` — Bootstrap script for first API key
 - `requirements.txt` — Dependencies
 - `specs/` — Product specs, implementation plans, QA plan
 - `tests/` — Unit, integration, and E2E tests

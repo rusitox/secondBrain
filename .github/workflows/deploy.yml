@@ -1,0 +1,85 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ─── Build & push Docker image to GHCR ──────────────────────────────────────
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/rusitox/secondbrain
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── Deploy to VPS (push to main) ───────────────────────────────────────────
+  deploy:
+    name: Deploy → VPS
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Pull latest image
+        run: docker pull ghcr.io/rusitox/secondbrain:latest
+
+      - name: Run migrations
+        run: |
+          docker compose -f docker-compose.prod.yml \
+            --env-file /opt/secondbrain/.env.prod \
+            run --rm api alembic upgrade head
+
+      - name: Deploy
+        run: |
+          IMAGE_TAG=latest docker compose -f docker-compose.prod.yml \
+            --env-file /opt/secondbrain/.env.prod \
+            up -d --pull always api db
+
+      - name: Prune old images
+        run: docker image prune -f
+
+      - name: Health check
+        run: |
+          sleep 10
+          curl -sf http://localhost:8000/health/detailed | grep -q '"status":"healthy"' \
+            && echo "Deploy successful" \
+            || (echo "Health check failed"; docker compose -f docker-compose.prod.yml logs api --tail 50; exit 1)

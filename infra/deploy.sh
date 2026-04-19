@@ -29,14 +29,16 @@ echo "Deploying to $HOST..."
 ssh "$HOST" bash -s <<EOF
 cd $REMOTE_DIR
 echo "Pulling latest image..."
-docker compose -f docker-compose.prod.yml pull
+docker pull ghcr.io/rusitox/secondbrain:latest
+echo "Running migrations..."
+docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm api alembic upgrade head
 echo "Restarting services..."
-docker compose -f docker-compose.prod.yml up -d
+IMAGE_TAG=latest docker compose -f docker-compose.prod.yml --env-file .env.prod up -d api db
 echo "Pruning old images..."
 docker image prune -f
 echo "Waiting for health check..."
-sleep 5
-if curl -sf http://localhost:8000/ > /dev/null; then
+sleep 10
+if curl -sf http://localhost:8000/health/detailed | grep -q '"status":"healthy"'; then
     echo "Deployment successful!"
 else
     echo "WARNING: Health check failed. Check logs with:"
