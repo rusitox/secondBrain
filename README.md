@@ -13,17 +13,40 @@ A personal AI Chief of Staff that ingests your communications (email, chat, meet
 
 ## Quick Start
 
-### Option 1: Automated installer
+### Option 1: Connect to a remote server (fastest)
+
+If you have a secondBrain server already deployed (e.g., Oracle Cloud VM):
 
 ```bash
-# macOS / Linux
+# Install CLI only (no Docker/DB needed)
+git clone https://github.com/rusitox/secondBrain.git
+cd secondBrain
+pip install .
+
+# Login with your API key
+secondbrain login
+
+# Start chatting
+secondbrain
+```
+
+Or use the installer with `--remote`:
+
+```bash
+./install.sh --remote
+```
+
+### Option 2: Automated local installer
+
+```bash
+# macOS / Linux — installs Docker, DB, and backend
 curl -sSL https://raw.githubusercontent.com/rusitox/secondBrain/main/install.sh | bash
 
 # Then start the CLI
 python -m cli
 ```
 
-### Option 2: Manual setup
+### Option 3: Manual setup
 
 #### Prerequisites
 
@@ -126,6 +149,14 @@ The CLI will walk you through onboarding: creating your account, connecting plat
 | `/help` | Show available commands |
 | `/quit` | Exit secondBrain |
 
+**Subcommands:**
+
+| Command | Description |
+|---------|-------------|
+| `secondbrain login` | Authenticate against a remote server |
+| `secondbrain logout` | Clear stored credentials |
+| `secondbrain install` | Run the local installer |
+
 Any other input is treated as a natural language question and routed to the AI agent for RAG-powered answers.
 
 ## Notion Integration
@@ -165,8 +196,9 @@ Daily Briefing / Weekly Digest / Meeting Prep → Notion
 | Layer | Path | Description |
 |-------|------|-------------|
 | Core | `app/core/` | Config, database, security, logging |
-| Models | `app/models/` | User, Identity, Integration, Document, Commitment |
-| API | `app/api/routers/` | 9 REST routers (health, users, commitments, integrations, ingestion, query, agent, briefing, identity) |
+| Models | `app/models/` | User, Identity, Integration, Document, Commitment, APIKey |
+| API | `app/api/routers/` | 11 REST routers (health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth) |
+| Auth | `app/core/security.py` | API key authentication (Bearer token, bcrypt) |
 | Connectors | `app/services/connectors/` | Outlook, Teams, Slack, Fathom, Notion |
 | Ingestion | `app/services/ingestion/` | Cleaner, chunker, embedder, pipeline |
 | Retrieval | `app/services/retrieval/` | Semantic search with metadata filters |
@@ -174,23 +206,27 @@ Daily Briefing / Weekly Digest / Meeting Prep → Notion
 | Commitments | `app/services/commitments/` | AI-powered commitment detection |
 | Agent | `app/services/agent/` | LangChain agent with tools |
 | Briefing | `app/services/briefing/` | Daily briefing generator + scheduler |
+| Sync | `app/services/sync/` | Server-side periodic sync (APScheduler) |
 | Notion | `app/services/notion/` | Publisher, sync, digest, blocks, config |
 
 ### CLI (`cli/`)
 
 | Module | Description |
 |--------|-------------|
-| `main.py` | Entry point, event loop |
+| `main.py` | Entry point, subcommands (login/logout/install) |
+| `auth.py` | Login/logout flows for remote server auth |
 | `chat.py` | Main chat loop with agent queries |
 | `commands.py` | Slash command router (16 commands) |
 | `onboarding.py` | 5-step resumable onboarding wizard |
 | `background.py` | Periodic background sync + digest scheduler |
 | `alerts.py` | Proactive commitment alerts |
-| `notion_setup.py` | Notion OAuth and workspace setup |
-| `api_client.py` | Async httpx wrapper for all API calls |
+| `notion_setup.py` | Notion integration setup |
+| `api_client.py` | Async httpx wrapper (Bearer auth + X-User-Id) |
 | `config.py` | Local config persistence (`~/.secondbrain/config.json`) |
 | `display.py` | Rich console formatting |
-| `server.py` | Server lifecycle management |
+| `server.py` | Server lifecycle management (local mode only) |
+| `installer.py` | Local installation wizard |
+| `validators.py` | Input validation helpers |
 
 ## Development
 
@@ -216,10 +252,10 @@ mypy app/ cli/ --ignore-missing-imports
 ```
 secondBrain/
 ├── app/                    # FastAPI backend
-│   ├── core/               # Config, database, security
-│   ├── models/             # SQLAlchemy models
+│   ├── core/               # Config, database, security (API key auth)
+│   ├── models/             # SQLAlchemy models (User, APIKey, etc.)
 │   ├── api/
-│   │   ├── routers/        # REST endpoints
+│   │   ├── routers/        # REST endpoints (11 routers)
 │   │   └── schemas/        # Pydantic models
 │   └── services/
 │       ├── connectors/     # Platform connectors (5)
@@ -229,15 +265,45 @@ secondBrain/
 │       ├── commitments/    # Commitment detection
 │       ├── agent/          # LangChain agent
 │       ├── briefing/       # Daily briefings
+│       ├── sync/           # Server-side periodic sync
 │       └── notion/         # Notion publisher, sync, digest
-├── cli/                    # Terminal chat interface
-├── alembic/                # Database migrations
+├── cli/                    # Terminal chat interface + auth + installer
+├── alembic/                # Database migrations (6 revisions)
 ├── specs/                  # Product specs and plans
 ├── tests/                  # Unit and integration tests
+├── Dockerfile              # Multi-stage build for deployment
 ├── docker-compose.yml      # PostgreSQL + pgvector
+├── pyproject.toml          # CLI package config (pip install .)
+├── .github/workflows/      # CI/CD (build + push to GHCR)
 ├── requirements.txt        # Python dependencies
 └── .env.example            # Environment template
 ```
+
+## Deployment
+
+### Cloud deployment (Oracle Cloud / any VPS)
+
+The server runs as a Docker container with PostgreSQL + pgvector:
+
+```bash
+# On the server
+docker compose up -d                  # Start DB + backend
+alembic upgrade head                  # Run migrations
+```
+
+CI/CD via GitHub Actions automatically builds and pushes to GHCR on every push to `main`.
+
+### Remote CLI access
+
+From any machine, install just the CLI and connect to your server:
+
+```bash
+pip install .              # Install CLI package (lightweight: httpx, rich, prompt-toolkit)
+secondbrain login          # Authenticate with API key
+secondbrain                # Start chatting
+```
+
+API keys are created server-side and use the format `sb_live_<hex>`. Keys are bcrypt-hashed in the database; only the key prefix (12 chars) is stored in plaintext for lookup.
 
 ## License
 
