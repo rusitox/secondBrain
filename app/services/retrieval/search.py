@@ -101,7 +101,7 @@ async def semantic_search(
     )
 
     result = await db.execute(stmt)
-    rows: List[Tuple[Document, float]] = result.all()
+    rows = result.all()  # type: ignore[assignment]
 
     # Step 4: Filter by threshold and build results
     search_results: List[SearchResult] = []

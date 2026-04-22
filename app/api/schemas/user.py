@@ -20,7 +20,7 @@ _COMMON_TIMEZONES = {
 def _is_valid_timezone(tz: str) -> bool:
     """Check timezone validity using pytz if available, else fallback to common list."""
     try:
-        import pytz
+        import pytz  # type: ignore[import-untyped]
         return tz in pytz.all_timezones
     except ImportError:
         return tz in _COMMON_TIMEZONES

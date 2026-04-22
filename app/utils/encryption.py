@@ -12,9 +12,11 @@ def init_fernet(key: str) -> None:
 
 
 def _get_fernet() -> Fernet:
+    global _fernet_instance
     if _fernet_instance is None:
         from app.core.config import get_settings
         init_fernet(get_settings().fernet_key)
+    assert _fernet_instance is not None
     return _fernet_instance
 
 

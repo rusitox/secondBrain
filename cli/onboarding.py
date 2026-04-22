@@ -108,6 +108,14 @@ class OnboardingFlow:
         self._api = api
         self._config = config
 
+    @property
+    def _user_id(self) -> str:
+        """Return user_id, raising if not set (step 1 must complete first)."""
+        uid = self._config.user_id
+        if uid is None:
+            raise RuntimeError("user_id not set — step 1 (account creation) must complete first")
+        return uid
+
     async def run(self) -> bool:
         """Run the onboarding wizard. Returns True if completed."""
         # Handle resume
@@ -297,7 +305,7 @@ class OnboardingFlow:
             with spinner("Validating token..."):
                 try:
                     await self._api.create_integration(
-                        user_id=self._config.user_id,
+                        user_id=self._user_id,
                         platform=platform,
                         access_token=token,
                     )
@@ -373,17 +381,17 @@ class OnboardingFlow:
         # Save via API
         with spinner("Saving your profile..."):
             try:
-                existing = await self._api.get_identity(self._config.user_id)
+                existing = await self._api.get_identity(self._user_id)
                 if existing:
                     await self._api.update_identity(
-                        self._config.user_id,
+                        self._user_id,
                         persona_description=persona,
                         tone_guidelines=tone,
                         heuristics=heuristics,
                     )
                 else:
                     await self._api.create_identity(
-                        self._config.user_id,
+                        self._user_id,
                         persona_description=persona,
                         tone_guidelines=tone,
                         heuristics=heuristics,
@@ -549,10 +557,9 @@ class OnboardingFlow:
         # Schedule briefing
         with spinner("Configuring your preferences..."):
             try:
-                user_id = self._config.user_id
                 # Determine timezone from user record or config
                 tz = self._config.preferences.get("timezone", "UTC")
-                await self._api.schedule_briefing(user_id, hour, minute, tz)
+                await self._api.schedule_briefing(self._user_id, hour, minute, tz)
             except APIError as e:
                 print_warning("Could not schedule briefing: " + e.detail)
 
@@ -584,7 +591,7 @@ class OnboardingFlow:
         docs = 0
         commits = 0
         try:
-            stats = await self._api.get_user_stats(self._config.user_id)
+            stats = await self._api.get_user_stats(self._user_id)
             docs = stats.get("documents_total", 0)
             commits = stats.get("commitments_pending", 0)
         except APIError:

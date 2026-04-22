@@ -23,7 +23,7 @@ from cli.display import (
     print_welcome,
     spinner,
 )
-from cli.server import ServerManager
+from cli.server import LOG_FILE, ServerManager
 
 logger = logging.getLogger(__name__)
 
@@ -435,7 +435,7 @@ class Installer:
             f"  Database:  PostgreSQL 16 + pgvector (Docker, port {self._config.db_port})\n"
             f"  Backend:   http://localhost:{self._config.server_port} (PID {pid})\n"
             f"  Config:    {self._config._config_path}\n"
-            f"  Logs:      {self._server.LOG_FILE}\n\n"
+            f"  Logs:      {LOG_FILE}\n\n"
             "  Now let's set up your account and connect your platforms.",
             title="Installation Complete!",
             style="green",

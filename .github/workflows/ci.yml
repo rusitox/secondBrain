@@ -22,7 +22,6 @@ jobs:
 
       - name: Run mypy
         run: mypy app/ cli/ --ignore-missing-imports
-        continue-on-error: true
 
   tests:
     name: Tests

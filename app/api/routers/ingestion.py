@@ -8,7 +8,7 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Optional
+from typing import Any, Dict, Optional, Type
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ingest", tags=["ingestion"])
 
-# Connector registry
-_CONNECTORS = {
+# Connector registry — values are concrete subclasses, not BaseConnector itself
+_CONNECTORS: Dict[str, Type[Any]] = {
     "outlook": MSGraphConnector,
     "slack": SlackConnector,
     "fathom": FathomConnector,

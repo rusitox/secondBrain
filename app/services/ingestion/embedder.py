@@ -7,7 +7,7 @@ import logging
 import asyncio
 from typing import List, Optional
 
-from openai import AsyncOpenAI, RateLimitError, APIError
+from openai import AsyncOpenAI, RateLimitError, APIStatusError
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +74,9 @@ class Embedder:
                     attempt + 1, MAX_RETRIES, delay,
                 )
                 await asyncio.sleep(delay)
-            except APIError as e:
+            except APIStatusError as e:
                 last_error = e
-                if e.status_code and e.status_code >= 500:
+                if e.status_code >= 500:
                     delay = BASE_DELAY * (2 ** attempt)
                     logger.warning(
                         "OpenAI server error %s (attempt %d/%d), retrying in %.1fs",

@@ -4,7 +4,7 @@ Uses RecursiveCharacterTextSplitter from LangChain to split
 cleaned text into overlapping chunks suitable for embedding.
 """
 import logging
-from typing import List
+from typing import List, Optional
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
@@ -22,7 +22,7 @@ def chunk_text(
     text: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
-    separators: List[str] = None,
+    separators: Optional[List[str]] = None,
 ) -> List[str]:
     """Split text into overlapping chunks for embedding.
 
