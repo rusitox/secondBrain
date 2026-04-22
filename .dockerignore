@@ -13,6 +13,7 @@ backups/
 htmlcov/
 cli/
 infra/
+!infra/docker-entrypoint.sh
 *.md
 *.log
 .DS_Store
