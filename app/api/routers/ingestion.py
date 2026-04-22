@@ -57,10 +57,10 @@ _CONNECTORS = {
 def _get_pipeline() -> IngestionPipeline:
     settings = get_settings()
     embedder = Embedder(api_key=settings.openai_api_key)
-    # Wire in commitment detection if Claude API key is available
+    # Wire in commitment detection if LLM API key is available
     commitment_detector: Optional[CommitmentDetector] = None
-    if settings.claude_api_key:
-        claude_client = ClaudeClient(api_key=settings.claude_api_key)
+    if settings.llm_api_key:
+        claude_client = ClaudeClient(api_key=settings.llm_api_key, model=settings.llm_model)
         commitment_detector = CommitmentDetector(claude_client)
     return IngestionPipeline(
         embedder=embedder,
@@ -314,13 +314,13 @@ async def publish_digest_to_notion(
     from app.services.notion.digest import WeeklyDigestGenerator
 
     settings = get_settings()
-    if not settings.claude_api_key:
+    if not settings.llm_api_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Claude API key not configured",
+            detail="LLM_API_KEY not configured",
         )
 
-    claude_client = ClaudeClient(api_key=settings.claude_api_key)
+    claude_client = ClaudeClient(api_key=settings.llm_api_key, model=settings.llm_model)
     generator = WeeklyDigestGenerator(claude_client)
 
     ws = None

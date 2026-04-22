@@ -27,7 +27,8 @@ class Settings(BaseSettings):
 
     # AI Models
     openai_api_key: str = ""
-    claude_api_key: str = ""
+    llm_api_key: str = ""
+    llm_model: str = "anthropic/claude-haiku-4-5-20251001"
 
     # CORS
     cors_origins: str = ""  # comma-separated list of allowed origins

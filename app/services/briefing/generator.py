@@ -16,6 +16,7 @@ from app.services.agent.tools.task_manager import TaskManagerTool
 from app.services.agent.tools.style_analyzer import StyleAnalyzerTool
 from app.services.briefing.prompts import BRIEFING_SYSTEM_PROMPT, format_briefing_context
 from anthropic import APIStatusError
+from openai import APIError as OpenAIAPIError
 
 from app.services.llm.claude_client import ClaudeClient
 
@@ -104,7 +105,7 @@ class BriefingGenerator:
                 system_prompt=system,
                 user_message="Generate my daily briefing.\n\n" + context,
             )
-        except (RuntimeError, ValueError, APIStatusError) as e:
+        except (RuntimeError, ValueError, APIStatusError, OpenAIAPIError) as e:
             logger.error("Failed to generate briefing text: %s", e)
             result.briefing_text = self._fallback_briefing(result)
 

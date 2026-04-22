@@ -42,7 +42,8 @@ services:
       DATABASE_URL_SYNC: postgresql+psycopg2://secondbrain:${DB_PASSWORD}@db:5432/secondbrain
       FERNET_KEY: ${FERNET_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-anthropic/claude-haiku-4-5-20251001}
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:

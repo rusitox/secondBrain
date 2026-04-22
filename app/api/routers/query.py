@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from anthropic import APIError as AnthropicAPIError
+from openai import APIError as OpenAIAPIError
 
 from app.api.deps import get_current_user_id, get_db
 from app.api.schemas.query import QueryRequest, QueryResponse, DocumentSource
@@ -34,9 +35,9 @@ def _get_embedder() -> Embedder:
 @lru_cache(maxsize=1)
 def _get_claude_client() -> ClaudeClient:
     settings = get_settings()
-    if not settings.claude_api_key:
-        raise ValueError("CLAUDE_API_KEY is required for /query endpoint")
-    return ClaudeClient(api_key=settings.claude_api_key)
+    if not settings.llm_api_key:
+        raise ValueError("LLM_API_KEY is required for /query endpoint")
+    return ClaudeClient(api_key=settings.llm_api_key, model=settings.llm_model)
 
 
 @router.post("", response_model=QueryResponse)
@@ -97,8 +98,8 @@ async def query(
             system_prompt=RAG_SYSTEM_PROMPT,
             user_message=user_message,
         )
-    except (AnthropicAPIError, RuntimeError) as e:
-        logger.error("Claude API error during query: %s", e)
+    except (AnthropicAPIError, OpenAIAPIError, RuntimeError) as e:
+        logger.error("LLM API error during query: %s", e)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to generate answer from LLM",

@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from anthropic import APIStatusError, RateLimitError
+from openai import APIError as OpenAIAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.commitment import Commitment, CommitmentStatus
@@ -64,8 +65,8 @@ class CommitmentDetector:
                 user_message=prompt,
                 temperature=0.1,
             )
-        except (APIStatusError, RateLimitError, RuntimeError) as e:
-            logger.error("Claude API error during commitment detection: %s", e)
+        except (APIStatusError, RateLimitError, OpenAIAPIError, RuntimeError) as e:
+            logger.error("LLM API error during commitment detection: %s", e)
             return []
 
         return self._parse_response(response)

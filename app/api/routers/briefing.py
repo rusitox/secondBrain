@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from anthropic import APIError as AnthropicAPIError
+from openai import APIError as OpenAIAPIError
 
 from app.api.deps import get_current_user_id, get_db
 from app.api.schemas.briefing import BriefingResponse, ScheduleRequest, ScheduleResponse
@@ -32,9 +33,9 @@ def _get_scheduler() -> BriefingScheduler:
 @lru_cache(maxsize=1)
 def _get_generator() -> BriefingGenerator:
     settings = get_settings()
-    if not settings.claude_api_key:
-        raise ValueError("CLAUDE_API_KEY is required for briefing generation")
-    claude_client = ClaudeClient(api_key=settings.claude_api_key)
+    if not settings.llm_api_key:
+        raise ValueError("LLM_API_KEY is required for briefing generation")
+    claude_client = ClaudeClient(api_key=settings.llm_api_key, model=settings.llm_model)
     return BriefingGenerator(claude_client=claude_client)
 
 
@@ -54,7 +55,7 @@ async def get_briefing(
     generator = _get_generator()
     try:
         result = await generator.generate(db=db, user_id=user_id)
-    except (RuntimeError, ValueError, AnthropicAPIError) as e:
+    except (RuntimeError, ValueError, AnthropicAPIError, OpenAIAPIError) as e:
         logger.error("Briefing generation error: %s", e)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

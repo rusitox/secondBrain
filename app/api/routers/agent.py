@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from anthropic import APIError as AnthropicAPIError
+from openai import APIError as OpenAIAPIError
 
 from app.api.deps import get_current_user_id, get_db
 from app.api.schemas.briefing import AgentQueryRequest, AgentQueryResponse
@@ -26,11 +27,11 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 @lru_cache(maxsize=1)
 def _get_agent() -> AgentOrchestrator:
     settings = get_settings()
-    if not settings.claude_api_key:
-        raise ValueError("CLAUDE_API_KEY is required for /agent/query endpoint")
+    if not settings.llm_api_key:
+        raise ValueError("LLM_API_KEY is required for /agent/query endpoint")
     if not settings.openai_api_key:
         raise ValueError("OPENAI_API_KEY is required for /agent/query endpoint")
-    claude_client = ClaudeClient(api_key=settings.claude_api_key)
+    claude_client = ClaudeClient(api_key=settings.llm_api_key, model=settings.llm_model)
     embedder = Embedder(api_key=settings.openai_api_key)
     return AgentOrchestrator(claude_client=claude_client, embedder=embedder)
 
@@ -49,7 +50,7 @@ async def agent_query(
             user_id=current_user_id,
             question=data.question,
         )
-    except (AnthropicAPIError, RuntimeError) as e:
+    except (AnthropicAPIError, OpenAIAPIError, RuntimeError) as e:
         logger.error("Agent query error: %s", e)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
