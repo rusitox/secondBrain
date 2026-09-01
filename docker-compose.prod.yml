@@ -43,7 +43,7 @@ services:
       FERNET_KEY: ${FERNET_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       LLM_API_KEY: ${LLM_API_KEY}
-      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4.1}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-5.6-luna}
       ENABLE_SYNC_SCHEDULER: "true"
       MS_CLIENT_ID: ${MS_CLIENT_ID:-}
       MS_AUTHORITY: ${MS_AUTHORITY:-}
