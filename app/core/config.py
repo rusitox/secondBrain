@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     # Sync scheduler (only enable in production or explicitly)
     enable_sync_scheduler: bool = False
 
+    # Microsoft MSAL — used to auto-refresh Graph API tokens (Outlook + Teams)
+    ms_client_id: str = ""
+    ms_authority: str = ""
+    ms_scopes: str = "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Calendars.Read https://graph.microsoft.com/Chat.Read https://graph.microsoft.com/User.Read"
+    msal_cache_path: str = ""  # defaults to ~/.secondbrain/msal_cache.json if empty
+
     # Security — required for token encryption
     fernet_key: str
 

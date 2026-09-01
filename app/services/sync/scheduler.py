@@ -150,8 +150,9 @@ class SyncScheduler:
                     return
 
                 from app.services.ingestion.embedder import Embedder
+                from app.services.token_refresh import ensure_fresh_token
 
-                token = integration_service.get_decrypted_token(integration)
+                token = await ensure_fresh_token(integration, db)
                 connector = _CONNECTORS[platform]()  # type: ignore[abstract]
                 items = await connector.fetch_items(
                     access_token=token,

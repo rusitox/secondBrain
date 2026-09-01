@@ -47,9 +47,15 @@ class SlackConnector(BaseConnector):
             for channel in channels:
                 channel_id = channel["id"]
                 channel_name = channel.get("name", channel_id)
-                messages = await self._fetch_channel_history(
-                    client, headers, channel_id, since,
-                )
+                try:
+                    messages = await self._fetch_channel_history(
+                        client, headers, channel_id, since,
+                    )
+                except RuntimeError as e:
+                    if "not_in_channel" in str(e):
+                        logger.debug("Slack: skipping channel %s (bot not a member)", channel_name)
+                        continue
+                    raise
                 for msg in messages:
                     text = msg.get("text", "")
                     if not text or not text.strip():
@@ -96,6 +102,7 @@ class SlackConnector(BaseConnector):
             params: Dict[str, Any] = {
                 "types": "public_channel,private_channel,im,mpim",
                 "limit": DEFAULT_PAGE_LIMIT,
+                "exclude_archived": "true",
             }
             if cursor:
                 params["cursor"] = cursor

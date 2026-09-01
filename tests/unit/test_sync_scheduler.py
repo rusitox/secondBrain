@@ -265,7 +265,7 @@ class TestRunSync:
 
         with patch("app.services.sync.scheduler.get_session_factory", return_value=mock_factory), \
              patch("app.api.routers.ingestion._CONNECTORS", {"outlook": lambda: mock_connector}), \
-             patch("app.services.integration_service.get_decrypted_token", return_value="tok"), \
+             patch("app.services.token_refresh.ensure_fresh_token", new=AsyncMock(return_value="tok")), \
              patch("app.services.ingestion.pipeline.IngestionPipeline", return_value=mock_pipeline), \
              patch("app.services.ingestion.embedder.Embedder", return_value=mock_embedder):
             await scheduler._run_sync(integration_id, user_id)
@@ -383,7 +383,7 @@ class TestRunSync:
 
         with patch("app.services.sync.scheduler.get_session_factory", return_value=mock_factory), \
              patch("app.api.routers.ingestion._CONNECTORS", {"outlook": lambda: mock_connector}), \
-             patch("app.services.integration_service.get_decrypted_token", return_value="tok"):
+             patch("app.services.token_refresh.ensure_fresh_token", new=AsyncMock(return_value="tok")):
             await scheduler._run_sync(str(mock_integration.id), str(mock_integration.user_id))
 
         assert mock_integration.last_sync_status == "error"

@@ -37,7 +37,7 @@ class Commitment(UUIDMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     status: Mapped[CommitmentStatus] = mapped_column(
-        Enum(CommitmentStatus, name="commitment_status_enum"),
+        Enum(CommitmentStatus, name="commitment_status_enum", values_callable=lambda obj: [e.value for e in obj]),
         default=CommitmentStatus.PENDING,
     )
     priority: Mapped[int] = mapped_column(Integer, default=3)

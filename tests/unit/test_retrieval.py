@@ -73,7 +73,7 @@ class TestConstants:
     """Tests for search module constants."""
 
     def test_default_threshold(self) -> None:
-        assert DEFAULT_SIMILARITY_THRESHOLD == 0.5
+        assert DEFAULT_SIMILARITY_THRESHOLD == 0.3
 
     def test_default_top_k(self) -> None:
         assert DEFAULT_TOP_K == 10

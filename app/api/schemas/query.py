@@ -11,7 +11,7 @@ class QueryRequest(BaseModel):
 
     question: str = Field(..., min_length=1, max_length=2000)
     top_k: int = Field(default=10, ge=1, le=50)
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    threshold: float = Field(default=0.3, ge=0.0, le=1.0)
 
     # Optional filters
     source: Optional[str] = None

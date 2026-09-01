@@ -4,7 +4,7 @@ Uses OAuth2 with Microsoft Graph API v1.0. Handles pagination and
 token refresh for long-running syncs.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -65,27 +65,43 @@ class MSGraphConnector(BaseConnector):
         headers: Dict[str, str],
         since: Optional[datetime],
     ) -> List[ConnectorItem]:
-        """Fetch emails with pagination."""
+        """Fetch emails with pagination.
+
+        Requests plain-text body to avoid large HTML payloads.
+        On first sync (no `since`), limits to last 6 months.
+        """
         items: List[ConnectorItem] = []
         url = f"{GRAPH_BASE_URL}/me/messages"
+
+        # Default to 6 months ago if no since date (avoid pulling all history)
+        effective_since = since or (
+            datetime.now(timezone.utc) - timedelta(days=180)
+        )
+
         params: Dict[str, Any] = {
             "$top": DEFAULT_PAGE_SIZE,
             "$select": "id,subject,body,from,receivedDateTime",
             "$orderby": "receivedDateTime desc",
+            "$filter": f"receivedDateTime ge {effective_since.strftime('%Y-%m-%dT%H:%M:%SZ')}",
         }
-        if since:
-            params["$filter"] = f"receivedDateTime ge {since.isoformat()}"
+
+        # Request plain text body to avoid large HTML payloads
+        email_headers = {**headers, "Prefer": 'outlook.body-content-type="text"'}
 
         for _ in range(MAX_PAGES):
             if not url:
                 break
-            resp = await client.get(url, headers=headers, params=params)
+            resp = await client.get(url, headers=email_headers, params=params)
             resp.raise_for_status()
             data = resp.json()
 
             for msg in data.get("value", []):
-                body_content = msg.get("body", {}).get("content", "")
-                from_addr = msg.get("from", {}).get("emailAddress", {}).get("address", "")
+                body_content = (msg.get("body") or {}).get("content", "")
+                from_addr = (
+                    (msg.get("from") or {})
+                    .get("emailAddress", {})
+                    .get("address", "")
+                )
                 subject = msg.get("subject", "")
 
                 items.append(ConnectorItem(
@@ -130,9 +146,13 @@ class MSGraphConnector(BaseConnector):
             data = resp.json()
 
             for event in data.get("value", []):
-                body_content = event.get("body", {}).get("content", "")
+                body_content = (event.get("body") or {}).get("content", "")
                 subject = event.get("subject", "")
-                organizer = event.get("organizer", {}).get("emailAddress", {}).get("address", "")
+                organizer = (
+                    (event.get("organizer") or {})
+                    .get("emailAddress", {})
+                    .get("address", "")
+                )
                 attendees = [
                     a.get("emailAddress", {}).get("address", "")
                     for a in event.get("attendees", [])

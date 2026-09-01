@@ -28,7 +28,7 @@ class Integration(UUIDMixin, TimestampMixin, Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     platform: Mapped[Platform] = mapped_column(
-        Enum(Platform, name="platform_enum"), nullable=False
+        Enum(Platform, name="platform_enum", values_callable=lambda obj: [e.value for e in obj]), nullable=False
     )
     access_token: Mapped[str] = mapped_column(Text, default="")
     refresh_token: Mapped[str] = mapped_column(Text, default="")

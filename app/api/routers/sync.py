@@ -148,15 +148,18 @@ async def trigger_sync(
             )
 
         from app.services.ingestion.embedder import Embedder
+        from app.services.token_refresh import ensure_fresh_token
 
-        token = integration_service.get_decrypted_token(integration)
+        token = await ensure_fresh_token(integration, db)
         connector = _CONNECTORS[platform]()  # type: ignore[abstract]
         items = await connector.fetch_items(
             access_token=token,
             since=integration.last_sync_at,
         )
 
-        pipeline = IngestionPipeline(embedder=Embedder())
+        from app.core.config import get_settings
+        settings = get_settings()
+        pipeline = IngestionPipeline(embedder=Embedder(api_key=settings.openai_api_key))
         ingest_result = await pipeline.ingest_batch(
             db=db,
             user_id=current_user_id,

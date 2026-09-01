@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Default similarity threshold (cosine distance: lower = more similar)
 # Cosine similarity >= 0.5  <==>  cosine distance <= 0.5
-DEFAULT_SIMILARITY_THRESHOLD = 0.5
+DEFAULT_SIMILARITY_THRESHOLD = 0.3
 DEFAULT_TOP_K = 10
 
 
