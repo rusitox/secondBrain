@@ -43,7 +43,11 @@ services:
       FERNET_KEY: ${FERNET_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       LLM_API_KEY: ${LLM_API_KEY}
-      LLM_MODEL: ${LLM_MODEL:-anthropic/claude-haiku-4-5-20251001}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4.1}
+      ENABLE_SYNC_SCHEDULER: "true"
+      MS_CLIENT_ID: ${MS_CLIENT_ID:-}
+      MS_AUTHORITY: ${MS_AUTHORITY:-}
+      MSAL_CACHE_PATH: ${MSAL_CACHE_PATH:-}
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
