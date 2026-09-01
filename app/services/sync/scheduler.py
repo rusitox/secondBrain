@@ -159,7 +159,9 @@ class SyncScheduler:
                     since=integration.last_sync_at,
                 )
 
-                pipeline = IngestionPipeline(embedder=Embedder())
+                from app.core.config import get_settings
+                settings = get_settings()
+                pipeline = IngestionPipeline(embedder=Embedder(api_key=settings.openai_api_key))
                 result = await pipeline.ingest_batch(
                     db=db,
                     user_id=_uuid.UUID(user_id),
