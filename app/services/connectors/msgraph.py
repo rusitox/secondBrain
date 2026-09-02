@@ -139,10 +139,14 @@ class MSGraphConnector(BaseConnector):
         if since:
             params["$filter"] = f"start/dateTime ge '{since.isoformat()}'"
 
+        # Request UTC times so dateTime values always include timezone info ("Z" suffix)
+        # and are unambiguously comparable with datetime.now(timezone.utc).
+        calendar_headers = {**headers, "Prefer": 'outlook.timezone="UTC"'}
+
         for _ in range(MAX_PAGES):
             if not url:
                 break
-            resp = await client.get(url, headers=headers, params=params)
+            resp = await client.get(url, headers=calendar_headers, params=params)
             resp.raise_for_status()
             data = resp.json()
 
