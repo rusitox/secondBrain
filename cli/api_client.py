@@ -6,8 +6,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Timeouts: 30s for normal ops, 300s for sync operations
+# Timeouts: 30s for normal ops, 120s for agent queries, 300s for sync operations
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+_AGENT_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 _SYNC_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 
 
@@ -38,10 +39,10 @@ class APIClient:
         """Set the user ID for authenticated requests."""
         self._user_id = user_id
 
-    def _get_client(self, timeout: Optional[httpx.Timeout] = None) -> httpx.AsyncClient:
+    def _get_client(self) -> httpx.AsyncClient:
         """Get or create the httpx client."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=timeout or _DEFAULT_TIMEOUT)
+            self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
         return self._client
 
     async def close(self) -> None:
@@ -69,13 +70,14 @@ class APIClient:
     ) -> Dict[str, Any]:
         """Make an HTTP request and return JSON response."""
         url = self._base_url + path
-        client = self._get_client(timeout)
+        client = self._get_client()
         resp = await client.request(
             method=method,
             url=url,
             json=json,
             params=params,
             headers=self._headers(),
+            timeout=timeout or _DEFAULT_TIMEOUT,
         )
 
         if resp.status_code == 204:
@@ -227,11 +229,14 @@ class APIClient:
         payload.update(kwargs)
         return await self._request("POST", "/query", json=payload)
 
-    async def agent_query(self, question: str) -> Dict[str, Any]:
+    async def agent_query(
+        self, question: str, session_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Agentic multi-tool query."""
-        return await self._request("POST", "/agent/query", json={
-            "question": question,
-        })
+        payload: Dict[str, Any] = {"question": question}
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return await self._request("POST", "/agent/query", json=payload, timeout=_AGENT_TIMEOUT)
 
     # --- Briefing ---
 

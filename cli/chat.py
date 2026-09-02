@@ -5,8 +5,11 @@ via the CommandRouter. Uses prompt_toolkit for input with history and
 autocompletion.
 """
 import logging
+import uuid
 from pathlib import Path
 from typing import Optional
+
+import httpx
 
 from cli.alerts import AlertManager
 from cli.api_client import APIClient, APIError
@@ -71,6 +74,8 @@ class ChatSession:
             api=api, config=config, on_sync_result=self._alerts.on_sync_result,
         )
         self._prompt_session = _create_prompt_session()
+        self._session_id: Optional[str] = str(uuid.uuid4())
+        self._session_shown: bool = False
 
     async def run(self) -> None:
         """Run the chat loop with background sync."""
@@ -122,7 +127,10 @@ class ChatSession:
         """Send a natural language query to the agent API."""
         with spinner("Thinking..."):
             try:
-                result = await self._api.agent_query(question)
+                result = await self._api.agent_query(question, session_id=self._session_id)
+            except httpx.TimeoutException:
+                print_warning("Query timed out — the server may still be processing. Try again in a moment.")
+                return
             except APIError as e:
                 if e.status_code == 503:
                     print_warning("Agent service unavailable. Is the backend running?")
@@ -136,6 +144,11 @@ class ChatSession:
             print_panel(answer, title="Answer", style="green")
         else:
             print_info("No answer returned.")
+
+        # Show session indicator once per session
+        if not self._session_shown and self._session_id:
+            console.print("[dim]session: %s...[/dim]" % self._session_id[:8])
+            self._session_shown = True
 
         # Show metadata
         tools = result.get("tools_used", [])
