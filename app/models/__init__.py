@@ -5,6 +5,8 @@ from app.models.integration import Integration, Platform
 from app.models.document import Document, EMBEDDING_DIMENSION
 from app.models.commitment import Commitment, CommitmentStatus
 from app.models.api_key import APIKey
+from app.models.conversation_turn import ConversationTurn
+from app.models.memory import Memory, MEMORY_EMBEDDING_DIMENSION
 
 __all__ = [
     "Base",
@@ -17,4 +19,7 @@ __all__ = [
     "Commitment",
     "CommitmentStatus",
     "APIKey",
+    "ConversationTurn",
+    "Memory",
+    "MEMORY_EMBEDDING_DIMENSION",
 ]

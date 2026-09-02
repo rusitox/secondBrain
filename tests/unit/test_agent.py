@@ -1,4 +1,5 @@
 """Unit tests for agent orchestrator and tools."""
+import json
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,6 +11,7 @@ from app.services.agent.tools.memory_retriever import MemoryRetrieverTool
 from app.services.agent.tools.task_manager import TaskManagerTool
 from app.services.agent.tools.calendar_sync import CalendarSyncTool
 from app.services.agent.tools.style_analyzer import StyleAnalyzerTool
+from app.services.llm.claude_client import ToolCall, ToolUseResult
 
 
 class TestMemoryRetrieverTool:
@@ -106,84 +108,134 @@ class TestStyleAnalyzerTool:
         assert style["heuristics"] == {"key": "value"}
 
 
-class TestAgentOrchestrator:
-    def _make_orchestrator(self) -> AgentOrchestrator:
-        mock_claude = AsyncMock()
-        mock_claude.generate = AsyncMock(return_value="Here's your answer.")
-        mock_embedder = MagicMock()
-        return AgentOrchestrator(claude_client=mock_claude, embedder=mock_embedder)
+def _make_empty_db():
+    """Return a mock AsyncSession that returns empty query results."""
+    db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    db.execute = AsyncMock(return_value=mock_result)
+    return db
 
+
+def _make_orchestrator(answer: str = "Here's your answer.") -> AgentOrchestrator:
+    mock_llm = MagicMock()
+    mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
+        final_answer=answer,
+        tool_calls=[],
+        iterations=1,
+        stop_reason="end_turn",
+    ))
+    mock_embedder = MagicMock()
+    return AgentOrchestrator(claude_client=mock_llm, embedder=mock_embedder)
+
+
+class TestAgentOrchestrator:
     @pytest.mark.asyncio
     async def test_query_basic(self) -> None:
-        orch = self._make_orchestrator()
-        mock_db = AsyncMock()
-        # Mock all DB calls to return empty
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = []
-        mock_result.scalar_one_or_none.return_value = None
-        mock_db.execute = AsyncMock(return_value=mock_result)
-
-        with patch("app.services.agent.tools.memory_retriever.semantic_search", new_callable=AsyncMock) as mock_search:
-            mock_search.return_value = []
-            result = await orch.query(mock_db, uuid.uuid4(), "What's on my plate?")
-
+        """query() returns a dict with 'answer' key."""
+        orch = _make_orchestrator("Here's your answer.")
+        db = _make_empty_db()
+        result = await orch.query(db, uuid.uuid4(), "What's on my plate?")
         assert "answer" in result
-        assert "tools_used" in result
-        assert isinstance(result["sources"], list)
+        assert result["answer"] == "Here's your answer."
 
     @pytest.mark.asyncio
-    async def test_query_with_calendar_keyword(self) -> None:
-        orch = self._make_orchestrator()
-        mock_db = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = []
-        mock_result.scalar_one_or_none.return_value = None
-        mock_db.execute = AsyncMock(return_value=mock_result)
+    async def test_query_returns_session_id(self) -> None:
+        """query() always returns a 'session_id' key."""
+        orch = _make_orchestrator()
+        db = _make_empty_db()
+        result = await orch.query(db, uuid.uuid4(), "Hello?")
+        assert "session_id" in result
+        assert isinstance(result["session_id"], str)
 
-        with patch("app.services.agent.tools.memory_retriever.semantic_search", new_callable=AsyncMock) as mock_search:
-            mock_search.return_value = []
-            result = await orch.query(mock_db, uuid.uuid4(), "What meetings do I have today?")
+    @pytest.mark.asyncio
+    async def test_query_generates_session_id_when_none(self) -> None:
+        """When session_id=None, a new UUID is generated and returned."""
+        orch = _make_orchestrator()
+        db = _make_empty_db()
+        result = await orch.query(db, uuid.uuid4(), "Hello?", session_id=None)
+        sid = result["session_id"]
+        # Verify it's a valid UUID
+        parsed = uuid.UUID(sid)
+        assert str(parsed) == sid
 
-        # Calendar tool should be triggered by "meetings" and "today"
-        assert isinstance(result["answer"], str)
+    @pytest.mark.asyncio
+    async def test_query_sources_from_search_memory(self) -> None:
+        """When search_memory tool is used, its results appear in 'sources'."""
+        doc = {"content": "Meeting notes", "source": "fathom", "metadata": {}}
+        mock_llm = MagicMock()
+        mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
+            final_answer="Found some notes.",
+            tool_calls=[
+                ToolCall(
+                    tool_name="search_memory",
+                    tool_input={"query": "meeting"},
+                    tool_result=json.dumps([doc]),
+                )
+            ],
+            iterations=2,
+            stop_reason="end_turn",
+        ))
+        orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
+        db = _make_empty_db()
+        result = await orch.query(db, uuid.uuid4(), "Find my meeting notes")
+        assert isinstance(result["sources"], list)
+        assert len(result["sources"]) == 1
+        assert result["sources"][0]["source"] == "fathom"
 
-    def test_format_style_with_data(self) -> None:
-        orch = self._make_orchestrator()
-        style = {"persona_description": "Executive", "tone_guidelines": "Be brief"}
-        result = orch._format_style(style)
-        assert "Executive" in result
-        assert "Be brief" in result
+    @pytest.mark.asyncio
+    async def test_query_tools_used_from_tool_calls(self) -> None:
+        """tools_used list is built from the ToolCall records."""
+        mock_llm = MagicMock()
+        mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
+            final_answer="Done.",
+            tool_calls=[
+                ToolCall("get_user_style", {}, '{"persona": "exec"}'),
+                ToolCall("list_tasks", {}, "[]"),
+            ],
+            iterations=3,
+            stop_reason="end_turn",
+        ))
+        orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
+        db = _make_empty_db()
+        result = await orch.query(db, uuid.uuid4(), "What do I have today?")
+        assert "get_user_style" in result["tools_used"]
+        assert "list_tasks" in result["tools_used"]
 
-    def test_format_style_empty(self) -> None:
-        orch = self._make_orchestrator()
-        assert orch._format_style({}) == ""
+    @pytest.mark.asyncio
+    async def test_query_iterations_propagated(self) -> None:
+        """iterations from ToolUseResult appears in the response."""
+        mock_llm = MagicMock()
+        mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
+            final_answer="Done.",
+            tool_calls=[],
+            iterations=5,
+            stop_reason="end_turn",
+        ))
+        orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
+        db = _make_empty_db()
+        result = await orch.query(db, uuid.uuid4(), "test")
+        assert result["iterations"] == 5
 
-    def test_build_context_empty(self) -> None:
-        orch = self._make_orchestrator()
-        result = orch._build_context({})
-        assert "No relevant context" in result
-
-    def test_build_context_with_data(self) -> None:
-        orch = self._make_orchestrator()
-        tool_results = {
-            "memory": [{"content": "Meeting notes", "source": "fathom", "metadata": {}}],
-            "tasks": [{"commitment_text": "Send report", "owner": "Alice", "priority": 2, "due_date": "2025-03-14"}],
-            "calendar": [{"subject": "Standup", "timestamp": "09:00", "attendees": ["bob"]}],
-        }
-        result = orch._build_context(tool_results)
-        assert "Knowledge Base" in result
-        assert "Meeting notes" in result
-        assert "Pending Commitments" in result
-        assert "Send report" in result
-        assert "Calendar" in result
-        assert "Standup" in result
+    @pytest.mark.asyncio
+    async def test_session_id_echoed_when_provided(self) -> None:
+        """When a valid session_id is provided with no history, it is echoed back."""
+        orch = _make_orchestrator()
+        db = _make_empty_db()
+        provided_sid = str(uuid.uuid4())
+        result = await orch.query(db, uuid.uuid4(), "Hello?", session_id=provided_sid)
+        assert result["session_id"] == provided_sid
 
 
 class TestAgentSystemPrompt:
-    def test_contains_capabilities(self) -> None:
-        assert "knowledge base" in AGENT_SYSTEM_PROMPT
-        assert "tasks" in AGENT_SYSTEM_PROMPT.lower()
-        assert "calendar" in AGENT_SYSTEM_PROMPT.lower()
+    def test_contains_tool_names(self) -> None:
+        assert "search_memory" in AGENT_SYSTEM_PROMPT
+        assert "list_tasks" in AGENT_SYSTEM_PROMPT
+        assert "get_calendar" in AGENT_SYSTEM_PROMPT
+        assert "get_user_style" in AGENT_SYSTEM_PROMPT
 
     def test_prompt_injection_protection(self) -> None:
         assert "untrusted" in AGENT_SYSTEM_PROMPT.lower()
+
+    def test_style_instruction_present(self) -> None:
+        assert "get_user_style" in AGENT_SYSTEM_PROMPT

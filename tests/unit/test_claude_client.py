@@ -181,7 +181,7 @@ class TestOpenAIGenerate:
         )
         call_kwargs = mock_openai.chat.completions.create.call_args.kwargs
         assert call_kwargs["model"] == "gpt-4o-mini"
-        assert call_kwargs["max_tokens"] == 1024
+        assert call_kwargs["max_completion_tokens"] == 1024
         assert call_kwargs["temperature"] == 0.7
         messages = call_kwargs["messages"]
         assert messages[0] == {"role": "system", "content": "sys"}

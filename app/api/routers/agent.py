@@ -49,6 +49,7 @@ async def agent_query(
             db=db,
             user_id=current_user_id,
             question=data.question,
+            session_id=data.session_id,
         )
     except (AnthropicAPIError, OpenAIAPIError, RuntimeError) as e:
         logger.error("Agent query error: %s", e)
@@ -62,4 +63,6 @@ async def agent_query(
         tools_used=result["tools_used"],
         sources=result.get("sources", []),
         query=data.question,
+        session_id=result.get("session_id", ""),
+        iterations=result.get("iterations", 0),
     )

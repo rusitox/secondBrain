@@ -138,10 +138,30 @@ def _create_sqlite_tables(connection) -> None:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS conversation_turns (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            tool_calls TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_conversation_turns_user_session
+        ON conversation_turns(user_id, session_id)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_conversation_turns_session_created
+        ON conversation_turns(session_id, created_at)
+    """))
 
 
 def _drop_sqlite_tables(connection) -> None:
-    for table in ["api_keys", "commitments", "documents", "integrations", "identities", "users"]:
+    for table in ["conversation_turns", "api_keys", "commitments", "documents", "integrations", "identities", "users"]:
         connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
 
 
