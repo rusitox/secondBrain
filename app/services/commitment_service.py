@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.commitment import Commitment, CommitmentStatus
@@ -38,7 +39,11 @@ async def list_commitments(
     status: Optional[CommitmentStatus] = None,
     due_before: Optional[datetime] = None,
 ) -> List[Commitment]:
-    query = select(Commitment).where(Commitment.user_id == user_id)
+    query = (
+        select(Commitment)
+        .where(Commitment.user_id == user_id)
+        .options(selectinload(Commitment.document))
+    )
     if status is not None:
         query = query.where(Commitment.status == status)
     if due_before is not None:

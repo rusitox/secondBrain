@@ -58,11 +58,26 @@ class TaskManagerTool:
 
     @staticmethod
     def _commitment_to_dict(commitment: Any) -> Dict[str, Any]:
-        return {
+        result: Dict[str, Any] = {
             "id": str(commitment.id),
             "commitment_text": commitment.commitment_text,
             "owner": commitment.owner,
             "due_date": commitment.due_date.isoformat() if commitment.due_date else None,
             "status": commitment.status.value,
             "priority": commitment.priority,
+            "source": None,
         }
+
+        # Include provenance from the source document so the agent can cite origin
+        doc = getattr(commitment, "document", None)
+        if doc is not None:
+            meta = doc.metadata_ or {}
+            result["source"] = {
+                "platform": doc.source,
+                "subject": meta.get("subject") or meta.get("title"),
+                "author": meta.get("author"),
+                "timestamp": meta.get("timestamp"),
+                "type": meta.get("type"),
+            }
+
+        return result

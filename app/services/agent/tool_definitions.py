@@ -38,7 +38,10 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
         "name": "list_tasks",
         "description": (
             "List the user's pending commitments, action items, and promises. "
-            "Returns tasks with priority, owner, due date, and status."
+            "Returns tasks with priority, owner, due date, status, and source provenance "
+            "(platform, subject, author, timestamp of the original message or document "
+            "where the commitment was detected). Use the source field to answer questions "
+            "like 'where did this task come from?' or 'who said this?'."
         ),
         "input_schema": {
             "type": "object",
