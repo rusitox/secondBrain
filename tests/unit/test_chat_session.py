@@ -140,8 +140,34 @@ class TestChatSessionLoop:
 
 class TestChatSessionWelcome:
     @pytest.mark.asyncio
-    async def test_welcome_fetches_stats(self) -> None:
+    async def test_welcome_calls_agent_query(self) -> None:
+        """Welcome should call agent_query with the welcome prompt."""
         api = _make_api()
+        session = ChatSession(api=api, config=_make_config())
+        session._prompt_session = None
+
+        await session._show_welcome()
+        api.agent_query.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_welcome_agent_error_falls_back_to_static(self) -> None:
+        """If agent_query fails, fallback to static stats panel (no crash)."""
+        api = _make_api()
+        api.agent_query = AsyncMock(side_effect=APIError(500, "Error"))
+        session = ChatSession(api=api, config=_make_config())
+        session._prompt_session = None
+
+        # Should not raise; fallback calls get_user_stats
+        await session._show_welcome()
+        api.get_user_stats.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_welcome_agent_timeout_falls_back_to_static(self) -> None:
+        """If agent_query times out, fallback to static stats panel."""
+        api = _make_api()
+        api.agent_query = AsyncMock(
+            side_effect=httpx.ReadTimeout("timeout", request=None)
+        )
         session = ChatSession(api=api, config=_make_config())
         session._prompt_session = None
 
@@ -149,24 +175,14 @@ class TestChatSessionWelcome:
         api.get_user_stats.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_welcome_handles_stats_error(self) -> None:
-        api = _make_api()
-        api.get_user_stats = AsyncMock(side_effect=APIError(500, "Error"))
-        session = ChatSession(api=api, config=_make_config())
-        session._prompt_session = None
-
-        # Should not raise
-        await session._show_welcome()
-
-    @pytest.mark.asyncio
-    async def test_welcome_no_user(self) -> None:
+    async def test_welcome_no_user_skips_agent(self) -> None:
+        """Without user_id, skip agent call and show static fallback."""
         api = _make_api()
         session = ChatSession(api=api, config=_make_config(user_id=None))
         session._prompt_session = None
 
-        # Should not raise, just skip stats
         await session._show_welcome()
-        api.get_user_stats.assert_not_awaited()
+        api.agent_query.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
