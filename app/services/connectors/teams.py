@@ -50,6 +50,7 @@ class TeamsConnector(BaseConnector):
         self,
         access_token: str,
         since: Optional[datetime] = None,
+        **kwargs: Any,
     ) -> List[ConnectorItem]:
         """Fetch chat messages from Teams 1:1 and group chats.
 

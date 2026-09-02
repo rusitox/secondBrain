@@ -20,6 +20,10 @@ class IntegrationUpdate(BaseModel):
     refresh_token: Optional[str] = None
 
 
+class UserTokenRequest(BaseModel):
+    user_token: str
+
+
 class IntegrationRead(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID

@@ -47,6 +47,7 @@ class BaseConnector(abc.ABC):
         self,
         access_token: str,
         since: Optional[datetime] = None,
+        **kwargs: Any,
     ) -> List[ConnectorItem]:
         """Fetch items from the platform since the given timestamp.
 

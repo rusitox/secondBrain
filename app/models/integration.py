@@ -32,6 +32,9 @@ class Integration(UUIDMixin, TimestampMixin, Base):
     )
     access_token: Mapped[str] = mapped_column(Text, default="")
     refresh_token: Mapped[str] = mapped_column(Text, default="")
+    # Optional User Token (xoxp-) for platforms that need it for extended access.
+    # Slack: user_token grants access to personal DMs; access_token is the Bot Token.
+    user_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_sync_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

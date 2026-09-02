@@ -121,14 +121,15 @@ async def sync_platform(
             detail=f"No active {platform} integration found",
         )
 
-    # Decrypt token and fetch items
+    # Decrypt token(s) and fetch items
     token = integration_service.get_decrypted_token(integration)
+    user_token = integration_service.get_decrypted_user_token(integration)
     connector = _CONNECTORS[platform]()
     try:
-        items = await connector.fetch_items(
-            access_token=token,
-            since=integration.last_sync_at,
-        )
+        kwargs: Dict[str, Any] = {"access_token": token, "since": integration.last_sync_at}
+        if user_token is not None:
+            kwargs["user_token"] = user_token
+        items = await connector.fetch_items(**kwargs)
     except httpx.HTTPStatusError as e:
         logger.error("Connector %s returned HTTP %s: %s", platform, e.response.status_code, e)
         raise HTTPException(
@@ -153,7 +154,7 @@ async def sync_platform(
 
     # Update last_sync_at
     integration.last_sync_at = datetime.now(timezone.utc)
-    await db.flush()
+    await db.commit()
 
     logger.info(
         "Sync complete for %s (user=%s): %d created, %d updated",

@@ -5,7 +5,7 @@ is connected. Reuses the ingestion pipeline internally (no HTTP round-trip).
 """
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -149,15 +149,28 @@ class SyncScheduler:
                     await db.commit()
                     return
 
+                # Fathom has no public REST API — skip server-side sync silently.
+                # Use scripts/sync_fathom_incremental.py from a Claude Code session instead.
+                if platform == "fathom":
+                    logger.info(
+                        "Fathom uses MCP-based sync — skipping server-side job for user=%s",
+                        user_id,
+                    )
+                    return
+
                 from app.services.ingestion.embedder import Embedder
                 from app.services.token_refresh import ensure_fresh_token
 
                 token = await ensure_fresh_token(integration, db)
+                user_token = integration_service.get_decrypted_user_token(integration)
                 connector = _CONNECTORS[platform]()  # type: ignore[abstract]
-                items = await connector.fetch_items(
-                    access_token=token,
-                    since=integration.last_sync_at,
-                )
+                fetch_kwargs: Dict[str, Any] = {
+                    "access_token": token,
+                    "since": integration.last_sync_at,
+                }
+                if user_token is not None:
+                    fetch_kwargs["user_token"] = user_token
+                items = await connector.fetch_items(**fetch_kwargs)
 
                 from app.core.config import get_settings
                 settings = get_settings()

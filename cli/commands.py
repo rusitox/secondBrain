@@ -249,11 +249,59 @@ class CommandRouter:
                     print_error("%s sync failed: %s" % (name, e.detail))
 
     async def _cmd_connect(self, args: List[str]) -> None:
-        """Connect a new platform (reuses onboarding flow)."""
+        """Connect a new platform.
+
+        Usage:
+          /connect                           — guided platform setup
+          /connect slack user-token          — add User Token to existing Slack integration
+        """
+        # Special case: /connect slack user-token
+        if len(args) >= 2 and args[0].lower() == "slack" and args[1].lower() == "user-token":
+            await self._cmd_connect_slack_user_token()
+            return
+
         from cli.onboarding import OnboardingFlow
         flow = OnboardingFlow(api=self._api, config=self._config)
         await flow._step_platforms()
         self._config.save()
+
+    async def _cmd_connect_slack_user_token(self) -> None:
+        """Store a Slack User Token (xoxp-) to enable personal DM sync."""
+        from cli.validators import validate_token as _validate_token
+        from cli.display import print_info, print_success, print_error, print_warning
+
+        print_info(
+            "A Slack User Token (xoxp-...) allows syncing your personal DMs.\n"
+            "Required scopes: channels:history channels:read groups:history groups:read\n"
+            "                 im:history im:read mpim:history mpim:read users:read\n"
+            "Get one at: api.slack.com → your app → OAuth & Permissions → User Token Scopes"
+        )
+
+        integrations = await self._api.list_integrations("slack")
+        if not integrations:
+            print_error("No Slack integration found. Run /connect first to add a Bot Token.")
+            return
+
+        integration_id = integrations[0]["id"]
+
+        import asyncio
+        import getpass
+        loop = asyncio.get_event_loop()
+        user_token = (
+            await loop.run_in_executor(None, getpass.getpass, "Paste your User Token (xoxp-...): ")
+        ).strip()
+        if not user_token:
+            print_warning("No token entered. Cancelled.")
+            return
+        if not user_token.startswith("xoxp-"):
+            print_warning("Warning: token does not start with 'xoxp-'. Make sure this is a User Token.")
+
+        with spinner("Saving User Token..."):
+            try:
+                await self._api.set_integration_user_token(integration_id, user_token)
+                print_success("User Token saved. DMs will be included in the next /sync slack.")
+            except APIError as e:
+                print_error("Failed to save User Token: %s" % e.detail)
 
     async def _cmd_disconnect(self, args: List[str]) -> None:
         """Disconnect a platform."""

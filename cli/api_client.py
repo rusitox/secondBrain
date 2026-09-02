@@ -186,6 +186,16 @@ class APIClient:
         """Delete an integration."""
         await self._request("DELETE", f"/integrations/{integration_id}")
 
+    async def set_integration_user_token(
+        self, integration_id: str, user_token: str
+    ) -> None:
+        """Store a User Token on an existing integration (Slack DM access)."""
+        await self._request(
+            "POST",
+            f"/integrations/{integration_id}/user-token",
+            json={"user_token": user_token},
+        )
+
     # --- Ingestion ---
 
     async def sync_platform(self, platform: str) -> Dict[str, Any]:

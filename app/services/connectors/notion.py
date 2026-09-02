@@ -117,6 +117,7 @@ class NotionConnector(BaseConnector):
         self,
         access_token: str,
         since: Optional[datetime] = None,
+        **kwargs: Any,
     ) -> List[ConnectorItem]:
         """Fetch pages and database items modified since *since*."""
         items: List[ConnectorItem] = []

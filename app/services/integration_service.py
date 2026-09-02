@@ -66,3 +66,20 @@ async def delete_integration(db: AsyncSession, integration: Integration) -> None
 def get_decrypted_token(integration: Integration) -> str:
     """Decrypt access token for use in connectors. Never expose via API."""
     return decrypt_token(integration.access_token)
+
+
+def get_decrypted_user_token(integration: Integration) -> Optional[str]:
+    """Decrypt user_token if one is stored. Returns None when not set."""
+    if not integration.user_token:
+        return None
+    return decrypt_token(integration.user_token)
+
+
+async def set_user_token(
+    db: AsyncSession, integration: Integration, user_token: str
+) -> Integration:
+    """Encrypt and persist a user_token on an existing integration."""
+    integration.user_token = encrypt_token(user_token)
+    await db.flush()
+    await db.refresh(integration)
+    return integration

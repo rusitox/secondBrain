@@ -24,6 +24,7 @@ def _make_integration(
     mock.last_sync_at = None
     mock.last_sync_status = None
     mock.last_sync_error = None
+    mock.user_token = None
     return mock
 
 
@@ -390,6 +391,32 @@ class TestRunSync:
         assert "API timeout" in mock_integration.last_sync_error
         assert mock_integration.last_sync_at is not None
         mock_session.commit.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_fathom_skipped_silently(self) -> None:
+        """_run_sync skips Fathom gracefully — no REST API, no error status."""
+        scheduler = SyncScheduler()
+        mock_integration = _make_integration(platform="fathom")
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_integration
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_session.commit = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        mock_factory = MagicMock(return_value=mock_session)
+
+        with patch("app.services.sync.scheduler.get_session_factory", return_value=mock_factory), \
+             patch("app.api.routers.ingestion._CONNECTORS", {"fathom": MagicMock()}):
+            await scheduler._run_sync(str(mock_integration.id), str(mock_integration.user_id))
+
+        # Must NOT set error status — Fathom skip is intentional
+        assert mock_integration.last_sync_status != "error"
+        # Must NOT commit — early return before any DB mutation
+        mock_session.commit.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_run_sync_error_truncated(self) -> None:

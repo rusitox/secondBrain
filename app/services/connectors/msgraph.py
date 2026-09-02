@@ -30,6 +30,7 @@ class MSGraphConnector(BaseConnector):
         self,
         access_token: str,
         since: Optional[datetime] = None,
+        **kwargs: Any,
     ) -> List[ConnectorItem]:
         """Fetch emails and calendar events from Microsoft Graph."""
         items: List[ConnectorItem] = []

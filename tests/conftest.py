@@ -88,6 +88,7 @@ def _create_sqlite_tables(connection) -> None:
             sync_interval_minutes INTEGER DEFAULT 30,
             last_sync_status TEXT,
             last_sync_error TEXT,
+            user_token TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )

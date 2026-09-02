@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_id, get_db
-from app.api.schemas.integration import IntegrationCreate, IntegrationRead, IntegrationUpdate
+from app.api.schemas.integration import IntegrationCreate, IntegrationRead, IntegrationUpdate, UserTokenRequest
 from app.models.integration import Platform
 from app.services import integration_service, user_service
 
@@ -74,6 +74,30 @@ async def update_integration(
             detail="Integration not found",
         )
     updated = await integration_service.update_integration(db, integration, data)
+    return IntegrationRead.model_validate(updated)
+
+
+@router.post("/{integration_id}/user-token", response_model=IntegrationRead)
+async def set_user_token(
+    integration_id: uuid.UUID,
+    data: UserTokenRequest,
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> IntegrationRead:
+    """Store an encrypted User Token on an existing integration.
+
+    Used by Slack to enable personal DM sync via a User Token (xoxp-).
+    The token is encrypted before storage using the same Fernet key as
+    access_token.
+    """
+    integration = await integration_service.get_integration(db, integration_id)
+    if not integration or integration.user_id != current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Integration not found",
+        )
+    updated = await integration_service.set_user_token(db, integration, data.user_token)
+    await db.commit()
     return IntegrationRead.model_validate(updated)
 
 

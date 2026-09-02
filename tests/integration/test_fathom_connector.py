@@ -1,9 +1,13 @@
-"""Integration tests for Fathom connector (HTTP mocked with respx)."""
-import pytest
-import respx
-from httpx import Response
+"""Integration tests for FathomConnector.
 
-from app.services.connectors.fathom import FathomConnector, FATHOM_API_URL
+Fathom has no public REST API (api.fathom.video is NXDOMAIN).
+These tests verify the connector correctly refuses all operations so that
+the server-side scheduler never accidentally calls it.
+"""
+import pytest
+from datetime import datetime, timezone
+
+from app.services.connectors.fathom import FathomConnector
 
 
 @pytest.fixture
@@ -11,85 +15,58 @@ def connector() -> FathomConnector:
     return FathomConnector()
 
 
-class TestFathomConnector:
-    @respx.mock
-    async def test_fetch_transcripts(self, connector: FathomConnector) -> None:
-        respx.get(f"{FATHOM_API_URL}/recordings").mock(return_value=Response(
-            200,
-            json={
-                "recordings": [
-                    {
-                        "id": "rec-001",
-                        "title": "Sprint Review",
-                        "created_at": "2024-01-15T10:00:00Z",
-                        "duration": 3600,
-                        "participants": ["Alice", "Bob"],
-                    },
-                ],
-            },
-        ))
-        respx.get(f"{FATHOM_API_URL}/recordings/rec-001/transcript").mock(
-            return_value=Response(200, json={"text": "We discussed the Q4 results."}),
-        )
+class TestFathomConnectorPlatform:
+    def test_platform_name(self, connector: FathomConnector) -> None:
+        assert connector.platform == "fathom"
 
-        items = await connector.fetch_items(access_token="test-token")
-        assert len(items) == 1
-        assert items[0].source_id == "rec-001"
-        assert "Sprint Review" in items[0].content
-        assert "Q4 results" in items[0].content
-        assert items[0].metadata["type"] == "transcript"
-        assert items[0].metadata["duration"] == 3600
 
-    @respx.mock
-    async def test_transcript_as_string(self, connector: FathomConnector) -> None:
-        """Transcript endpoint may return plain text string."""
-        respx.get(f"{FATHOM_API_URL}/recordings").mock(return_value=Response(
-            200, json={"recordings": [
-                {"id": "rec-002", "title": "Standup", "created_at": "2024-01-16T09:00:00Z"},
-            ]},
-        ))
-        respx.get(f"{FATHOM_API_URL}/recordings/rec-002/transcript").mock(
-            return_value=Response(200, json="Plain transcript text here."),
-        )
+class TestFathomConnectorFetchItems:
+    @pytest.mark.asyncio
+    async def test_fetch_items_raises_not_implemented(
+        self, connector: FathomConnector
+    ) -> None:
+        """fetch_items must raise NotImplementedError — no public REST API exists."""
+        with pytest.raises(NotImplementedError) as exc_info:
+            await connector.fetch_items(access_token="any-token")
+        msg = str(exc_info.value).lower()
+        assert "no public rest api" in msg or "mcp" in msg
 
-        items = await connector.fetch_items(access_token="test-token")
-        assert len(items) == 1
-        assert "Plain transcript text here." in items[0].content
+    @pytest.mark.asyncio
+    async def test_fetch_items_raises_with_since_param(
+        self, connector: FathomConnector
+    ) -> None:
+        """NotImplementedError raised regardless of since parameter."""
+        with pytest.raises(NotImplementedError):
+            await connector.fetch_items(
+                access_token="token",
+                since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
 
-    @respx.mock
-    async def test_transcript_fetch_failure_skips(self, connector: FathomConnector) -> None:
-        """If transcript fetch fails, the recording should be skipped."""
-        respx.get(f"{FATHOM_API_URL}/recordings").mock(return_value=Response(
-            200, json={"recordings": [
-                {"id": "rec-003", "title": "Failed", "created_at": "2024-01-17T10:00:00Z"},
-            ]},
-        ))
-        respx.get(f"{FATHOM_API_URL}/recordings/rec-003/transcript").mock(
-            return_value=Response(500),
-        )
+    @pytest.mark.asyncio
+    async def test_fetch_items_error_message_mentions_script(
+        self, connector: FathomConnector
+    ) -> None:
+        """Error message must direct users to the incremental sync script."""
+        with pytest.raises(NotImplementedError) as exc_info:
+            await connector.fetch_items(access_token="tok")
+        assert "sync_fathom_incremental" in str(exc_info.value)
 
-        items = await connector.fetch_items(access_token="test-token")
-        assert len(items) == 0  # skipped due to transcript failure
 
-    @respx.mock
-    async def test_validate_token_valid(self, connector: FathomConnector) -> None:
-        respx.get(f"{FATHOM_API_URL}/user").mock(return_value=Response(200, json={"id": "u1"}))
-        assert await connector.validate_token("valid-token") is True
+class TestFathomConnectorValidateToken:
+    @pytest.mark.asyncio
+    async def test_validate_token_raises_not_implemented(
+        self, connector: FathomConnector
+    ) -> None:
+        """validate_token must raise NotImplementedError — no REST API."""
+        with pytest.raises(NotImplementedError):
+            await connector.validate_token("any-token")
 
-    @respx.mock
-    async def test_validate_token_invalid(self, connector: FathomConnector) -> None:
-        respx.get(f"{FATHOM_API_URL}/user").mock(return_value=Response(401))
-        assert await connector.validate_token("bad-token") is False
-
-    @respx.mock
-    async def test_fetch_with_since_filter(self, connector: FathomConnector) -> None:
-        from datetime import datetime, timezone
-        since = datetime(2024, 1, 10, tzinfo=timezone.utc)
-
-        route = respx.get(f"{FATHOM_API_URL}/recordings").mock(return_value=Response(
-            200, json={"recordings": []},
-        ))
-
-        await connector.fetch_items(access_token="token", since=since)
-        call = route.calls[0]
-        assert "created_after" in str(call.request.url)
+    @pytest.mark.asyncio
+    async def test_validate_token_error_message_helpful(
+        self, connector: FathomConnector
+    ) -> None:
+        """Error message explains why and how to proceed."""
+        with pytest.raises(NotImplementedError) as exc_info:
+            await connector.validate_token("tok")
+        msg = str(exc_info.value).lower()
+        assert "no public rest api" in msg or "fathom" in msg

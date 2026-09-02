@@ -1,24 +1,37 @@
 """Fathom connector for meeting transcripts.
 
-Supports fetching transcripts via Fathom API or processing
-exported text files.
+NOTE: Fathom has no public REST API (api.fathom.video is NXDOMAIN).
+Automatic sync is not possible via HTTP. Use the MCP-based incremental
+sync script instead:
+
+    scripts/sync_fathom_incremental.py
+
+Workflow from a Claude Code session:
+  1. python scripts/sync_fathom_incremental.py --check
+     → prints last_sync_at so Claude knows which meetings to fetch via MCP
+
+  2. Claude calls list_meetings(created_after=<date>) and get_meeting_transcript
+     for each new meeting, building a JSON array.
+
+  3. echo '[{...}]' | python scripts/sync_fathom_incremental.py --ingest
+     → ingests meetings, updates last_sync_at in the integrations table.
 """
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import httpx
-
 from app.services.connectors.base import BaseConnector, ConnectorItem
 
 logger = logging.getLogger(__name__)
 
-FATHOM_API_URL = "https://api.fathom.video/v1"
-REQUEST_TIMEOUT = 30.0
-
 
 class FathomConnector(BaseConnector):
-    """Connector for Fathom meeting transcripts."""
+    """Connector for Fathom meeting transcripts.
+
+    Fathom does not expose a public REST API. This connector cannot be used
+    for automatic server-side sync. Use scripts/sync_fathom_incremental.py
+    from a Claude Code session instead.
+    """
 
     @property
     def platform(self) -> str:
@@ -28,87 +41,22 @@ class FathomConnector(BaseConnector):
         self,
         access_token: str,
         since: Optional[datetime] = None,
+        **kwargs: Any,
     ) -> List[ConnectorItem]:
-        """Fetch meeting transcripts from Fathom API."""
-        items: List[ConnectorItem] = []
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            }
+        """Not available — Fathom has no public REST API.
 
-            recordings = await self._list_recordings(client, headers, since)
-            for recording in recordings:
-                transcript = await self._get_transcript(
-                    client, headers, recording["id"],
-                )
-                if transcript:
-                    title = recording.get("title", "Untitled Meeting")
-                    items.append(ConnectorItem(
-                        content=f"Meeting: {title}\n\n{transcript}",
-                        source_id=recording["id"],
-                        metadata={
-                            "title": title,
-                            "timestamp": recording.get("created_at", ""),
-                            "duration": recording.get("duration", 0),
-                            "participants": recording.get("participants", []),
-                            "type": "transcript",
-                        },
-                    ))
-
-        logger.info("Fathom: fetched %d transcripts", len(items))
-        return items
+        Use scripts/sync_fathom_incremental.py from a Claude Code session,
+        which accesses Fathom transcripts via the Fathom MCP integration.
+        """
+        raise NotImplementedError(
+            "Fathom has no public REST API (api.fathom.video does not exist). "
+            "Run `python scripts/sync_fathom_incremental.py --check` from a "
+            "Claude Code session to trigger an MCP-based incremental sync."
+        )
 
     async def validate_token(self, access_token: str) -> bool:
-        """Check token validity against Fathom API."""
-        try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                resp = await client.get(
-                    f"{FATHOM_API_URL}/user",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
-                return resp.status_code == 200
-        except httpx.HTTPError:
-            return False
-
-    async def _list_recordings(
-        self,
-        client: httpx.AsyncClient,
-        headers: Dict[str, str],
-        since: Optional[datetime],
-    ) -> List[Dict[str, Any]]:
-        """List recordings, optionally filtered by date."""
-        params: Dict[str, Any] = {}
-        if since:
-            params["created_after"] = since.isoformat()
-
-        resp = await client.get(
-            f"{FATHOM_API_URL}/recordings",
-            headers=headers,
-            params=params,
+        """Not available — Fathom has no public REST API."""
+        raise NotImplementedError(
+            "Fathom has no public REST API. Token validation is not supported. "
+            "Use scripts/sync_fathom_incremental.py from a Claude Code session."
         )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("recordings", data if isinstance(data, list) else [])
-
-    async def _get_transcript(
-        self,
-        client: httpx.AsyncClient,
-        headers: Dict[str, str],
-        recording_id: str,
-    ) -> Optional[str]:
-        """Fetch the transcript text for a recording."""
-        try:
-            resp = await client.get(
-                f"{FATHOM_API_URL}/recordings/{recording_id}/transcript",
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            # Transcript could be a string or structured object
-            if isinstance(data, str):
-                return data
-            return data.get("text", data.get("transcript", ""))
-        except httpx.HTTPError as e:
-            logger.warning("Failed to fetch transcript for %s: %s", recording_id, e)
-            return None
