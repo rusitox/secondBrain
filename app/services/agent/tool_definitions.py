@@ -55,8 +55,9 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
     {
         "name": "get_calendar",
         "description": (
-            "Get the user's calendar events for today. "
-            "Returns meeting subjects, times, organizers, and attendees."
+            "Get the user's upcoming calendar events for today (events not yet started). "
+            "Returns meeting subjects, start times, organizers, and attendees. "
+            "Use this to answer questions like 'what meetings do I have left?' or 'what's next on my calendar?'."
         ),
         "input_schema": {
             "type": "object",

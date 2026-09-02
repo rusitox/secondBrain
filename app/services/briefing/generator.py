@@ -72,7 +72,7 @@ class BriefingGenerator:
         result = BriefingResult(generated_at=now.isoformat())
 
         # Step 1: Gather data from all tools
-        result.agenda = await self._calendar.get_today_events(db, user_id, now)
+        result.agenda = await self._calendar.get_today_events(db, user_id, now, upcoming_only=False)
         result.pending_commitments = await self._tasks.list_pending(db, user_id)
         result.overdue_commitments = await self._tasks.list_overdue(db, user_id)
 
