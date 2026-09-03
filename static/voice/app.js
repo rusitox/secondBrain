@@ -157,12 +157,9 @@ authForm.addEventListener('submit', async (e) => {
 
 async function validateApiKey(key) {
   try {
-    const resp = await fetch(`${API_BASE}/agent/query`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: 'ping' }),
+    const resp = await fetch(`${API_BASE}/users/`, {
+      headers: { 'Authorization': `Bearer ${key}` },
     });
-    // 200 or 502 (LLM error) both mean the key is valid; 401 means invalid
     return resp.status !== 401;
   } catch {
     return false;
@@ -813,7 +810,8 @@ function escapeHtml(str) {
 function renderMarkdown(text) {
   if (window.marked) {
     try {
-      return window.marked.parse(text, { breaks: true, gfm: true });
+      const raw = window.marked.parse(text, { breaks: true, gfm: true });
+      return window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
     } catch {}
   }
   return escapeHtml(text).replace(/\n/g, '<br>');

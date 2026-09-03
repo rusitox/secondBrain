@@ -75,7 +75,7 @@ class LLMClient:
         self,
         system_prompt: str,
         user_message: str,
-        temperature: float = 0.3,
+        temperature: Optional[float] = None,
     ) -> str:
         """Generate a response from the configured LLM.
 
@@ -203,13 +203,14 @@ class LLMClient:
                 if stream_callback is not None:
                     client = AsyncAnthropic(api_key=self._api_key)
                     stream_text_parts: List[str] = []
-                    async with client.messages.stream(
+                    async with client.messages.stream(  # type: ignore[call-overload]
                         model=self._model_id,
                         max_tokens=self._max_tokens,
                         system=system or "",
                         messages=current_messages,
                         tools=tools or [],
-                    ) as stream:  # type: ignore[call-overload]
+                        tool_choice={"type": "none"},
+                    ) as stream:
                         async for text_chunk in stream.text_stream:
                             await stream_callback(text_chunk)
                             stream_text_parts.append(text_chunk)
@@ -487,15 +488,17 @@ class LLMClient:
 
         for attempt in range(MAX_RETRIES):
             try:
-                response = await client.chat.completions.create(
-                    model=self._model_id,
-                    max_completion_tokens=self._max_tokens,
-                    messages=[
+                kwargs: Dict[str, Any] = {
+                    "model": self._model_id,
+                    "max_completion_tokens": self._max_tokens,
+                    "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_message},
                     ],
-                    temperature=temperature,
-                )
+                }
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
+                response = await client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content
                 return content or ""
             except OpenAIRateLimitError as e:

@@ -157,22 +157,29 @@ async def agent_stream(
                         "tools_used": [tc.tool_name for tc in result.tool_calls],
                     }),
                 })
-            except Exception as e:
+            except asyncio.CancelledError:
+                raise
+            except (AnthropicAPIError, OpenAIAPIError, RuntimeError) as e:
                 logger.error("Agent stream error: %s", e)
                 await queue.put({
                     "event": "error",
-                    "data": json_module.dumps({"detail": str(e)}),
+                    "data": json_module.dumps({"detail": "Agent query failed. Please try again."}),
                 })
             finally:
                 await queue.put(SENTINEL)
 
         task = asyncio.create_task(run_query())
 
-        while True:
-            item = await queue.get()
-            if item is SENTINEL:
-                break
-            yield item
+        try:
+            while True:
+                item = await queue.get()
+                if item is SENTINEL:
+                    break
+                yield item
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
         await task  # propagate any unhandled exceptions
 

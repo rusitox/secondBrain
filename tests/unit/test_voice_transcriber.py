@@ -13,6 +13,7 @@ class TestWhisperTranscriberAPI:
         mock_response = MagicMock()
         mock_response.text = "hello world"
         mock_response.duration = 2.5
+        mock_response.language = "es"
 
         with patch("openai.AsyncOpenAI") as mock_cls:
             mock_client = MagicMock()

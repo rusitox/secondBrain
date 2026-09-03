@@ -1,10 +1,10 @@
 """Voice endpoints: STT transcription and TTS synthesis."""
+import asyncio
 import logging
 import uuid
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
 
 from app.api.deps import get_current_user_id
 from app.api.schemas.voice import SpeakRequest, TranscribeResponse
@@ -40,6 +40,22 @@ async def transcribe_audio(
     settings = get_settings()
     max_bytes = settings.voice_max_audio_mb * 1024 * 1024
 
+    # Check Content-Length before reading to reject oversized files early
+    content_length = file.headers.get("content-length")
+    if content_length and int(content_length) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Audio file exceeds {settings.voice_max_audio_mb}MB limit",
+        )
+
+    # Validate content type
+    content_type = (file.content_type or "").split(";")[0].strip()
+    if content_type and content_type not in ALLOWED_AUDIO_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported audio type '{content_type}'. Supported: webm, ogg, wav, mp3, mp4",
+        )
+
     audio_bytes = await file.read()
 
     if len(audio_bytes) == 0:
@@ -65,30 +81,25 @@ async def transcribe_audio(
 async def speak_text(
     data: SpeakRequest,
     _: uuid.UUID = Depends(get_current_user_id),
-) -> StreamingResponse:
-    """Convert text to speech and stream MP3 audio."""
+) -> Response:
+    """Convert text to speech and return MP3 audio."""
     settings = get_settings()
 
-    valid_voices = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
-    if data.voice not in valid_voices:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid voice '{data.voice}'. Valid options: {sorted(valid_voices)}",
-        )
-
     try:
-        audio_stream = tts_service.synthesize(
+        audio_bytes = await tts_service.synthesize(
             text=data.text,
             voice=data.voice,
             model=settings.tts_model,
             api_key=settings.openai_api_key,
         )
-    except Exception as e:
+    except asyncio.CancelledError:
+        raise
+    except (RuntimeError, ValueError) as e:
         logger.error("TTS failed: %s", e)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="TTS service unavailable")
 
-    return StreamingResponse(
-        audio_stream,
+    return Response(
+        content=audio_bytes,
         media_type="audio/mpeg",
         headers={"Cache-Control": "no-cache"},
     )

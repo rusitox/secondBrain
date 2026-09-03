@@ -76,10 +76,10 @@ class TestSpeakEndpoint:
     async def test_speak_returns_audio_stream(self, client: AsyncClient) -> None:
         headers = await _create_user_and_key(client)
 
-        async def fake_audio():
-            yield b"fake-mp3-data"
-
-        with patch("app.api.routers.voice.tts_service.synthesize", return_value=fake_audio()):
+        with patch(
+            "app.api.routers.voice.tts_service.synthesize",
+            new=AsyncMock(return_value=b"fake-mp3-data"),
+        ):
             resp = await client.post("/voice/speak", json={"text": "hola mundo"}, headers=headers)
         assert resp.status_code == 200
         assert "audio" in resp.headers["content-type"]

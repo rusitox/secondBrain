@@ -32,50 +32,74 @@ class WhisperTranscriber:
                 )
         return self._local_model
 
-    async def transcribe(self, audio_bytes: bytes, filename: str = "audio.webm") -> TranscribeResponse:
+    async def transcribe(
+        self,
+        audio_bytes: bytes,
+        filename: str = "audio.webm",
+        language: Optional[str] = None,
+    ) -> TranscribeResponse:
         if self._mode == "local":
-            return await self._transcribe_local(audio_bytes)
-        return await self._transcribe_api(audio_bytes, filename)
+            return await self._transcribe_local(audio_bytes, filename=filename, language=language)
+        return await self._transcribe_api(audio_bytes, filename, language=language)
 
-    async def _transcribe_local(self, audio_bytes: bytes) -> TranscribeResponse:
+    async def _transcribe_local(
+        self,
+        audio_bytes: bytes,
+        filename: str = "audio.webm",
+        language: Optional[str] = None,
+    ) -> TranscribeResponse:
         import asyncio
 
         def _run() -> TranscribeResponse:
             model = self._load_local_model()
-            suffix = ".webm"
+            suffix = Path(filename).suffix if Path(filename).suffix else ".webm"
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
                 f.write(audio_bytes)
                 tmp_path = Path(f.name)
             try:
-                result = model.transcribe(str(tmp_path), language="es")  # type: ignore[union-attr]
+                kwargs = {"language": language} if language is not None else {}
+                result = model.transcribe(str(tmp_path), **kwargs)  # type: ignore[union-attr]
+                detected_lang = result.get("language", language or "")
                 return TranscribeResponse(
                     transcript=result.get("text", "").strip(),
-                    language=result.get("language", "es"),
+                    language=detected_lang,
                     duration_seconds=None,
                 )
             finally:
                 tmp_path.unlink(missing_ok=True)
 
-        return await asyncio.get_event_loop().run_in_executor(None, _run)
+        return await asyncio.get_running_loop().run_in_executor(None, _run)
 
-    async def _transcribe_api(self, audio_bytes: bytes, filename: str) -> TranscribeResponse:
+    async def _transcribe_api(
+        self,
+        audio_bytes: bytes,
+        filename: str,
+        language: Optional[str] = None,
+    ) -> TranscribeResponse:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self._openai_api_key)
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = filename
-        response = await client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            language="es",
-            response_format="verbose_json",
-        )
+
+        kwargs = {
+            "model": "whisper-1",
+            "file": audio_file,
+            "response_format": "verbose_json",
+        }
+        if language is not None:
+            kwargs["language"] = language
+
+        response = await client.audio.transcriptions.create(**kwargs)  # type: ignore[arg-type]
+        detected_lang: str = ""
+        if hasattr(response, "language"):
+            detected_lang = str(response.language)
         duration: Optional[float] = None
         if hasattr(response, "duration"):
             duration = float(response.duration)
         transcript = response.text if hasattr(response, "text") else str(response)
         return TranscribeResponse(
             transcript=transcript.strip(),
-            language="es",
+            language=detected_lang or language or "",
             duration_seconds=duration,
         )
