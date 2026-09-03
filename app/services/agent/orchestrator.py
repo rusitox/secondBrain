@@ -22,6 +22,7 @@ from app.services.agent.tools.calendar_sync import CalendarSyncTool
 from app.services.agent.tools.style_analyzer import StyleAnalyzerTool
 from app.services.agent.tools.save_learning import SaveLearningTool
 from app.services.agent.tools.search_learnings import SearchLearningsTool
+from app.services.agent.tools.sync_status import SyncStatusTool
 from app.services.ingestion.embedder import Embedder
 from app.services.llm.claude_client import LLMClient, ToolCall
 
@@ -52,7 +53,9 @@ _CROSS_KNOWLEDGE_SYSTEM = _BASE_SUB_AGENT_PROMPT + """
 
 You are the CROSS-KNOWLEDGE agent. Search broadly across all sources for context,
 long-term memory, ownership uncertainty, and background information relevant to the question.
-Focus on: who owns what, historical patterns, recurring issues, unresolved ambiguities."""
+Focus on: who owns what, historical patterns, recurring issues, unresolved ambiguities.
+If the question is about data freshness, sync status, or when a source was last updated,
+call get_sync_status to retrieve per-platform timestamps and status."""
 
 _TASKS_SYSTEM = _BASE_SUB_AGENT_PROMPT + """
 
@@ -255,13 +258,21 @@ class _SubAgent:
 
         return _save_learning
 
+    def _executor_get_sync_status(
+        self, db: AsyncSession, user_id: uuid.UUID
+    ) -> Callable:
+        async def _get_sync_status() -> List[Dict[str, Any]]:
+            return await SyncStatusTool().get_status(db, user_id)
+
+        return _get_sync_status
+
 
 class CrossKnowledgeAgent(_SubAgent):
     name = "cross_knowledge"
     system_prompt = _CROSS_KNOWLEDGE_SYSTEM
 
     def _get_tools(self) -> List[Dict[str, Any]]:
-        return _tools("search_memory", "search_learnings", "save_learning")
+        return _tools("search_memory", "search_learnings", "save_learning", "get_sync_status")
 
     def _build_tool_executors(
         self, db: AsyncSession, user_id: uuid.UUID
@@ -270,6 +281,7 @@ class CrossKnowledgeAgent(_SubAgent):
             "search_memory": self._executor_search_memory(db, user_id),
             "search_learnings": self._executor_search_learnings(db, user_id),
             "save_learning": self._executor_save_learning(db, user_id),
+            "get_sync_status": self._executor_get_sync_status(db, user_id),
         }
 
 

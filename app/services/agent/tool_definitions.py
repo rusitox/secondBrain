@@ -111,6 +111,21 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "get_sync_status",
+        "description": (
+            "Return the last sync timestamp and status for each connected data source "
+            "(Slack, Outlook, Teams, Fathom, Notion). Use this to answer questions like "
+            "'when was X last updated?', 'is my Slack data fresh?', or 'why is my data stale?'. "
+            "Returns platform, last_sync_at (ISO timestamp), status (success/error/null), "
+            "error message if any, and sync interval in minutes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "save_learning",
         "description": (
             "Persist a learning or insight to long-term memory. Use this when you discover "
@@ -170,5 +185,5 @@ OUTLOOK_TOOLS = _tools("search_memory", "get_calendar")
 TEAMS_TOOLS = _tools("search_memory")
 FATHOM_TOOLS = _tools("search_memory")
 NOTION_TOOLS = _tools("search_memory")
-CROSS_KNOWLEDGE_TOOLS = _tools("search_memory", "search_learnings", "save_learning")
+CROSS_KNOWLEDGE_TOOLS = _tools("search_memory", "search_learnings", "save_learning", "get_sync_status")
 TASKS_TOOLS = _tools("list_tasks", "get_calendar", "search_learnings", "save_learning")
