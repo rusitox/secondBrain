@@ -9,7 +9,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -180,6 +180,7 @@ class _SubAgent:
             tools=tools,
             tool_executors=tool_executors,
             system=self.system_prompt,
+            max_iterations=3,  # sub-agents have 1-2 tools; never need more than 3 rounds
         )
         return SubAgentResult(
             agent_name=self.name,
@@ -417,6 +418,12 @@ _TEAMS_KEYWORDS = {"teams", "chat", "microsoft"}
 _FATHOM_KEYWORDS = {"reunión", "reunion", "meeting", "transcri", "grabación", "fathom", "zoom", "llamada", "video call"}
 _NOTION_KEYWORDS = {"notion", "página", "pagina", "database", "wiki"}
 _WELCOME_MARKERS = {"inicio de jornada"}
+_CROSS_KNOWLEDGE_KEYWORDS = {
+    "historial", "historia", "patron", "patrón", "aprendizaje", "recuerda",
+    "recuerdas", "contexto", "background", "sync", "sincronizacion",
+    "sincronización", "actualizado", "actualizados", "fuentes", "datos",
+    "memory", "learnings", "long-term",
+}
 
 
 class _WelcomeAgent(_SubAgent):
@@ -458,10 +465,8 @@ def _route_agents(
     def _matches(keywords: set) -> bool:
         return any(kw in q_lower for kw in keywords)
 
-    agents: List[_SubAgent] = [
-        CrossKnowledgeAgent(llm, embedder, user_timezone),
-        TasksAgent(llm, embedder, user_timezone),
-    ]
+    # Always include tasks
+    agents: List[_SubAgent] = [TasksAgent(llm, embedder, user_timezone)]
 
     domain_matched = False
 
@@ -481,10 +486,9 @@ def _route_agents(
         agents.append(NotionAgent(llm, embedder, user_timezone))
         domain_matched = True
 
-    # No domain keyword found → default to Slack + Outlook
-    if not domain_matched:
-        agents.append(SlackAgent(llm, embedder, user_timezone))
-        agents.append(OutlookAgent(llm, embedder, user_timezone))
+    # CrossKnowledge: only on explicit knowledge keywords, or when domain agents fired
+    if _matches(_CROSS_KNOWLEDGE_KEYWORDS) or domain_matched:
+        agents.append(CrossKnowledgeAgent(llm, embedder, user_timezone))
 
     return agents
 
@@ -496,8 +500,15 @@ def _route_agents(
 class MultiAgentOrchestrator:
     """Parallel multi-agent orchestrator with LLM synthesis."""
 
-    def __init__(self, llm: LLMClient, embedder: Embedder, session_factory: Optional[Any] = None) -> None:
-        self._llm = llm
+    def __init__(
+        self,
+        llm: LLMClient,
+        embedder: Embedder,
+        session_factory: Optional[Any] = None,
+        sub_agent_llm: Optional[LLMClient] = None,
+    ) -> None:
+        self._llm = llm              # synthesis LLM (smarter/slower)
+        self._sub_llm = sub_agent_llm or llm  # sub-agent LLM (fast)
         self._embedder = embedder
         self._session_factory = session_factory
 
@@ -521,6 +532,7 @@ class MultiAgentOrchestrator:
         user_id: uuid.UUID,
         question: str,
         session_id: Optional[str] = None,
+        stream_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         """Full multi-agent query pipeline.
 
@@ -552,7 +564,7 @@ class MultiAgentOrchestrator:
         augmented_question = identity_prefix + question if identity_prefix else question
 
         # 3. Route sub-agents
-        agents = _route_agents(augmented_question, self._llm, self._embedder, user_timezone=user_tz)
+        agents = _route_agents(augmented_question, self._sub_llm, self._embedder, user_timezone=user_tz)
         agent_names = [a.name for a in agents]
         logger.info(
             "MultiAgentOrchestrator: routing to agents=%s for question=%r",
@@ -592,7 +604,7 @@ class MultiAgentOrchestrator:
             }
 
         # 5. Synthesize
-        answer = await self._synthesize(question, sub_results, style_text, history)
+        answer = await self._synthesize(question, sub_results, style_text, history, stream_callback=stream_callback)
 
         # Collect all tool calls from sub-agents for metadata
         all_tool_calls: List[ToolCall] = []
@@ -642,6 +654,7 @@ class MultiAgentOrchestrator:
         sub_results: List[SubAgentResult],
         style: str,
         history: List[Dict[str, Any]],
+        stream_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
         """Call the LLM once to synthesize all sub-agent analyses."""
         system_prompt = _SYNTHESIS_SYSTEM.format(style=style)
@@ -665,6 +678,19 @@ class MultiAgentOrchestrator:
             + (history_summary or "No prior context.")
             + "\n\nSynthesize the above into a single response for the user."
         )
+
+        if stream_callback is not None:
+            # Use generate_with_tools with no tools so streaming path is hit
+            messages = [{"role": "user", "content": user_message}]
+            result = await self._llm.generate_with_tools(
+                messages=messages,
+                tools=[],
+                tool_executors={},
+                system=system_prompt,
+                max_iterations=1,
+                stream_callback=stream_callback,
+            )
+            return result.final_answer
 
         return await self._llm.generate(
             system_prompt=system_prompt,

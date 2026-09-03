@@ -106,55 +106,40 @@ async def agent_stream(
 
         async def run_query() -> None:
             try:
-                agent = _get_agent()
-                resolved_session_id, history = await agent._resolve_session(
+                from app.services.agent.orchestrator import MultiAgentOrchestrator
+                from app.core.database import get_session_factory
+                settings = get_settings()
+                sub_api_key = settings.llm_sub_agent_api_key or settings.llm_api_key
+                sub_model = settings.llm_sub_agent_model or settings.llm_model
+                from app.services.llm.claude_client import LLMClient as _LLMClient
+                sub_llm = _LLMClient(api_key=sub_api_key, model=sub_model)
+
+                agent_inst = _get_agent()  # keep for _resolve_session + _persist_turns
+                resolved_session_id, _ = await agent_inst._resolve_session(
                     db, current_user_id, data.session_id
                 )
 
-                messages = history + [{"role": "user", "content": data.question}]
-
-                tool_executors = {
-                    "search_memory": agent._make_search_memory(db, current_user_id),
-                    "list_tasks": agent._make_list_tasks(db, current_user_id),
-                    "get_calendar": agent._make_get_calendar(db, current_user_id),
-                    "get_user_style": agent._make_get_user_style(db, current_user_id),
-                    "save_learning": agent._make_save_learning(db, current_user_id),
-                    "search_learnings": agent._make_search_learnings(db, current_user_id),
-                }
-
-                # Wrap executors to emit tool_call / tool_result events
-                wrapped_executors = {}
-                for name, executor in tool_executors.items():
-                    async def _wrap(_name: str = name, _executor: object = executor, **kwargs: object) -> object:
-                        await on_tool_call(_name)
-                        result = await _executor(**kwargs)  # type: ignore[operator]
-                        await on_tool_result(_name)
-                        return result
-                    wrapped_executors[name] = _wrap
-
-                result = await agent._llm.generate_with_tools(
-                    messages=messages,
-                    tools=AGENT_TOOLS,
-                    tool_executors=wrapped_executors,
-                    system=AGENT_SYSTEM_PROMPT,
-                    stream_callback=on_token,
+                orch = MultiAgentOrchestrator(
+                    llm=agent_inst._llm,
+                    embedder=agent_inst._embedder,
+                    session_factory=get_session_factory(),
+                    sub_agent_llm=sub_llm,
                 )
 
-                await agent._persist_turns(
+                result = await orch.query(
                     db=db,
                     user_id=current_user_id,
-                    sid=resolved_session_id,
                     question=data.question,
-                    answer=result.final_answer,
-                    tool_calls=result.tool_calls,
+                    session_id=data.session_id,
+                    stream_callback=on_token,
                 )
 
                 await queue.put({
                     "event": "done",
                     "data": json_module.dumps({
-                        "session_id": resolved_session_id,
-                        "iterations": result.iterations,
-                        "tools_used": [tc.tool_name for tc in result.tool_calls],
+                        "session_id": result.get("session_id", resolved_session_id),
+                        "iterations": result.get("iterations", 0),
+                        "tools_used": result.get("tools_used", []),
                     }),
                 })
             except asyncio.CancelledError:

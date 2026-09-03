@@ -1,6 +1,6 @@
 """API client — async httpx wrapper for the FastAPI backend."""
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -237,6 +237,46 @@ class APIClient:
         if session_id is not None:
             payload["session_id"] = session_id
         return await self._request("POST", "/agent/query", json=payload, timeout=_AGENT_TIMEOUT)
+
+    async def agent_query_stream(
+        self,
+        question: str,
+        session_id: Optional[str] = None,
+    ) -> AsyncGenerator[Tuple[str, Dict[str, Any]], None]:
+        """Stream an agent query via SSE. Yields (event_type, data_dict) tuples.
+
+        Event types: tool_call, tool_result, token, done, error
+        """
+        import json as _json
+
+        payload: Dict[str, Any] = {"question": question}
+        if session_id is not None:
+            payload["session_id"] = session_id
+
+        url = self._base_url + "/agent/stream"
+        async with httpx.AsyncClient(timeout=_AGENT_TIMEOUT) as client:
+            async with client.stream(
+                "POST", url,
+                json=payload,
+                headers=self._headers(),
+            ) as resp:
+                if resp.status_code >= 400:
+                    raise APIError(resp.status_code, "Stream request failed")
+
+                event_type: Optional[str] = None
+                async for raw_line in resp.aiter_lines():
+                    line = raw_line.strip()
+                    if line.startswith("event: "):
+                        event_type = line[7:]
+                    elif line.startswith("data: ") and event_type is not None:
+                        try:
+                            data = _json.loads(line[6:])
+                            yield event_type, data
+                        except _json.JSONDecodeError:
+                            pass
+                        event_type = None
+                    elif not line:
+                        event_type = None
 
     # --- Briefing ---
 

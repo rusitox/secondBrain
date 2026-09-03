@@ -57,7 +57,9 @@ let isStreaming     = false;
 
 const authOverlay    = document.getElementById('auth-overlay');
 const authForm       = document.getElementById('auth-form');
-const apiKeyInput    = document.getElementById('api-key-input');
+const emailInput     = document.getElementById('email-input');
+const passwordInput  = document.getElementById('password-input');
+const authSubmitBtn  = document.getElementById('auth-submit-btn');
 const authError      = document.getElementById('auth-error');
 
 const chat           = document.getElementById('chat');
@@ -138,31 +140,43 @@ function init() {
 
 authForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const key = apiKeyInput.value.trim();
-  if (!key) return;
+  const email    = emailInput.value.trim();
+  const password = passwordInput.value;
+  if (!email || !password) return;
 
-  // Quick validation: test the key against health or any authed endpoint
-  const ok = await validateApiKey(key);
-  if (ok) {
-    apiKey = key;
+  authSubmitBtn.disabled = true;
+  authSubmitBtn.textContent = 'Entrando…';
+  authError.classList.remove('visible');
+
+  const result = await login(email, password);
+  authSubmitBtn.disabled = false;
+  authSubmitBtn.textContent = 'Entrar';
+
+  if (result) {
+    apiKey = result.api_key;
     localStorage.setItem(STORAGE_KEY, apiKey);
     authOverlay.style.display = 'none';
-    authError.classList.remove('visible');
+    passwordInput.value = '';
     if (wakeEnabled) startWakeWord();
   } else {
-    authError.textContent = 'API key inválida. Verificá que empiece con sb_.';
+    authError.textContent = 'Credenciales incorrectas.';
     authError.classList.add('visible');
+    passwordInput.value = '';
+    passwordInput.focus();
   }
 });
 
-async function validateApiKey(key) {
+async function login(email, password) {
   try {
-    const resp = await fetch(`${API_BASE}/users/`, {
-      headers: { 'Authorization': `Bearer ${key}` },
+    const resp = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
     });
-    return resp.status !== 401;
+    if (!resp.ok) return null;
+    return await resp.json(); // { api_key, user_name }
   } catch {
-    return false;
+    return null;
   }
 }
 

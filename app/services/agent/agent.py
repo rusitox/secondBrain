@@ -100,9 +100,22 @@ class AgentOrchestrator:
         """
         from app.services.agent.orchestrator import MultiAgentOrchestrator
         from app.core.database import get_session_factory
+        from app.core.config import get_settings
+        settings = get_settings()
+        # Only create a separate sub-agent LLM when explicitly configured.
+        # When unset, MultiAgentOrchestrator uses self._llm for both roles,
+        # which preserves correct mock injection in tests.
+        sub_agent_llm: Optional[LLMClient] = None
+        if settings.llm_sub_agent_model:
+            sub_api_key = settings.llm_sub_agent_api_key or settings.llm_api_key
+            sub_agent_llm = LLMClient(
+                api_key=sub_api_key,
+                model=settings.llm_sub_agent_model,
+            )
         orchestrator = MultiAgentOrchestrator(
             self._llm, self._embedder,
             session_factory=get_session_factory(),
+            sub_agent_llm=sub_agent_llm,
         )
         return await orchestrator.query(db, user_id, question, session_id)
 

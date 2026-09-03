@@ -1,0 +1,7 @@
+- [Phase 2 Sync QA](qa_phase2_sync.md) — 15 tests pass but 52% coverage, 3 CRITICALs: _run_sync/trigger/load_jobs untested
+- [Phase 3 User State QA](qa_phase3_user_state.md) — 35 tests pass, 61% coverage, 3 CRITICALs: no error-path endpoint tests, CLI startup sync untested, server persistence untested
+- [Phase 9A Notion QA](qa_phase9a_notion.md) — All checklist items passed, comments deferred, 5 minor edge cases uncovered
+- [Phase 9B Notion QA](qa_phase9b_notion.md) — All 10 checklist items PASS, 62 tests green, minor gaps in retry/CLI testing
+- [Phase 9C Notion QA](qa_phase9c_notion.md) — 49 tests pass, 3 minor functional gaps (background sync no-op, /prep no publish, no detection hook), 5 coverage gaps
+- [Phase 9D Notion QA](qa_phase9d_notion.md) — 657 tests pass, 4 gaps: no publisher method tests, no endpoint tests, /prep hook untested, no E2E
+- [Agent Memory Upgrade QA](qa_agent_memory_upgrade.md) — Migrations OK, orchestrator session_id/iterations covered; 4 CRITICALs: generate_with_tools/SaveLearning/SearchLearnings/LearningExtractor all untested

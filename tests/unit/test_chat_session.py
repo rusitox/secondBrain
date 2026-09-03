@@ -1,6 +1,7 @@
 """Unit tests for CLI chat session."""
 import pytest
 import httpx
+from typing import Any, AsyncGenerator, List, Optional, Tuple
 from unittest.mock import ANY, AsyncMock, MagicMock, patch, call
 
 from cli.api_client import APIClient, APIError, _AGENT_TIMEOUT, _DEFAULT_TIMEOUT
@@ -27,6 +28,22 @@ def _make_config(**overrides) -> CLIConfig:
     return config
 
 
+def _make_stream_generator(
+    answer: str = "You have 2 pending tasks.",
+    tools: Optional[List[str]] = None,
+) -> Any:
+    """Return an async-generator function that yields token + done events."""
+    _tools = tools or []
+
+    async def _stream(
+        question: str, session_id: Optional[str] = None
+    ) -> AsyncGenerator[Tuple[str, Any], None]:
+        yield "token", {"text": answer}
+        yield "done", {"session_id": "test-session", "iterations": 1, "tools_used": _tools}
+
+    return _stream
+
+
 def _make_api() -> APIClient:
     api = MagicMock(spec=APIClient)
     api.agent_query = AsyncMock(return_value={
@@ -34,6 +51,8 @@ def _make_api() -> APIClient:
         "tools_used": ["memory", "tasks"],
         "sources": [{"id": "1"}, {"id": "2"}],
     })
+    # Default streaming path used by _handle_query
+    api.agent_query_stream = _make_stream_generator()
     api.get_user_stats = AsyncMock(return_value={
         "documents_total": 50, "commitments_pending": 3,
         "commitments_overdue": 0, "integrations_active": 1,
@@ -51,13 +70,27 @@ class TestChatSessionQuery:
         session = ChatSession(api=api, config=config)
         session._prompt_session = None  # Force fallback input
 
+        calls: List[Tuple[str, Any]] = []
+
+        async def _tracked(question: str, session_id: Optional[str] = None) -> AsyncGenerator[Tuple[str, Any], None]:
+            calls.append((question, session_id))
+            yield "done", {"session_id": "sid", "iterations": 1, "tools_used": []}
+
+        api.agent_query_stream = _tracked
+
         await session._handle_query("What's pending?")
-        api.agent_query.assert_awaited_once_with("What's pending?", session_id=ANY)
+        assert len(calls) == 1
+        assert calls[0][0] == "What's pending?"
 
     @pytest.mark.asyncio
     async def test_query_api_error_handled(self) -> None:
         api = _make_api()
-        api.agent_query = AsyncMock(side_effect=APIError(500, "Internal error"))
+
+        async def _error_stream(question: str, session_id: Optional[str] = None) -> AsyncGenerator[Tuple[str, Any], None]:
+            raise APIError(500, "Internal error")
+            yield  # make it a generator
+
+        api.agent_query_stream = _error_stream
         session = ChatSession(api=api, config=_make_config())
         session._prompt_session = None
 
@@ -67,7 +100,12 @@ class TestChatSessionQuery:
     @pytest.mark.asyncio
     async def test_query_503_shows_warning(self) -> None:
         api = _make_api()
-        api.agent_query = AsyncMock(side_effect=APIError(503, "Unavailable"))
+
+        async def _error_stream(question: str, session_id: Optional[str] = None) -> AsyncGenerator[Tuple[str, Any], None]:
+            raise APIError(503, "Unavailable")
+            yield  # make it a generator
+
+        api.agent_query_stream = _error_stream
         session = ChatSession(api=api, config=_make_config())
         session._prompt_session = None
 
@@ -77,7 +115,11 @@ class TestChatSessionQuery:
     @pytest.mark.asyncio
     async def test_query_empty_answer(self) -> None:
         api = _make_api()
-        api.agent_query = AsyncMock(return_value={"answer": "", "tools_used": [], "sources": []})
+
+        async def _empty_stream(question: str, session_id: Optional[str] = None) -> AsyncGenerator[Tuple[str, Any], None]:
+            yield "done", {"session_id": "sid", "iterations": 1, "tools_used": []}
+
+        api.agent_query_stream = _empty_stream
         session = ChatSession(api=api, config=_make_config())
         session._prompt_session = None
 
@@ -128,6 +170,13 @@ class TestChatSessionLoop:
     @pytest.mark.asyncio
     async def test_query_then_quit(self) -> None:
         api = _make_api()
+        calls: List[Tuple[str, Any]] = []
+
+        async def _tracked(question: str, session_id: Optional[str] = None) -> AsyncGenerator[Tuple[str, Any], None]:
+            calls.append((question, session_id))
+            yield "done", {"session_id": "sid", "iterations": 1, "tools_used": []}
+
+        api.agent_query_stream = _tracked
         session = ChatSession(api=api, config=_make_config())
         session._prompt_session = None
 
@@ -135,7 +184,8 @@ class TestChatSessionLoop:
             with patch.object(session, "_show_welcome", AsyncMock()):
                 await session.run()
 
-        api.agent_query.assert_awaited_once_with("What's up?", session_id=ANY)
+        assert len(calls) == 1
+        assert calls[0][0] == "What's up?"
 
 
 class TestChatSessionWelcome:
@@ -298,9 +348,12 @@ class TestHandleQueryTimeout:
     async def test_handle_query_read_timeout_shows_warning_not_raise(self) -> None:
         """ReadTimeout must be caught; the session must continue (no exception propagates)."""
         api = _make_api()
-        api.agent_query = AsyncMock(
-            side_effect=httpx.ReadTimeout("server took too long", request=None)
-        )
+
+        async def _timeout_stream(question: str, session_id: Optional[str] = None) -> AsyncGenerator[Tuple[str, Any], None]:
+            raise httpx.ReadTimeout("server took too long", request=None)
+            yield  # make it an async generator
+
+        api.agent_query_stream = _timeout_stream
         session = ChatSession(api=api, config=_make_config())
         session._prompt_session = None
 
@@ -311,9 +364,12 @@ class TestHandleQueryTimeout:
     async def test_handle_query_connect_timeout_shows_warning_not_raise(self) -> None:
         """ConnectTimeout must be caught; the session must continue (no exception propagates)."""
         api = _make_api()
-        api.agent_query = AsyncMock(
-            side_effect=httpx.ConnectTimeout("connection timed out", request=None)
-        )
+
+        async def _timeout_stream(question: str, session_id: Optional[str] = None) -> AsyncGenerator[Tuple[str, Any], None]:
+            raise httpx.ConnectTimeout("connection timed out", request=None)
+            yield  # make it an async generator
+
+        api.agent_query_stream = _timeout_stream
         session = ChatSession(api=api, config=_make_config())
         session._prompt_session = None
 
@@ -324,29 +380,42 @@ class TestHandleQueryTimeout:
     async def test_handle_query_timeout_session_continues(self) -> None:
         """After a timeout the session loop is still alive — subsequent queries work."""
         api = _make_api()
-        # First call times out, second succeeds
-        api.agent_query = AsyncMock(side_effect=[
-            httpx.ReadTimeout("timed out", request=None),
-            {"answer": "3 tasks pending.", "tools_used": [], "sources": []},
-        ])
+        call_count = 0
+
+        async def _flaky_stream(question: str, session_id: Optional[str] = None) -> AsyncGenerator[Tuple[str, Any], None]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.ReadTimeout("timed out", request=None)
+                yield  # make it an async generator
+            yield "token", {"text": "3 tasks pending."}
+            yield "done", {"session_id": "sid", "iterations": 1, "tools_used": []}
+
+        api.agent_query_stream = _flaky_stream
         session = ChatSession(api=api, config=_make_config())
         session._prompt_session = None
 
         await session._handle_query("first question")   # times out — must not raise
         await session._handle_query("second question")  # succeeds
 
-        assert api.agent_query.await_count == 2
+        assert call_count == 2
 
     @pytest.mark.asyncio
     async def test_handle_query_timeout_does_not_call_api_twice(self) -> None:
-        """A timeout must not trigger a retry — agent_query() is called exactly once."""
+        """A timeout must not trigger a retry — stream is called exactly once."""
         api = _make_api()
-        api.agent_query = AsyncMock(
-            side_effect=httpx.ReadTimeout("timed out", request=None)
-        )
+        call_count = 0
+
+        async def _timeout_stream(question: str, session_id: Optional[str] = None) -> AsyncGenerator[Tuple[str, Any], None]:
+            nonlocal call_count
+            call_count += 1
+            raise httpx.ReadTimeout("timed out", request=None)
+            yield  # make it an async generator
+
+        api.agent_query_stream = _timeout_stream
         session = ChatSession(api=api, config=_make_config())
         session._prompt_session = None
 
         await session._handle_query("heavy question")
 
-        api.agent_query.assert_awaited_once()
+        assert call_count == 1

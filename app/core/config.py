@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     llm_api_key: str = ""
     llm_model: str = "anthropic/claude-haiku-4-5-20251001"
+    llm_sub_agent_model: str = ""   # if empty, uses llm_model
+    llm_sub_agent_api_key: str = "" # if empty, uses llm_api_key
 
     # CORS
     cors_origins: str = ""  # comma-separated list of allowed origins
@@ -51,6 +53,9 @@ class Settings(BaseSettings):
     tts_voice: str = "nova"         # alloy | echo | fable | onyx | nova | shimmer
     tts_model: str = "tts-1"        # tts-1 | tts-1-hd
     voice_max_audio_mb: int = 25
+
+    # Portal login (voice UI)
+    portal_password: str = ""       # if empty, login is disabled in production
 
     @field_validator("fernet_key")
     @classmethod

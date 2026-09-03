@@ -9,9 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_id, get_db
-from app.api.schemas.auth import APIKeyCreate, APIKeyCreated, APIKeyList, APIKeyResponse
+from app.api.schemas.auth import APIKeyCreate, APIKeyCreated, APIKeyList, APIKeyResponse, LoginRequest, LoginResponse
 from app.core.config import get_settings
 from app.models.api_key import APIKey
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,58 @@ def _hash_key(plaintext: str) -> str:
 def _verify_key(plaintext: str, hashed: str) -> bool:
     """Verify a plaintext key against its bcrypt hash."""
     return bcrypt.checkpw(plaintext.encode("utf-8"), hashed.encode("utf-8"))
+
+
+@router.post("/login", response_model=LoginResponse)
+async def login(
+    body: LoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Exchange email + portal password for an API key.
+
+    The portal_password is set via the PORTAL_PASSWORD env var.
+    If not configured, the endpoint returns 503 (use API keys directly).
+    """
+    settings = get_settings()
+
+    if not settings.portal_password:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Portal login is not configured. Set PORTAL_PASSWORD in .env.",
+        )
+
+    if body.password != settings.portal_password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales incorrectas.",
+        )
+
+    # Find user by email
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales incorrectas.",
+        )
+
+    # Always create a fresh session key for the portal
+    plaintext = _generate_api_key()
+    key_hash = _hash_key(plaintext)
+    key_prefix = plaintext[:12]
+
+    api_key = APIKey(
+        user_id=user.id,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name="portal-login",
+    )
+    db.add(api_key)
+    await db.flush()
+
+    logger.info("Portal login: user=%s prefix=%s", user.email, key_prefix)
+
+    return {"api_key": plaintext, "user_name": user.full_name}
 
 
 @router.post("/api-keys", response_model=APIKeyCreated, status_code=status.HTTP_201_CREATED)

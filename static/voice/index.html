@@ -21,25 +21,33 @@
       <div class="auth-logo-text">secondBrain</div>
     </div>
     <div class="auth-title">Bienvenido de vuelta</div>
-    <div class="auth-subtitle">
-      Ingresá tu API key para acceder a tu asistente.
-      La podés generar con <code style="font-size:12px;background:rgba(255,255,255,0.07);padding:1px 5px;border-radius:3px">python -m app.cli.create_api_key</code>
-    </div>
+    <div class="auth-subtitle">Ingresá tus credenciales para acceder.</div>
     <form id="auth-form">
       <div class="form-group">
-        <label class="form-label" for="api-key-input">API Key</label>
+        <label class="form-label" for="email-input">Email</label>
         <input
-          id="api-key-input"
+          id="email-input"
+          class="form-input"
+          type="email"
+          placeholder="tu@email.com"
+          autocomplete="email"
+          spellcheck="false"
+          required
+        />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password-input">Contraseña</label>
+        <input
+          id="password-input"
           class="form-input"
           type="password"
-          placeholder="sb_…"
-          autocomplete="off"
-          spellcheck="false"
+          placeholder="••••••••"
+          autocomplete="current-password"
           required
         />
         <div id="auth-error" class="form-error"></div>
       </div>
-      <button type="submit" class="auth-btn">Entrar</button>
+      <button type="submit" class="auth-btn" id="auth-submit-btn">Entrar</button>
     </form>
   </div>
 </div>

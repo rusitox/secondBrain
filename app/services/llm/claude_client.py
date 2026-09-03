@@ -111,9 +111,8 @@ class LLMClient:
                 messages, tools, tool_executors, system, max_iterations, stream_callback
             )
         else:
-            # OpenAI streaming not yet implemented — stream_callback ignored
             return await self._generate_with_tools_openai(
-                messages, tools, tool_executors, system, max_iterations
+                messages, tools, tool_executors, system, max_iterations, stream_callback
             )
 
     async def _call_anthropic_with_retry(
@@ -288,6 +287,7 @@ class LLMClient:
         tool_executors: Dict[str, Callable],
         system: Optional[str],
         max_iterations: int,
+        stream_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> ToolUseResult:
         """OpenAI agentic loop: call → tool_calls → call → … → stop."""
         from openai import RateLimitError as OpenAIRateLimitError
@@ -361,6 +361,30 @@ class LLMClient:
             message = response.choices[0].message
 
             if not message.tool_calls:
+                if stream_callback is not None:
+                    # Stream the final answer using OpenAI streaming
+                    stream_kwargs: Dict[str, Any] = {
+                        "model": self._model_id,
+                        "max_completion_tokens": self._max_tokens,
+                        "messages": current_messages,
+                        "stream": True,
+                    }
+                    if openai_tools:
+                        stream_kwargs["tools"] = openai_tools
+                        stream_kwargs["tool_choice"] = "none"
+                        stream_kwargs["reasoning_effort"] = "none"
+                    stream_parts: List[str] = []
+                    async for chunk in await client.chat.completions.create(**stream_kwargs):  # type: ignore[call-overload]
+                        delta = chunk.choices[0].delta
+                        if delta.content:
+                            await stream_callback(delta.content)
+                            stream_parts.append(delta.content)
+                    return ToolUseResult(
+                        final_answer="".join(stream_parts),
+                        tool_calls=tool_calls_made,
+                        iterations=iterations,
+                        stop_reason="end_turn",
+                    )
                 # No tool calls — return final answer
                 return ToolUseResult(
                     final_answer=message.content or "",

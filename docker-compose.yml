@@ -1,0 +1,22 @@
+version: "3.9"
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: secondbrain-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: secondbrain
+      POSTGRES_USER: secondbrain
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secondbrain_dev}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - secondbrain-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secondbrain"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  secondbrain-data:
