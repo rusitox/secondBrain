@@ -57,9 +57,30 @@ Focus on: who owns what, historical patterns, recurring issues, unresolved ambig
 _TASKS_SYSTEM = _BASE_SUB_AGENT_PROMPT + """
 
 You are the TASKS agent. Focus exclusively on pending commitments, action items, and promises.
-Use list_tasks to get the full task list. Flag anything overdue, unclear ownership, or ambiguous status.
-Also check the calendar for today's events. Use search_learnings to recall past context about \
-tasks or owners, and save_learning to persist any new insight discovered."""
+
+IDENTITY: The question will begin with [IDENTIDAD DEL USUARIO: Name <email>]. Use Name and email \
+to identify which tasks belong to the user. When the owner field matches the user's name or email \
+(case-insensitive, partial match OK), treat those as the user's own tasks. Tasks owned by other \
+people are third-party tasks — list them separately and briefly.
+
+TASK AGE: Each task has a created_at field. Categorize by age relative to today:
+- "Esta semana" — created in the last 7 days (likely still active)
+- "Hace 2–3 semanas" — created 8–21 days ago (check if still relevant)
+- "Antiguo / probablemente vencido" — created more than 21 days ago (flag for review)
+
+Use list_tasks to get all pending tasks. Organize output by: own tasks (grouped by age) then \
+third-party tasks (brief list). Flag overdue items. Also check the calendar for today's events.
+Use search_learnings to recall past context about tasks or owners, and save_learning to persist \
+any new insight discovered."""
+
+_WELCOME_SYSTEM = """\
+You are a quick-start agent for an AI Chief of Staff system.
+Call list_tasks once and get_calendar once. Nothing else.
+Return a compact JSON-style summary:
+- tasks_count: total pending tasks found
+- meetings: list of {time, title} for today's upcoming meetings only
+Do NOT call search_learnings, search_memory, or save_learning.
+Do NOT provide analysis or recommendations — just retrieve the data."""
 
 _SLACK_SYSTEM = _BASE_SUB_AGENT_PROMPT + """
 
@@ -374,6 +395,29 @@ _OUTLOOK_KEYWORDS = {"email", "correo", "outlook", "calendario", "calendar"}
 _TEAMS_KEYWORDS = {"teams", "chat", "microsoft"}
 _FATHOM_KEYWORDS = {"reunión", "reunion", "meeting", "transcri", "grabación", "fathom", "zoom", "llamada", "video call"}
 _NOTION_KEYWORDS = {"notion", "página", "pagina", "database", "wiki"}
+_WELCOME_MARKERS = {"inicio de jornada"}
+
+
+class _WelcomeAgent(_SubAgent):
+    """Lightweight agent for session startup: only list_tasks + get_calendar.
+
+    Runs as a single agent (no parallelism needed) to avoid the overhead
+    of spinning up 4+ sub-agents for a simple greeting query.
+    """
+
+    name = "welcome"
+    system_prompt = _WELCOME_SYSTEM
+
+    def _get_tools(self) -> List[Dict[str, Any]]:
+        return _tools("list_tasks", "get_calendar")
+
+    def _build_tool_executors(
+        self, db: AsyncSession, user_id: uuid.UUID
+    ) -> Dict[str, Callable]:
+        return {
+            "list_tasks": self._executor_list_tasks(db, user_id),
+            "get_calendar": self._executor_get_calendar(db, user_id),
+        }
 
 
 def _route_agents(
@@ -383,6 +427,10 @@ def _route_agents(
 ) -> List[_SubAgent]:
     """Return the list of sub-agent instances to run for this question."""
     q_lower = question.lower()
+
+    # Fast path: welcome/startup queries — single lightweight agent, no LLM overhead per tool
+    if any(marker in q_lower for marker in _WELCOME_MARKERS):
+        return [_WelcomeAgent(llm, embedder)]
 
     # Helper: check whether any keyword appears as a substring in the question
     def _matches(keywords: set) -> bool:
@@ -467,12 +515,18 @@ class MultiAgentOrchestrator:
             db, user_id, session_id
         )
 
-        # 2. Fetch user style for synthesis prompt
+        # 2. Fetch user identity + style
+        user_name, user_email = await self._fetch_user_identity(db, user_id)
         style_info = await StyleAnalyzerTool().get_style(db, user_id)
         style_text = _format_style(style_info)
 
+        # Augment question with user identity so sub-agents know who the user is
+        augmented_question = (
+            f"[IDENTIDAD DEL USUARIO: {user_name} <{user_email}>]\n\n{question}"
+        ) if user_name else question
+
         # 3. Route sub-agents
-        agents = _route_agents(question, self._llm, self._embedder)
+        agents = _route_agents(augmented_question, self._llm, self._embedder)
         agent_names = [a.name for a in agents]
         logger.info(
             "MultiAgentOrchestrator: routing to agents=%s for question=%r",
@@ -481,7 +535,7 @@ class MultiAgentOrchestrator:
         )
 
         # 4. Run sub-agents in parallel; capture exceptions without crashing
-        coros = [self._run_agent_isolated(a, db, user_id, question) for a in agents]
+        coros = [self._run_agent_isolated(a, db, user_id, augmented_question) for a in agents]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
         sub_results: List[SubAgentResult] = []
@@ -589,7 +643,6 @@ class MultiAgentOrchestrator:
         return await self._llm.generate(
             system_prompt=system_prompt,
             user_message=user_message,
-            temperature=0.3,
         )
 
     # ------------------------------------------------------------------
@@ -682,6 +735,23 @@ class MultiAgentOrchestrator:
         ))
 
         await db.flush()
+
+    # ------------------------------------------------------------------
+    # User identity
+    # ------------------------------------------------------------------
+
+    async def _fetch_user_identity(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Return (full_name, email) for user_id, or (None, None) if not found."""
+        from app.models.user import User
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if user is not None:
+            return user.full_name, user.email
+        return None, None
 
 
 # ---------------------------------------------------------------------------
