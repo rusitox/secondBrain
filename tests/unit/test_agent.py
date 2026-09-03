@@ -125,6 +125,8 @@ def _make_orchestrator(answer: str = "Here's your answer.") -> AgentOrchestrator
         iterations=1,
         stop_reason="end_turn",
     ))
+    # Synthesis step calls generate() (no tools) — must be an AsyncMock
+    mock_llm.generate = AsyncMock(return_value=answer)
     mock_embedder = MagicMock()
     return AgentOrchestrator(claude_client=mock_llm, embedder=mock_embedder)
 
@@ -176,46 +178,51 @@ class TestAgentOrchestrator:
             iterations=2,
             stop_reason="end_turn",
         ))
+        mock_llm.generate = AsyncMock(return_value="Found some notes.")
         orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
         db = _make_empty_db()
         result = await orch.query(db, uuid.uuid4(), "Find my meeting notes")
         assert isinstance(result["sources"], list)
-        assert len(result["sources"]) == 1
-        assert result["sources"][0]["source"] == "fathom"
+        # Multi-agent system: each sub-agent produces its own search_memory calls
+        assert len(result["sources"]) >= 1
+        assert any(s["source"] == "fathom" for s in result["sources"])
 
     @pytest.mark.asyncio
     async def test_query_tools_used_from_tool_calls(self) -> None:
-        """tools_used list is built from the ToolCall records."""
+        """tools_used list is built from the ToolCall records across all sub-agents."""
         mock_llm = MagicMock()
         mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
             final_answer="Done.",
             tool_calls=[
-                ToolCall("get_user_style", {}, '{"persona": "exec"}'),
+                ToolCall("search_memory", {"query": "tasks"}, "[]"),
                 ToolCall("list_tasks", {}, "[]"),
             ],
             iterations=3,
             stop_reason="end_turn",
         ))
+        mock_llm.generate = AsyncMock(return_value="Done.")
         orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
         db = _make_empty_db()
         result = await orch.query(db, uuid.uuid4(), "What do I have today?")
-        assert "get_user_style" in result["tools_used"]
+        assert "search_memory" in result["tools_used"]
         assert "list_tasks" in result["tools_used"]
 
     @pytest.mark.asyncio
     async def test_query_iterations_propagated(self) -> None:
-        """iterations from ToolUseResult appears in the response."""
+        """iterations is the sum of all sub-agent iterations plus one synthesis step."""
         mock_llm = MagicMock()
         mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
             final_answer="Done.",
             tool_calls=[],
-            iterations=5,
+            iterations=2,
             stop_reason="end_turn",
         ))
+        mock_llm.generate = AsyncMock(return_value="Done.")
         orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
         db = _make_empty_db()
         result = await orch.query(db, uuid.uuid4(), "test")
-        assert result["iterations"] == 5
+        # Multi-agent: total = Σ sub-agent iterations + 1 (synthesis); always > 2
+        assert result["iterations"] > 2
 
     @pytest.mark.asyncio
     async def test_session_id_echoed_when_provided(self) -> None:

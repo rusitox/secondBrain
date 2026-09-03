@@ -2,6 +2,9 @@
 
 Each entry follows the Anthropic tool-use JSON schema format.
 The tool_executors dict in AgentOrchestrator maps these names to callables.
+
+Per-agent subsets (ORCHESTRATOR_TOOLS, SLACK_TOOLS, etc.) are derived from
+AGENT_TOOLS by name so there is a single source of truth for each schema.
 """
 from typing import Any, Dict, List
 
@@ -148,3 +151,24 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Per-agent tool subsets
+# ---------------------------------------------------------------------------
+# Derived from AGENT_TOOLS by name — single source of truth for each schema.
+
+def _tools(*names: str) -> List[Dict[str, Any]]:
+    """Filter AGENT_TOOLS to only the named tools, preserving AGENT_TOOLS order."""
+    name_set = set(names)
+    return [t for t in AGENT_TOOLS if t["name"] in name_set]
+
+
+ORCHESTRATOR_TOOLS = _tools("get_user_style", "search_learnings")
+SLACK_TOOLS = _tools("search_memory")
+OUTLOOK_TOOLS = _tools("search_memory", "get_calendar")
+TEAMS_TOOLS = _tools("search_memory")
+FATHOM_TOOLS = _tools("search_memory")
+NOTION_TOOLS = _tools("search_memory")
+CROSS_KNOWLEDGE_TOOLS = _tools("search_memory", "search_learnings", "save_learning")
+TASKS_TOOLS = _tools("list_tasks", "get_calendar", "search_learnings", "save_learning")

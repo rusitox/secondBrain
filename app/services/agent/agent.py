@@ -93,69 +93,18 @@ class AgentOrchestrator:
         session_id: Optional[str] = None,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Process an agentic query using multiple tools via the tool-use API.
+        """Delegate to MultiAgentOrchestrator.
 
+        Kept as a thin shim for backward compatibility with the router layer.
         Returns dict with: answer, tools_used, sources, session_id, iterations.
         """
-        # 1. Resolve session and load conversation history
-        resolved_session_id, history = await self._resolve_session(
-            db, user_id, session_id
+        from app.services.agent.orchestrator import MultiAgentOrchestrator
+        from app.core.database import get_session_factory
+        orchestrator = MultiAgentOrchestrator(
+            self._llm, self._embedder,
+            session_factory=get_session_factory(),
         )
-
-        # 2. Build tool executors
-        tool_executors: Dict[str, Callable] = {
-            "search_memory": self._make_search_memory(db, user_id),
-            "list_tasks": self._make_list_tasks(db, user_id),
-            "get_calendar": self._make_get_calendar(db, user_id),
-            "get_user_style": self._make_get_user_style(db, user_id),
-            "save_learning": self._make_save_learning(db, user_id),
-            "search_learnings": self._make_search_learnings(db, user_id),
-        }
-
-        # 3. Build messages: history + current question
-        messages = list(history)
-        messages.append({"role": "user", "content": question})
-
-        # 4. Run agentic loop
-        result = await self._llm.generate_with_tools(
-            messages=messages,
-            tools=AGENT_TOOLS,
-            tool_executors=tool_executors,
-            system=AGENT_SYSTEM_PROMPT,
-        )
-
-        # 5. Persist turns
-        await self._persist_turns(
-            db, user_id, resolved_session_id, question,
-            result.final_answer, result.tool_calls,
-        )
-
-        # 6. Extract sources from search_memory tool calls
-        sources: List[Dict[str, Any]] = []
-        for tc in result.tool_calls:
-            if tc.tool_name == "search_memory":
-                try:
-                    parsed = json.loads(tc.tool_result)
-                    if isinstance(parsed, list):
-                        sources.extend(parsed)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-
-        # 7. Build tools_used list (unique, ordered)
-        tools_used: List[str] = []
-        seen = set()
-        for tc in result.tool_calls:
-            if tc.tool_name not in seen:
-                tools_used.append(tc.tool_name)
-                seen.add(tc.tool_name)
-
-        return {
-            "answer": result.final_answer,
-            "tools_used": tools_used,
-            "sources": sources,
-            "session_id": resolved_session_id,
-            "iterations": result.iterations,
-        }
+        return await orchestrator.query(db, user_id, question, session_id)
 
     # ------------------------------------------------------------------
     # Session management
