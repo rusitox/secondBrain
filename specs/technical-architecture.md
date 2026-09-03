@@ -8,7 +8,7 @@
 - **Database:** PostgreSQL 16+ with pgvector (Supabase-compatible)
 - **Embeddings:** OpenAI (`text-embedding-3-small`, 1536 dims)
 - **LLM:** Claude (Anthropic API) for reasoning, commitment detection, briefings, digests
-- **Agent:** LangChain with custom tools
+- **Agent:** Custom multi-agent orchestrator (Anthropic tool-use API, asyncio.gather parallelism)
 - **CLI:** Rich + prompt_toolkit
 - **Security:** Fernet encryption for stored tokens
 
@@ -44,11 +44,26 @@ Modular connector architecture to ingest text from multiple sources:
 
 ### 3. The Agentic Core
 
-LangChain agent with specialized tools:
-- **Memory Retriever** — Searches the vector DB for context
-- **Task Manager** — Reads/writes to the Commitments table
-- **Calendar Sync** — Checks upcoming meetings
-- **Style Analyzer** — Retrieves user tone and communication heuristics
+Multi-agent orchestrator (`MultiAgentOrchestrator`) with parallel domain specialists:
+
+| Sub-agent | Tools | Responsibility |
+|---|---|---|
+| `SlackAgent` | search_memory(slack) | Slack channels and DMs |
+| `OutlookAgent` | search_memory(outlook), get_calendar | Emails + calendar |
+| `TeamsAgent` | search_memory(teams) | Microsoft Teams chats |
+| `FathomAgent` | search_memory(fathom) | Meeting transcripts (with speaker attribution) |
+| `NotionAgent` | search_memory(notion) | Pages and database items |
+| `CrossKnowledgeAgent` | search_memory(all), search_learnings, save_learning | Cross-platform patterns and long-term memory |
+| `TasksAgent` | list_tasks, get_calendar, search_learnings, save_learning | Pending commitments with ownership verification |
+
+**Query pipeline:**
+1. Keyword routing selects relevant domain agents (always includes CrossKnowledge + Tasks)
+2. Sub-agents run concurrently via `asyncio.gather()`, each with an isolated DB session
+3. Sub-agent outputs are synthesized into a single response via a final LLM call
+4. Conversation history persisted to `conversation_turns` table for multi-turn sessions
+5. Long-term memory (cross-session insights) stored in `memories` table via `save_learning`
+
+**Ownership policy:** TasksAgent never assumes task ownership — always asks for explicit user confirmation; confirmations saved as high-importance learnings.
 
 ### 4. Proactive Features
 
@@ -76,7 +91,11 @@ FastAPI Ingestion Pipeline → Clean → Chunk → Embed → PostgreSQL+pgvector
     ↓
 Commitment Detection (Claude) → Commitments table ←→ Notion Sync
     ↓
-CLI Chat ←→ REST API ←→ RAG Agent (Claude + tools)
+CLI Chat ←→ REST API ←→ MultiAgentOrchestrator
+                            ↓ asyncio.gather()
+                Slack / Outlook / Teams / Fathom / Notion / CrossKnowledge / Tasks agents
+                            ↓ synthesis
+                        Final answer (Claude)
     ↓
 Daily Briefing / Weekly Digest / Meeting Prep → Notion
 ```

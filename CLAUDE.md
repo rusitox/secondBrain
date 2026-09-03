@@ -50,7 +50,7 @@ FastAPI backend with async SQLAlchemy, organized in layers:
   - `retrieval/` — Semantic search with metadata filters
   - `llm/` — Claude client + prompt templates
   - `commitments/` — AI-powered commitment detection
-  - `agent/` — LangChain agent with tools (memory retriever, task manager, style analyzer, calendar sync)
+  - `agent/` — Multi-agent orchestrator: `MultiAgentOrchestrator` routes queries to parallel domain sub-agents (Slack, Outlook, Teams, Fathom, Notion, CrossKnowledge, Tasks), each running its own tool-use loop in an isolated DB session; results synthesized via a final LLM call. `agent.py` is a backward-compat shim. Tool schemas in `tool_definitions.py`, implementations in `tools/`.
   - `briefing/` — Daily briefing generator + scheduler
   - `sync/` — Server-side periodic sync scheduler (APScheduler)
   - `notion/` — Notion publisher, bidirectional sync, weekly digest, block parsing, workspace config
@@ -111,6 +111,8 @@ Terminal-based chat interface consuming the REST API:
 - `app/models/` — SQLAlchemy models (Base, UUIDMixin, TimestampMixin, APIKey)
 - `app/api/routers/` — API endpoints (11 routers)
 - `app/services/connectors/` — Platform connectors (5: outlook, teams, slack, fathom, notion)
+- `app/services/agent/orchestrator.py` — MultiAgentOrchestrator (main agent entry point)
+- `app/services/agent/tool_definitions.py` — Anthropic tool schemas + per-agent subsets
 - `app/services/ingestion/pipeline.py` — Central data flow
 - `app/services/retrieval/search.py` — Hybrid vector search
 - `app/services/sync/scheduler.py` — APScheduler-based periodic sync
