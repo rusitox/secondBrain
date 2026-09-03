@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from anthropic import AsyncAnthropic, RateLimitError, APIStatusError
 from openai import AsyncOpenAI
@@ -97,16 +97,21 @@ class LLMClient:
         tool_executors: Dict[str, Callable],
         system: Optional[str] = None,
         max_iterations: int = 10,
+        stream_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> ToolUseResult:
         """Run an agentic tool-use loop until a final answer is produced.
 
         Dispatches to the appropriate provider loop based on configured provider.
+        When stream_callback is provided (Anthropic only), the final answer is
+        streamed token-by-token via the callback. Tool-use iterations remain
+        non-streaming for simplicity.
         """
         if self._provider == "anthropic":
             return await self._generate_with_tools_anthropic(
-                messages, tools, tool_executors, system, max_iterations
+                messages, tools, tool_executors, system, max_iterations, stream_callback
             )
         else:
+            # OpenAI streaming not yet implemented — stream_callback ignored
             return await self._generate_with_tools_openai(
                 messages, tools, tool_executors, system, max_iterations
             )
@@ -166,8 +171,14 @@ class LLMClient:
         tool_executors: Dict[str, Callable],
         system: Optional[str],
         max_iterations: int,
+        stream_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> ToolUseResult:
-        """Anthropic agentic loop: call → tool_use → call → … → end_turn."""
+        """Anthropic agentic loop: call → tool_use → call → … → end_turn.
+
+        Tool-use iterations use non-streaming calls. When stream_callback is
+        provided, the final answer is produced via a streaming call so tokens
+        are delivered to the caller incrementally.
+        """
         tool_calls_made: List[ToolCall] = []
         current_messages = list(messages)
         iterations = 0
@@ -186,7 +197,30 @@ class LLMClient:
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
             if not tool_use_blocks:
-                # No tool call — extract final text answer
+                # No tool call — this is the final answer turn.
+                # If a stream_callback is provided, re-issue the same call as a
+                # streaming request so tokens are delivered incrementally.
+                if stream_callback is not None:
+                    client = AsyncAnthropic(api_key=self._api_key)
+                    stream_text_parts: List[str] = []
+                    async with client.messages.stream(
+                        model=self._model_id,
+                        max_tokens=self._max_tokens,
+                        system=system or "",
+                        messages=current_messages,
+                        tools=tools or [],
+                    ) as stream:  # type: ignore[call-overload]
+                        async for text_chunk in stream.text_stream:
+                            await stream_callback(text_chunk)
+                            stream_text_parts.append(text_chunk)
+                    return ToolUseResult(
+                        final_answer="".join(stream_text_parts),
+                        tool_calls=tool_calls_made,
+                        iterations=iterations,
+                        stop_reason="end_turn",
+                    )
+
+                # Non-streaming path: extract text from the already-received response
                 final_text = ""
                 for block in response.content:
                     if block.type == "text":

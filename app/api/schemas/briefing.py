@@ -39,6 +39,13 @@ class AgentQueryRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+class AgentStreamRequest(BaseModel):
+    """Request body for POST /agent/stream."""
+
+    question: str = Field(..., min_length=1, max_length=2000)
+    session_id: Optional[str] = None
+
+
 class AgentQueryResponse(BaseModel):
     """Response from POST /agent/query."""
 

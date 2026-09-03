@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     # Security — required for token encryption
     fernet_key: str
 
+    # Voice interface
+    stt_mode: str = "api"           # "local" | "api"
+    whisper_model: str = "base"     # tiny | base | small | medium | large
+    tts_voice: str = "nova"         # alloy | echo | fable | onyx | nova | shimmer
+    tts_model: str = "tts-1"        # tts-1 | tts-1-hd
+    voice_max_audio_mb: int = 25
+
     @field_validator("fernet_key")
     @classmethod
     def validate_fernet_key(cls, v: str) -> str:
