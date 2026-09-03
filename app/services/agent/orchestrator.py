@@ -72,7 +72,9 @@ TASK AGE: Each task has a created_at field. Categorize by age relative to today:
 - "Antiguo / probablemente vencido" — created more than 21 days ago (flag for review)
 
 Use list_tasks to get all pending tasks. Organize output by: own tasks (grouped by age) then \
-third-party tasks (brief list). Flag overdue items. Also check the calendar for today's events.
+third-party tasks (brief list). Flag overdue items. Also check the calendar for today's events — \
+use the `local_time` field (not `timestamp`) when reporting meeting times, as it is already \
+converted to the user's local timezone.
 Use search_learnings to recall past context about tasks or owners, and save_learning to persist \
 any new insight discovered."""
 
@@ -82,6 +84,8 @@ Call list_tasks once and get_calendar once. Nothing else.
 Return a compact JSON-style summary:
 - tasks_count: total pending tasks found
 - meetings: list of {time, title} for today's upcoming meetings only
+IMPORTANT: Use the `local_time` field (not `timestamp`) for meeting times — \
+it is already converted to the user's local timezone.
 Do NOT call search_learnings, search_memory, or save_learning.
 Do NOT provide analysis or recommendations — just retrieve the data."""
 
@@ -145,9 +149,10 @@ class _SubAgent:
     name: str = "base"
     system_prompt: str = _BASE_SUB_AGENT_PROMPT
 
-    def __init__(self, llm: LLMClient, embedder: Embedder) -> None:
+    def __init__(self, llm: LLMClient, embedder: Embedder, user_timezone: str = "UTC") -> None:
         self._llm = llm
         self._embedder = embedder
+        self._user_timezone = user_timezone
 
     def _build_tool_executors(
         self, db: AsyncSession, user_id: uuid.UUID
@@ -233,8 +238,12 @@ class _SubAgent:
     def _executor_get_calendar(
         self, db: AsyncSession, user_id: uuid.UUID
     ) -> Callable:
+        user_tz = self._user_timezone
+
         async def _get_calendar() -> List[Dict[str, Any]]:
-            return await CalendarSyncTool().get_today_events(db, user_id)
+            return await CalendarSyncTool().get_today_events(
+                db, user_id, user_timezone=user_tz
+            )
 
         return _get_calendar
 
@@ -436,45 +445,46 @@ def _route_agents(
     question: str,
     llm: LLMClient,
     embedder: Embedder,
+    user_timezone: str = "UTC",
 ) -> List[_SubAgent]:
     """Return the list of sub-agent instances to run for this question."""
     q_lower = question.lower()
 
     # Fast path: welcome/startup queries — single lightweight agent, no LLM overhead per tool
     if any(marker in q_lower for marker in _WELCOME_MARKERS):
-        return [_WelcomeAgent(llm, embedder)]
+        return [_WelcomeAgent(llm, embedder, user_timezone)]
 
     # Helper: check whether any keyword appears as a substring in the question
     def _matches(keywords: set) -> bool:
         return any(kw in q_lower for kw in keywords)
 
     agents: List[_SubAgent] = [
-        CrossKnowledgeAgent(llm, embedder),
-        TasksAgent(llm, embedder),
+        CrossKnowledgeAgent(llm, embedder, user_timezone),
+        TasksAgent(llm, embedder, user_timezone),
     ]
 
     domain_matched = False
 
     if _matches(_SLACK_KEYWORDS):
-        agents.append(SlackAgent(llm, embedder))
+        agents.append(SlackAgent(llm, embedder, user_timezone))
         domain_matched = True
     if _matches(_OUTLOOK_KEYWORDS):
-        agents.append(OutlookAgent(llm, embedder))
+        agents.append(OutlookAgent(llm, embedder, user_timezone))
         domain_matched = True
     if _matches(_TEAMS_KEYWORDS):
-        agents.append(TeamsAgent(llm, embedder))
+        agents.append(TeamsAgent(llm, embedder, user_timezone))
         domain_matched = True
     if _matches(_FATHOM_KEYWORDS):
-        agents.append(FathomAgent(llm, embedder))
+        agents.append(FathomAgent(llm, embedder, user_timezone))
         domain_matched = True
     if _matches(_NOTION_KEYWORDS):
-        agents.append(NotionAgent(llm, embedder))
+        agents.append(NotionAgent(llm, embedder, user_timezone))
         domain_matched = True
 
     # No domain keyword found → default to Slack + Outlook
     if not domain_matched:
-        agents.append(SlackAgent(llm, embedder))
-        agents.append(OutlookAgent(llm, embedder))
+        agents.append(SlackAgent(llm, embedder, user_timezone))
+        agents.append(OutlookAgent(llm, embedder, user_timezone))
 
     return agents
 
@@ -528,17 +538,21 @@ class MultiAgentOrchestrator:
         )
 
         # 2. Fetch user identity + style
-        user_name, user_email = await self._fetch_user_identity(db, user_id)
+        user_name, user_email, user_tz = await self._fetch_user_identity(db, user_id)
         style_info = await StyleAnalyzerTool().get_style(db, user_id)
         style_text = _format_style(style_info)
 
         # Augment question with user identity so sub-agents know who the user is
-        augmented_question = (
-            f"[IDENTIDAD DEL USUARIO: {user_name} <{user_email}>]\n\n{question}"
-        ) if user_name else question
+        identity_prefix = ""
+        if user_name:
+            identity_prefix = (
+                f"[IDENTIDAD DEL USUARIO: {user_name} <{user_email}> | "
+                f"ZONA HORARIA: {user_tz}]\n\n"
+            )
+        augmented_question = identity_prefix + question if identity_prefix else question
 
         # 3. Route sub-agents
-        agents = _route_agents(augmented_question, self._llm, self._embedder)
+        agents = _route_agents(augmented_question, self._llm, self._embedder, user_timezone=user_tz)
         agent_names = [a.name for a in agents]
         logger.info(
             "MultiAgentOrchestrator: routing to agents=%s for question=%r",
@@ -756,14 +770,18 @@ class MultiAgentOrchestrator:
         self,
         db: AsyncSession,
         user_id: uuid.UUID,
-    ) -> Tuple[Optional[str], Optional[str]]:
-        """Return (full_name, email) for user_id, or (None, None) if not found."""
+    ) -> Tuple[Optional[str], Optional[str], str]:
+        """Return (full_name, email, timezone) for user_id.
+
+        Falls back to (None, None, "UTC") if the user is not found.
+        """
         from app.models.user import User
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if user is not None:
-            return user.full_name, user.email
-        return None, None
+            tz = user.timezone if user.timezone else "UTC"
+            return user.full_name, user.email, tz
+        return None, None, "UTC"
 
 
 # ---------------------------------------------------------------------------

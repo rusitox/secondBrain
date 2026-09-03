@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from dateutil import tz as dateutil_tz
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +32,22 @@ def _parse_event_timestamp(timestamp: str) -> Optional[datetime]:
         return None
 
 
+def _to_local_time(timestamp: str, user_timezone: str) -> Optional[str]:
+    """Convert a UTC ISO timestamp to a local HH:MM string for the given timezone.
+
+    Returns None if the timestamp is empty or unparseable.
+    """
+    dt = _parse_event_timestamp(timestamp)
+    if dt is None:
+        return None
+    local_tz = dateutil_tz.gettz(user_timezone)
+    if local_tz is None:
+        # Unknown timezone name — fall back to UTC
+        local_tz = dateutil_tz.UTC
+    local_dt = dt.astimezone(local_tz)
+    return local_dt.strftime("%H:%M")
+
+
 class CalendarSyncTool:
     """Retrieves calendar events from the user's ingested data."""
 
@@ -47,6 +64,7 @@ class CalendarSyncTool:
         user_id: uuid.UUID,
         date: Optional[datetime] = None,
         upcoming_only: bool = True,
+        user_timezone: str = "UTC",
     ) -> List[Dict[str, Any]]:
         """Fetch calendar events for a given date from ingested documents.
 
@@ -94,6 +112,8 @@ class CalendarSyncTool:
             events.append({
                 "subject": meta.get("subject", ""),
                 "timestamp": timestamp,
+                "local_time": _to_local_time(timestamp, user_timezone),
+                "timezone": user_timezone,
                 "organizer": meta.get("author", ""),
                 "attendees": meta.get("attendees", []),
                 "content": doc.content[:500],
