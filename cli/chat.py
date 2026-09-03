@@ -35,34 +35,19 @@ HISTORY_FILE = DEFAULT_CONFIG_DIR / "history"
 # Prompt sent to the agent as the first turn of every session.
 # Instructs it to build a genuinely personalised, context-aware greeting
 # using everything it knows and can look up — not a generic template.
-_WELCOME_PROMPT = """\
-Estoy iniciando mi jornada. Dame una bienvenida personalizada siguiendo estos pasos \
-en orden — no te saltes ninguno:
+_WELCOME_PROMPT = """
+Inicio de jornada. Hacé solo esto:
+1. list_tasks → cantidad de pendientes detectados
+2. get_calendar → reuniones de hoy que no empezaron
 
-1. Llama a get_user_style para saber cómo comunicarte conmigo.
-2. Llama a search_learnings con queries variadas para recordar qué sabes de mí: \
-mis proyectos actuales, mis preocupaciones, mis prioridades, mi contexto de trabajo, \
-compromisos importantes, cosas que me generan estrés, etc.
-3. Llama a search_memory buscando actividad reciente: qué pasó ayer, cómo viene \
-la semana, conversaciones o emails importantes de los últimos días, decisiones pendientes.
-4. Llama a list_tasks para ver el estado real de mis compromisos y tareas.
-5. Llama a get_calendar para ver qué reuniones tengo hoy que no hayan empezado.
+Respondé en máximo 4 líneas:
+- Saludo breve y cálido (una frase).
+- Reuniones de hoy (solo hora y título, sin descripción).
+- Si hay pendientes: "Encontré X items por verificar — ¿arrancamos por ahí?"
+- Una pregunta o acción concreta para empezar.
 
-Con toda esa información, construye una bienvenida que:
-- Salude de forma cálida y genuina (no genérica) — menciona algo concreto que \
-sepas de mí o de cómo viene mi semana.
-- Pregunte cómo estoy, considerando el contexto real (si hay mucho trabajo, \
-si hay algo estresante, si viene algo importante).
-- Resuma el estado actual: qué tengo pendiente, qué está vencido, qué urge.
-- Mencione las reuniones de hoy con contexto útil (quiénes van, de qué tratan).
-- Dé 2-3 consejos concretos para optimizar el día basándose en lo que tenés \
-que hacer — no consejos genéricos.
-- Ofrezca ayuda proactiva: "puedo ayudarte a preparar la reunión X", \
-"¿querés que revisemos el tema Y?", etc.
-
-Sé directo, cálido y genuinamente útil. Varía el tono según lo que encuentres \
-— si hay urgencias, refléjalo; si el día pinta tranquilo, también. \
-Responde siempre en el idioma del usuario.\
+Sin listas largas. Sin análisis. Sin repetir contexto. Solo lo esencial.
+Respondé en el idioma del usuario.
 """
 
 
