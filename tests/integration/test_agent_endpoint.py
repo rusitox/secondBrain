@@ -5,7 +5,6 @@ session_id propagation, and ConversationTurn persistence.
 
 LLM calls are mocked — these tests do NOT hit OpenAI/Anthropic.
 """
-import json
 import uuid
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,7 +14,7 @@ from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.llm.claude_client import ToolCall, ToolUseResult
+from app.services.agent.strands_orchestrator import StrandsOrchestrator
 
 
 # ---------------------------------------------------------------------------
@@ -41,17 +40,8 @@ async def _create_user_and_api_key(client: AsyncClient) -> tuple:
     return user_id, api_key, {"Authorization": f"Bearer {api_key}"}
 
 
-def _mock_tool_result(answer: str = "Test answer.", tool_calls=None) -> ToolUseResult:
-    return ToolUseResult(
-        final_answer=answer,
-        tool_calls=tool_calls or [],
-        iterations=1,
-        stop_reason="end_turn",
-    )
-
-
 def _make_mock_orchestrator(answer: str = "Test answer.") -> MagicMock:
-    """Return a mock AgentOrchestrator whose query() returns a fixed result."""
+    """Return a mock StrandsOrchestrator whose query() returns a fixed result."""
     orch = MagicMock()
     orch.query = AsyncMock(return_value={
         "answer": answer,
@@ -60,6 +50,42 @@ def _make_mock_orchestrator(answer: str = "Test answer.") -> MagicMock:
         "session_id": str(uuid.uuid4()),
         "iterations": 1,
     })
+    return orch
+
+
+class _FakeStrandsAgent:
+    """Stand-in for a Strands ``Agent`` — avoids hitting OpenAI in tests.
+
+    Only implements what StrandsOrchestrator.query() touches: invoke_async /
+    stream_async (both no-ops here) and .messages / .callback_handler, which
+    is what the answer and tools_used are read from after the run.
+    """
+
+    def __init__(self, answer: str, tool_names: list = None) -> None:
+        from app.services.agent.strands_orchestrator import _StreamingCallbackHandler
+
+        self.messages = [{"role": "assistant", "content": [{"text": answer}]}]
+        self.callback_handler = _StreamingCallbackHandler(stream_callback=None)
+        for name in (tool_names or []):
+            self.callback_handler(current_tool_use={"name": name})
+
+    async def invoke_async(self, question: str) -> None:
+        return None
+
+    async def stream_async(self, question: str):
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+
+def _make_real_orchestrator(answer: str = "Test answer.", tool_names=None) -> StrandsOrchestrator:
+    """Real StrandsOrchestrator with agent construction stubbed out.
+
+    Exercises the actual session-resolution and ConversationTurn-persistence
+    code paths while never constructing a real Strands Agent / OpenAI client.
+    """
+    orch = StrandsOrchestrator(embedder=MagicMock())
+    fake_agent = _FakeStrandsAgent(answer, tool_names)
+    orch._build_agent = MagicMock(return_value=fake_agent)  # type: ignore[method-assign]
     return orch
 
 
@@ -225,24 +251,9 @@ class TestConversationTurnPersistence:
         _, _, headers = await _create_user_and_api_key(client)
         session_id = str(uuid.uuid4())
 
-        # Use a real orchestrator with a mocked LLM so persistence code runs.
-        from app.services.agent.agent import AgentOrchestrator
-        from app.services.ingestion.embedder import Embedder
-
-        mock_llm = MagicMock()
-        mock_llm.generate_with_tools = AsyncMock(
-            return_value=ToolUseResult(
-                final_answer="Aquí está tu respuesta.",
-                tool_calls=[],
-                iterations=1,
-                stop_reason="end_turn",
-            )
-        )
-        mock_llm.generate = AsyncMock(return_value="Aquí está tu respuesta.")
-        orch = AgentOrchestrator(
-            claude_client=mock_llm,
-            embedder=MagicMock(spec=Embedder),
-        )
+        # Real orchestrator with agent construction stubbed so persistence
+        # code actually runs (no real Strands/OpenAI calls).
+        orch = _make_real_orchestrator("Aquí está tu respuesta.")
 
         with patch("app.api.routers.agent._get_agent", return_value=orch):
             resp = await client.post(
@@ -271,36 +282,16 @@ class TestConversationTurnPersistence:
         assert assistant_row[1] == "Aquí está tu respuesta."
 
     @pytest.mark.asyncio
-    async def test_tool_calls_serialized_in_assistant_turn(
+    async def test_tools_used_in_response_but_not_persisted_to_db(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """Tool calls must be serialized to JSON in the assistant turn."""
+        """Strands manages its own tool history — tools_used comes back in the
+        API response, but the DB tool_calls column stays NULL (unlike the old
+        AgentOrchestrator, which serialized ToolCall records into it)."""
         _, _, headers = await _create_user_and_api_key(client)
         session_id = str(uuid.uuid4())
 
-        from app.services.agent.agent import AgentOrchestrator
-        from app.services.ingestion.embedder import Embedder
-
-        mock_llm = MagicMock()
-        mock_llm.generate_with_tools = AsyncMock(
-            return_value=ToolUseResult(
-                final_answer="Listo.",
-                tool_calls=[
-                    ToolCall(
-                        tool_name="get_user_style",
-                        tool_input={},
-                        tool_result='{"persona_description": ""}',
-                    )
-                ],
-                iterations=2,
-                stop_reason="end_turn",
-            )
-        )
-        mock_llm.generate = AsyncMock(return_value="Listo.")
-        orch = AgentOrchestrator(
-            claude_client=mock_llm,
-            embedder=MagicMock(spec=Embedder),
-        )
+        orch = _make_real_orchestrator("Listo.", tool_names=["get_user_style"])
 
         with patch("app.api.routers.agent._get_agent", return_value=orch):
             resp = await client.post(
@@ -310,6 +301,7 @@ class TestConversationTurnPersistence:
             )
 
         assert resp.status_code == 200
+        assert resp.json()["tools_used"] == ["get_user_style"]
 
         result = await db_session.execute(
             text("SELECT tool_calls FROM conversation_turns WHERE session_id = :sid AND role = 'assistant'"),
@@ -317,12 +309,7 @@ class TestConversationTurnPersistence:
         )
         row = result.first()
         assert row is not None
-        tool_calls_raw = row[0]
-        assert tool_calls_raw is not None
-        parsed = json.loads(tool_calls_raw)
-        assert isinstance(parsed, list)
-        assert len(parsed) > 0
-        assert "tool_name" in parsed[0]
+        assert row[0] in (None, "null")
 
     @pytest.mark.asyncio
     async def test_second_query_same_session_appends_turns(
@@ -332,33 +319,20 @@ class TestConversationTurnPersistence:
         _, _, headers = await _create_user_and_api_key(client)
         session_id = str(uuid.uuid4())
 
-        from app.services.agent.agent import AgentOrchestrator
-        from app.services.ingestion.embedder import Embedder
-
-        def _make_orch(answer: str) -> AgentOrchestrator:
-            mock_llm = MagicMock()
-            mock_llm.generate_with_tools = AsyncMock(
-                return_value=ToolUseResult(
-                    final_answer=answer,
-                    tool_calls=[],
-                    iterations=1,
-                    stop_reason="end_turn",
-                )
-            )
-            mock_llm.generate = AsyncMock(return_value=answer)
-            return AgentOrchestrator(
-                claude_client=mock_llm,
-                embedder=MagicMock(spec=Embedder),
-            )
-
-        with patch("app.api.routers.agent._get_agent", return_value=_make_orch("Primera respuesta.")):
+        with patch(
+            "app.api.routers.agent._get_agent",
+            return_value=_make_real_orchestrator("Primera respuesta."),
+        ):
             await client.post(
                 "/agent/query",
                 json={"question": "primera pregunta", "session_id": session_id},
                 headers=headers,
             )
 
-        with patch("app.api.routers.agent._get_agent", return_value=_make_orch("Segunda respuesta.")):
+        with patch(
+            "app.api.routers.agent._get_agent",
+            return_value=_make_real_orchestrator("Segunda respuesta."),
+        ):
             resp = await client.post(
                 "/agent/query",
                 json={"question": "segunda pregunta", "session_id": session_id},
