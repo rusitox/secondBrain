@@ -43,9 +43,10 @@ class BaseSubAgent:
 
     name: str = "base"
 
-    def __init__(self, llm: LLMClient, embedder: Embedder) -> None:
+    def __init__(self, llm: LLMClient, embedder: Embedder, user_timezone: str = "UTC") -> None:
         self._llm = llm
         self._embedder = embedder
+        self._user_timezone = user_timezone
         self._save_learning_tool = SaveLearningTool(embedder)
         self._search_learnings_tool = SearchLearningsTool(embedder)
 
@@ -99,6 +100,7 @@ class BaseSubAgent:
         self, db: AsyncSession, user_id: uuid.UUID
     ) -> Callable:
         from datetime import datetime, timezone
+        user_tz = self._user_timezone
 
         async def _get_calendar(
             date: Optional[str] = None,
@@ -113,7 +115,7 @@ class BaseSubAgent:
                 except ValueError:
                     pass
             return await CalendarSyncTool().get_today_events(
-                db, user_id, date=target, upcoming_only=upcoming_only
+                db, user_id, date=target, upcoming_only=upcoming_only, user_timezone=user_tz
             )
 
         return _get_calendar

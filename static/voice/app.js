@@ -465,6 +465,7 @@ async function streamAgentQuery(question, agentMsg) {
 
   let fullAnswer = '';
   let sentenceBuf = '';   // accumulates text until sentence boundary for TTS
+  let ttsWasStreamed = false;  // true once any sentence was enqueued during streaming
   let toolsUsed = [];
 
   // Sentence-level TTS: flush when we hit . ? ! or buffer grows past ~80 chars
@@ -474,6 +475,7 @@ async function streamAgentQuery(question, agentMsg) {
     if (!ready) return;
     const text = sentenceBuf.trim();
     sentenceBuf = '';
+    ttsWasStreamed = true;
     enqueueTTS(text);
   }
 
@@ -643,11 +645,9 @@ function finalizeAgentMessage(agentMsg, fullAnswer) {
   agentMsg.el.appendChild(footer);
   scrollChat();
 
-  if (autoPlay && fullAnswer) {
-    // TTS was already enqueued during streaming; if not playing, play now
-    if (!ttsPlaying && ttsQueue.length === 0) {
-      enqueueTTS(fullAnswer);
-    }
+  if (autoPlay && fullAnswer && !ttsWasStreamed) {
+    // Only enqueue the full answer if no sentences were streamed during generation
+    enqueueTTS(fullAnswer);
   }
 }
 
