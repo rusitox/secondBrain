@@ -98,8 +98,23 @@ class BaseSubAgent:
     def _make_get_calendar(
         self, db: AsyncSession, user_id: uuid.UUID
     ) -> Callable:
-        async def _get_calendar() -> List[Dict[str, Any]]:
-            return await CalendarSyncTool().get_today_events(db, user_id)
+        from datetime import datetime, timezone
+
+        async def _get_calendar(
+            date: Optional[str] = None,
+            upcoming_only: bool = True,
+        ) -> List[Dict[str, Any]]:
+            target = None
+            if date:
+                try:
+                    target = datetime.strptime(date, "%Y-%m-%d").replace(
+                        tzinfo=timezone.utc
+                    )
+                except ValueError:
+                    pass
+            return await CalendarSyncTool().get_today_events(
+                db, user_id, date=target, upcoming_only=upcoming_only
+            )
 
         return _get_calendar
 

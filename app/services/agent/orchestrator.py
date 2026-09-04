@@ -241,9 +241,20 @@ class _SubAgent:
     ) -> Callable:
         user_tz = self._user_timezone
 
-        async def _get_calendar() -> List[Dict[str, Any]]:
+        async def _get_calendar(
+            date: Optional[str] = None,
+            upcoming_only: bool = True,
+        ) -> List[Dict[str, Any]]:
+            target: Optional[datetime] = None
+            if date:
+                try:
+                    target = datetime.strptime(date, "%Y-%m-%d").replace(
+                        tzinfo=timezone.utc
+                    )
+                except ValueError:
+                    pass  # fall back to today
             return await CalendarSyncTool().get_today_events(
-                db, user_id, user_timezone=user_tz
+                db, user_id, date=target, upcoming_only=upcoming_only, user_timezone=user_tz
             )
 
         return _get_calendar
@@ -554,14 +565,14 @@ class MultiAgentOrchestrator:
         style_info = await StyleAnalyzerTool().get_style(db, user_id)
         style_text = _format_style(style_info)
 
-        # Augment question with user identity so sub-agents know who the user is
-        identity_prefix = ""
-        if user_name:
-            identity_prefix = (
-                f"[IDENTIDAD DEL USUARIO: {user_name} <{user_email}> | "
-                f"ZONA HORARIA: {user_tz}]\n\n"
-            )
-        augmented_question = identity_prefix + question if identity_prefix else question
+        # Augment question with user identity + current date so sub-agents can
+        # resolve relative date references ("hoy", "mañana", "el lunes", etc.)
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        identity_prefix = (
+            f"[IDENTIDAD DEL USUARIO: {user_name} <{user_email}> | "
+            f"ZONA HORARIA: {user_tz} | FECHA DE HOY: {today_str}]\n\n"
+        ) if user_name else f"[FECHA DE HOY: {today_str}]\n\n"
+        augmented_question = identity_prefix + question
 
         # 3. Route sub-agents
         agents = _route_agents(augmented_question, self._sub_llm, self._embedder, user_timezone=user_tz)

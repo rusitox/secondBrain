@@ -61,13 +61,28 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
     {
         "name": "get_calendar",
         "description": (
-            "Get the user's upcoming calendar events for today (events not yet started). "
+            "Get the user's calendar events for a specific date. "
             "Returns meeting subjects, start times, organizers, and attendees. "
-            "Use this to answer questions like 'what meetings do I have left?' or 'what's next on my calendar?'."
+            "Use this to answer questions like 'what meetings do I have today?', "
+            "'what's on my calendar tomorrow?', or 'do I have anything on Friday?'. "
+            "If no date is specified, defaults to today."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "Target date in YYYY-MM-DD format (e.g. '2025-09-04'). "
+                        "Omit or leave empty to get today's events."
+                    ),
+                },
+                "upcoming_only": {
+                    "type": "boolean",
+                    "description": "If true (default), only return events that have not yet started.",
+                    "default": True,
+                },
+            },
             "required": [],
         },
     },
