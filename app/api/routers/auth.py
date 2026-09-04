@@ -1,3 +1,4 @@
+import hmac
 import logging
 import secrets
 import uuid
@@ -54,7 +55,7 @@ async def login(
             detail="Portal login is not configured. Set PORTAL_PASSWORD in .env.",
         )
 
-    if body.password != settings.portal_password:
+    if not hmac.compare_digest(body.password, settings.portal_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales incorrectas.",
@@ -81,7 +82,8 @@ async def login(
         name="portal-login",
     )
     db.add(api_key)
-    await db.flush()
+    await db.commit()
+    await db.refresh(api_key)
 
     logger.info("Portal login: user=%s prefix=%s", user.email, key_prefix)
 
@@ -107,7 +109,8 @@ async def create_api_key(
         name=body.name,
     )
     db.add(api_key)
-    await db.flush()
+    await db.commit()
+    await db.refresh(api_key)
 
     logger.info("API key created: prefix=%s name=%s user=%s", key_prefix, body.name, current_user_id)
 
@@ -190,7 +193,8 @@ async def regenerate_api_key(
         name=old_key.name,
     )
     db.add(new_key)
-    await db.flush()
+    await db.commit()
+    await db.refresh(new_key)
 
     logger.info(
         "API key regenerated: old_prefix=%s new_prefix=%s user=%s",
@@ -219,12 +223,8 @@ async def bootstrap_api_key(
     This endpoint exists to solve the bootstrapping problem: how to create
     the first API key when all other endpoints require Bearer auth.
     """
-    try:
-        settings = get_settings()
-        is_prod = settings.is_production
-    except Exception:
-        is_prod = False
-    if is_prod:
+    settings = get_settings()
+    if settings.is_production:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Bootstrap endpoint is disabled in production. "
@@ -250,7 +250,8 @@ async def bootstrap_api_key(
         name=body.name,
     )
     db.add(api_key)
-    await db.flush()
+    await db.commit()
+    await db.refresh(api_key)
 
     logger.warning(
         "API key created via bootstrap endpoint: prefix=%s user=%s",

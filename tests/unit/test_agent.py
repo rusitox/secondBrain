@@ -1,17 +1,19 @@
-"""Unit tests for agent orchestrator and tools."""
-import json
+"""Unit tests for agent tools.
+
+Orchestrator-level tests live in test_strands_orchestrator.py — the
+orchestrator itself is StrandsOrchestrator (AgentOrchestrator/orchestrator.py
+were removed in the Strands migration cleanup).
+"""
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.agent.agent import AgentOrchestrator, AGENT_SYSTEM_PROMPT
 from app.services.agent.tools.memory_retriever import MemoryRetrieverTool
 from app.services.agent.tools.task_manager import TaskManagerTool
 from app.services.agent.tools.calendar_sync import CalendarSyncTool
 from app.services.agent.tools.style_analyzer import StyleAnalyzerTool
-from app.services.llm.claude_client import ToolCall, ToolUseResult
 
 
 class TestMemoryRetrieverTool:
@@ -106,157 +108,3 @@ class TestStyleAnalyzerTool:
         style = await tool.get_style(mock_db, uuid.uuid4())
         assert style["persona_description"] == "Professional"
         assert style["heuristics"] == {"key": "value"}
-
-
-def _make_empty_db():
-    """Return a mock AsyncSession that returns empty query results."""
-    db = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.all.return_value = []
-    db.execute = AsyncMock(return_value=mock_result)
-    return db
-
-
-def _make_orchestrator(answer: str = "Here's your answer.") -> AgentOrchestrator:
-    mock_llm = MagicMock()
-    mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
-        final_answer=answer,
-        tool_calls=[],
-        iterations=1,
-        stop_reason="end_turn",
-    ))
-    # Synthesis step calls generate() (no tools) — must be an AsyncMock
-    mock_llm.generate = AsyncMock(return_value=answer)
-    mock_embedder = MagicMock()
-    return AgentOrchestrator(claude_client=mock_llm, embedder=mock_embedder)
-
-
-class TestAgentOrchestrator:
-    @pytest.mark.asyncio
-    async def test_query_basic(self) -> None:
-        """query() returns a dict with 'answer' key."""
-        orch = _make_orchestrator("Here's your answer.")
-        db = _make_empty_db()
-        result = await orch.query(db, uuid.uuid4(), "What's on my plate?")
-        assert "answer" in result
-        assert result["answer"] == "Here's your answer."
-
-    @pytest.mark.asyncio
-    async def test_query_returns_session_id(self) -> None:
-        """query() always returns a 'session_id' key."""
-        orch = _make_orchestrator()
-        db = _make_empty_db()
-        result = await orch.query(db, uuid.uuid4(), "Hello?")
-        assert "session_id" in result
-        assert isinstance(result["session_id"], str)
-
-    @pytest.mark.asyncio
-    async def test_query_generates_session_id_when_none(self) -> None:
-        """When session_id=None, a new UUID is generated and returned."""
-        orch = _make_orchestrator()
-        db = _make_empty_db()
-        result = await orch.query(db, uuid.uuid4(), "Hello?", session_id=None)
-        sid = result["session_id"]
-        # Verify it's a valid UUID
-        parsed = uuid.UUID(sid)
-        assert str(parsed) == sid
-
-    @pytest.mark.asyncio
-    async def test_query_sources_from_search_memory(self) -> None:
-        """When search_memory tool is used, its results appear in 'sources'."""
-        doc = {"content": "Meeting notes", "source": "fathom", "metadata": {}}
-        mock_llm = MagicMock()
-        mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
-            final_answer="Found some notes.",
-            tool_calls=[
-                ToolCall(
-                    tool_name="search_memory",
-                    tool_input={"query": "meeting"},
-                    tool_result=json.dumps([doc]),
-                )
-            ],
-            iterations=2,
-            stop_reason="end_turn",
-        ))
-        mock_llm.generate = AsyncMock(return_value="Found some notes.")
-
-        # Patch get_settings so no real sub-agent LLM is created (llm_sub_agent_model="")
-        # and no real session_factory is used (sub-agents fall back to the passed db mock).
-        # Explicit llm_sub_agent_model="" overrides any .env value in pydantic-settings.
-        from app.core.config import Settings
-        test_settings = Settings(
-            database_url="sqlite+aiosqlite://",
-            database_url_sync="sqlite://",
-            fernet_key="UoVz65iZZwomYZKNPeWYK_sCieozQPLoezZuUlQwzis=",
-            llm_sub_agent_model="",
-        )
-        with patch("app.services.agent.agent.get_settings", return_value=test_settings), \
-             patch("app.services.agent.agent.get_session_factory", return_value=None):
-            orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
-            db = _make_empty_db()
-            result = await orch.query(db, uuid.uuid4(), "Find my meeting notes")
-
-        assert isinstance(result["sources"], list)
-        # Multi-agent system: each sub-agent produces its own search_memory calls
-        assert len(result["sources"]) >= 1
-        assert any(s["source"] == "fathom" for s in result["sources"])
-
-    @pytest.mark.asyncio
-    async def test_query_tools_used_from_tool_calls(self) -> None:
-        """tools_used list is built from the ToolCall records across all sub-agents."""
-        mock_llm = MagicMock()
-        mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
-            final_answer="Done.",
-            tool_calls=[
-                ToolCall("search_memory", {"query": "tasks"}, "[]"),
-                ToolCall("list_tasks", {}, "[]"),
-            ],
-            iterations=3,
-            stop_reason="end_turn",
-        ))
-        mock_llm.generate = AsyncMock(return_value="Done.")
-        orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
-        db = _make_empty_db()
-        result = await orch.query(db, uuid.uuid4(), "What do I have today?")
-        assert "search_memory" in result["tools_used"]
-        assert "list_tasks" in result["tools_used"]
-
-    @pytest.mark.asyncio
-    async def test_query_iterations_propagated(self) -> None:
-        """iterations is the sum of all sub-agent iterations plus one synthesis step."""
-        mock_llm = MagicMock()
-        mock_llm.generate_with_tools = AsyncMock(return_value=ToolUseResult(
-            final_answer="Done.",
-            tool_calls=[],
-            iterations=2,
-            stop_reason="end_turn",
-        ))
-        mock_llm.generate = AsyncMock(return_value="Done.")
-        orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
-        db = _make_empty_db()
-        result = await orch.query(db, uuid.uuid4(), "test")
-        # Multi-agent: total = Σ sub-agent iterations + 1 (synthesis); always > 2
-        assert result["iterations"] > 2
-
-    @pytest.mark.asyncio
-    async def test_session_id_echoed_when_provided(self) -> None:
-        """When a valid session_id is provided with no history, it is echoed back."""
-        orch = _make_orchestrator()
-        db = _make_empty_db()
-        provided_sid = str(uuid.uuid4())
-        result = await orch.query(db, uuid.uuid4(), "Hello?", session_id=provided_sid)
-        assert result["session_id"] == provided_sid
-
-
-class TestAgentSystemPrompt:
-    def test_contains_tool_names(self) -> None:
-        assert "search_memory" in AGENT_SYSTEM_PROMPT
-        assert "list_tasks" in AGENT_SYSTEM_PROMPT
-        assert "get_calendar" in AGENT_SYSTEM_PROMPT
-        assert "get_user_style" in AGENT_SYSTEM_PROMPT
-
-    def test_prompt_injection_protection(self) -> None:
-        assert "untrusted" in AGENT_SYSTEM_PROMPT.lower()
-
-    def test_style_instruction_present(self) -> None:
-        assert "get_user_style" in AGENT_SYSTEM_PROMPT

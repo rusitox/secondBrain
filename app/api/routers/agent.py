@@ -19,10 +19,8 @@ from openai import APIError as OpenAIAPIError
 from app.api.deps import get_current_user_id, get_db
 from app.api.schemas.briefing import AgentQueryRequest, AgentQueryResponse, AgentStreamRequest
 from app.core.config import get_settings
-from app.services.agent.agent import AgentOrchestrator, AGENT_SYSTEM_PROMPT
-from app.services.agent.tool_definitions import AGENT_TOOLS
+from app.services.agent.strands_orchestrator import StrandsOrchestrator
 from app.services.ingestion.embedder import Embedder
-from app.services.llm.claude_client import ClaudeClient
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +28,14 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 
 
 @lru_cache(maxsize=1)
-def _get_agent() -> AgentOrchestrator:
+def _get_agent() -> StrandsOrchestrator:
     settings = get_settings()
     if not settings.llm_api_key:
         raise ValueError("LLM_API_KEY is required for /agent/query endpoint")
     if not settings.openai_api_key:
         raise ValueError("OPENAI_API_KEY is required for /agent/query endpoint")
-    claude_client = ClaudeClient(api_key=settings.llm_api_key, model=settings.llm_model)
     embedder = Embedder(api_key=settings.openai_api_key)
-    return AgentOrchestrator(claude_client=claude_client, embedder=embedder)
+    return StrandsOrchestrator(embedder=embedder)
 
 
 @router.post("/query", response_model=AgentQueryResponse)
@@ -93,12 +90,6 @@ async def agent_stream(
     async def event_generator() -> AsyncIterator[dict]:
         queue: asyncio.Queue = asyncio.Queue()
 
-        async def on_tool_call(tool_name: str) -> None:
-            await queue.put({"event": "tool_call", "data": json_module.dumps({"tool": tool_name, "status": "calling"})})
-
-        async def on_tool_result(tool_name: str) -> None:
-            await queue.put({"event": "tool_result", "data": json_module.dumps({"tool": tool_name, "status": "done"})})
-
         async def on_token(text: str) -> None:
             await queue.put({"event": "token", "data": json_module.dumps({"text": text})})
 
@@ -106,27 +97,8 @@ async def agent_stream(
 
         async def run_query() -> None:
             try:
-                from app.services.agent.orchestrator import MultiAgentOrchestrator
-                from app.core.database import get_session_factory
-                settings = get_settings()
-                sub_api_key = settings.llm_sub_agent_api_key or settings.llm_api_key
-                sub_model = settings.llm_sub_agent_model or settings.llm_model
-                from app.services.llm.claude_client import LLMClient as _LLMClient
-                sub_llm = _LLMClient(api_key=sub_api_key, model=sub_model)
-
-                agent_inst = _get_agent()  # keep for _resolve_session + _persist_turns
-                resolved_session_id, _ = await agent_inst._resolve_session(
-                    db, current_user_id, data.session_id
-                )
-
-                orch = MultiAgentOrchestrator(
-                    llm=agent_inst._llm,
-                    embedder=agent_inst._embedder,
-                    session_factory=get_session_factory(),
-                    sub_agent_llm=sub_llm,
-                )
-
-                result = await orch.query(
+                agent_inst = _get_agent()
+                result = await agent_inst.query(
                     db=db,
                     user_id=current_user_id,
                     question=data.question,
@@ -137,7 +109,7 @@ async def agent_stream(
                 await queue.put({
                     "event": "done",
                     "data": json_module.dumps({
-                        "session_id": result.get("session_id", resolved_session_id),
+                        "session_id": result.get("session_id", ""),
                         "iterations": result.get("iterations", 0),
                         "tools_used": result.get("tools_used", []),
                     }),
@@ -165,7 +137,5 @@ async def agent_stream(
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-
-        await task  # propagate any unhandled exceptions
 
     return EventSourceResponse(event_generator())

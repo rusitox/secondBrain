@@ -47,8 +47,9 @@ let waveformCtx     = null;
 
 let currentAudio    = null;   // currently playing HTMLAudioElement
 let currentSpeakBtn = null;   // button that triggered current audio
-let ttsQueue        = [];     // [{text, onDone}]
+let audioBlobQueue  = [];     // array of Promise<string|null> (pre-fetched object URLs)
 let ttsPlaying      = false;
+let ttsGeneration   = 0;      // incremented on stopTTS() to cancel in-flight ops
 
 let wakeRecognition = null;   // SpeechRecognition instance for wake word
 let isStreaming     = false;
@@ -465,6 +466,7 @@ async function streamAgentQuery(question, agentMsg) {
 
   let fullAnswer = '';
   let sentenceBuf = '';   // accumulates text until sentence boundary for TTS
+  let ttsWasStreamed = false;  // true once any sentence was enqueued during streaming
   let toolsUsed = [];
 
   // Sentence-level TTS: flush when we hit . ? ! or buffer grows past ~80 chars
@@ -474,6 +476,7 @@ async function streamAgentQuery(question, agentMsg) {
     if (!ready) return;
     const text = sentenceBuf.trim();
     sentenceBuf = '';
+    ttsWasStreamed = true;
     enqueueTTS(text);
   }
 
@@ -520,7 +523,7 @@ async function streamAgentQuery(question, agentMsg) {
   }
 
   // Finalize message
-  finalizeAgentMessage(agentMsg, fullAnswer);
+  finalizeAgentMessage(agentMsg, fullAnswer, ttsWasStreamed);
 }
 
 // ── Chat rendering ────────────────────────────────────────────────────────────
@@ -606,7 +609,7 @@ function renderStreamingText(bubble, text) {
   scrollChat();
 }
 
-function finalizeAgentMessage(agentMsg, fullAnswer) {
+function finalizeAgentMessage(agentMsg, fullAnswer, ttsWasStreamed = false) {
   const { bubble } = agentMsg;
 
   // Remove thinking dots
@@ -643,75 +646,86 @@ function finalizeAgentMessage(agentMsg, fullAnswer) {
   agentMsg.el.appendChild(footer);
   scrollChat();
 
-  if (autoPlay && fullAnswer) {
-    // TTS was already enqueued during streaming; if not playing, play now
-    if (!ttsPlaying && ttsQueue.length === 0) {
-      enqueueTTS(fullAnswer);
-    }
+  if (autoPlay && fullAnswer && !ttsWasStreamed) {
+    // Only enqueue the full answer if no sentences were streamed during generation
+    enqueueTTS(fullAnswer);
   }
 }
 
 // ── TTS pipeline ──────────────────────────────────────────────────────────────
+// Pipelined: fetch next audio while current is playing to eliminate gaps.
 
 function enqueueTTS(text) {
   if (!autoPlay) return;
-  ttsQueue.push(text);
-  processTTSQueue();
+  const gen = ttsGeneration;
+  // Start fetching immediately — don't wait for current audio to finish
+  audioBlobQueue.push(_fetchTTSUrl(text, gen));
+  _drainAudioQueue();
 }
 
-async function processTTSQueue() {
-  if (ttsPlaying || ttsQueue.length === 0) return;
+async function _fetchTTSUrl(text, gen) {
+  const cleanText = stripMarkdown(text);
+  if (!cleanText.trim()) return null;
+  try {
+    const resp = await fetch(`${API_BASE}/voice/speak`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: cleanText, voice: selectedVoice }),
+    });
+    if (!resp.ok || gen !== ttsGeneration) return null;
+    const blob = await resp.blob();
+    if (gen !== ttsGeneration) return null;
+    return URL.createObjectURL(blob);
+  } catch {
+    return null;
+  }
+}
+
+async function _drainAudioQueue() {
+  if (ttsPlaying) return;
   ttsPlaying = true;
 
-  while (ttsQueue.length > 0) {
-    const text = ttsQueue.shift();
-    try {
-      await playTTS(text);
-    } catch (e) {
-      console.warn('TTS error:', e);
-    }
+  while (audioBlobQueue.length > 0) {
+    const urlPromise = audioBlobQueue.shift();
+    const gen = ttsGeneration;
+    const url = await urlPromise;   // may already be resolved (no extra wait)
+    if (!url || gen !== ttsGeneration) continue;
+    await _playUrl(url, gen);
+    URL.revokeObjectURL(url);
   }
 
   ttsPlaying = false;
 }
 
-async function playTTS(text) {
-  const cleanText = stripMarkdown(text);
-  if (!cleanText.trim()) return;
-
-  const resp = await fetch(`${API_BASE}/voice/speak`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ text: cleanText, voice: selectedVoice }),
-  });
-
-  if (!resp.ok) throw new Error(`TTS error ${resp.status}`);
-
-  const blob = await resp.blob();
-  const url  = URL.createObjectURL(blob);
-  const audio = new Audio(url);
-  currentAudio = audio;
-
+async function _playUrl(url, gen) {
   return new Promise((resolve) => {
-    audio.onended = () => {
-      URL.revokeObjectURL(url);
-      currentAudio = null;
-      resolve();
-    };
-    audio.onerror = () => {
-      URL.revokeObjectURL(url);
-      currentAudio = null;
-      resolve();
-    };
-    audio.play().catch(() => resolve());
+    const audio = new Audio(url);
+    currentAudio = audio;
+    const done = () => { currentAudio = null; resolve(); };
+    audio.onended = done;
+    audio.onerror = done;
+    audio.play().catch(done);
+
+    // Bail out immediately if stopTTS() was called mid-play
+    const iv = setInterval(() => {
+      if (gen !== ttsGeneration) { audio.pause(); clearInterval(iv); done(); }
+    }, 100);
+    audio.onended = () => { clearInterval(iv); done(); };
+    audio.onerror = () => { clearInterval(iv); done(); };
   });
 }
 
+// Legacy wrapper used by the "▶ reproducir" button
+async function playTTS(text) {
+  const url = await _fetchTTSUrl(text, ttsGeneration);
+  if (!url) return;
+  await _playUrl(url, ttsGeneration);
+  URL.revokeObjectURL(url);
+}
+
 function stopTTS() {
-  ttsQueue = [];
+  ttsGeneration++;          // invalidates all in-flight fetches and queued items
+  audioBlobQueue = [];
   ttsPlaying = false;
   if (currentAudio) {
     currentAudio.pause();
