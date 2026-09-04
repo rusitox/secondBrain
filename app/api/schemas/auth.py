@@ -2,11 +2,21 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class APIKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Human label for this key")
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=1)
+
+
+class LoginResponse(BaseModel):
+    api_key: str
+    user_name: str
 
 
 class APIKeyResponse(BaseModel):

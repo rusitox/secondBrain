@@ -23,6 +23,8 @@ from app.services.agent.tools.search_learnings import SearchLearningsTool
 from app.services.agent.tool_definitions import AGENT_TOOLS
 from app.services.llm.claude_client import LLMClient, ToolCall
 from app.services.ingestion.embedder import Embedder
+from app.core.config import get_settings
+from app.core.database import get_session_factory
 
 # ClaudeClient re-exported for backward compatibility
 ClaudeClient = LLMClient
@@ -93,69 +95,29 @@ class AgentOrchestrator:
         session_id: Optional[str] = None,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Process an agentic query using multiple tools via the tool-use API.
+        """Delegate to MultiAgentOrchestrator.
 
+        Kept as a thin shim for backward compatibility with the router layer.
         Returns dict with: answer, tools_used, sources, session_id, iterations.
         """
-        # 1. Resolve session and load conversation history
-        resolved_session_id, history = await self._resolve_session(
-            db, user_id, session_id
+        from app.services.agent.orchestrator import MultiAgentOrchestrator
+        settings = get_settings()
+        # Only create a separate sub-agent LLM when explicitly configured.
+        # When unset, MultiAgentOrchestrator uses self._llm for both roles,
+        # which preserves correct mock injection in tests.
+        sub_agent_llm: Optional[LLMClient] = None
+        if settings.llm_sub_agent_model:
+            sub_api_key = settings.llm_sub_agent_api_key or settings.llm_api_key
+            sub_agent_llm = LLMClient(
+                api_key=sub_api_key,
+                model=settings.llm_sub_agent_model,
+            )
+        orchestrator = MultiAgentOrchestrator(
+            self._llm, self._embedder,
+            session_factory=get_session_factory(),
+            sub_agent_llm=sub_agent_llm,
         )
-
-        # 2. Build tool executors
-        tool_executors: Dict[str, Callable] = {
-            "search_memory": self._make_search_memory(db, user_id),
-            "list_tasks": self._make_list_tasks(db, user_id),
-            "get_calendar": self._make_get_calendar(db, user_id),
-            "get_user_style": self._make_get_user_style(db, user_id),
-            "save_learning": self._make_save_learning(db, user_id),
-            "search_learnings": self._make_search_learnings(db, user_id),
-        }
-
-        # 3. Build messages: history + current question
-        messages = list(history)
-        messages.append({"role": "user", "content": question})
-
-        # 4. Run agentic loop
-        result = await self._llm.generate_with_tools(
-            messages=messages,
-            tools=AGENT_TOOLS,
-            tool_executors=tool_executors,
-            system=AGENT_SYSTEM_PROMPT,
-        )
-
-        # 5. Persist turns
-        await self._persist_turns(
-            db, user_id, resolved_session_id, question,
-            result.final_answer, result.tool_calls,
-        )
-
-        # 6. Extract sources from search_memory tool calls
-        sources: List[Dict[str, Any]] = []
-        for tc in result.tool_calls:
-            if tc.tool_name == "search_memory":
-                try:
-                    parsed = json.loads(tc.tool_result)
-                    if isinstance(parsed, list):
-                        sources.extend(parsed)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-
-        # 7. Build tools_used list (unique, ordered)
-        tools_used: List[str] = []
-        seen = set()
-        for tc in result.tool_calls:
-            if tc.tool_name not in seen:
-                tools_used.append(tc.tool_name)
-                seen.add(tc.tool_name)
-
-        return {
-            "answer": result.final_answer,
-            "tools_used": tools_used,
-            "sources": sources,
-            "session_id": resolved_session_id,
-            "iterations": result.iterations,
-        }
+        return await orchestrator.query(db, user_id, question, session_id)
 
     # ------------------------------------------------------------------
     # Session management
@@ -288,8 +250,21 @@ class AgentOrchestrator:
     def _make_get_calendar(
         self, db: AsyncSession, user_id: uuid.UUID
     ) -> Callable:
-        async def _get_calendar() -> List[Dict[str, Any]]:
-            return await CalendarSyncTool().get_today_events(db, user_id)
+        async def _get_calendar(
+            date: Optional[str] = None,
+            upcoming_only: bool = True,
+        ) -> List[Dict[str, Any]]:
+            target: Optional[datetime] = None
+            if date:
+                try:
+                    target = datetime.strptime(date, "%Y-%m-%d").replace(
+                        tzinfo=timezone.utc
+                    )
+                except ValueError:
+                    pass
+            return await CalendarSyncTool().get_today_events(
+                db, user_id, date=target, upcoming_only=upcoming_only
+            )
 
         return _get_calendar
 

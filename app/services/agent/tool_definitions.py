@@ -2,6 +2,9 @@
 
 Each entry follows the Anthropic tool-use JSON schema format.
 The tool_executors dict in AgentOrchestrator maps these names to callables.
+
+Per-agent subsets (ORCHESTRATOR_TOOLS, SLACK_TOOLS, etc.) are derived from
+AGENT_TOOLS by name so there is a single source of truth for each schema.
 """
 from typing import Any, Dict, List
 
@@ -58,13 +61,28 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
     {
         "name": "get_calendar",
         "description": (
-            "Get the user's upcoming calendar events for today (events not yet started). "
+            "Get the user's calendar events for a specific date. "
             "Returns meeting subjects, start times, organizers, and attendees. "
-            "Use this to answer questions like 'what meetings do I have left?' or 'what's next on my calendar?'."
+            "Use this to answer questions like 'what meetings do I have today?', "
+            "'what's on my calendar tomorrow?', or 'do I have anything on Friday?'. "
+            "If no date is specified, defaults to today."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "Target date in YYYY-MM-DD format (e.g. '2025-09-04'). "
+                        "Omit or leave empty to get today's events."
+                    ),
+                },
+                "upcoming_only": {
+                    "type": "boolean",
+                    "description": "If true (default), only return events that have not yet started.",
+                    "default": True,
+                },
+            },
             "required": [],
         },
     },
@@ -108,6 +126,21 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "get_sync_status",
+        "description": (
+            "Return the last sync timestamp and status for each connected data source "
+            "(Slack, Outlook, Teams, Fathom, Notion). Use this to answer questions like "
+            "'when was X last updated?', 'is my Slack data fresh?', or 'why is my data stale?'. "
+            "Returns platform, last_sync_at (ISO timestamp), status (success/error/null), "
+            "error message if any, and sync interval in minutes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "save_learning",
         "description": (
             "Persist a learning or insight to long-term memory. Use this when you discover "
@@ -148,3 +181,24 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Per-agent tool subsets
+# ---------------------------------------------------------------------------
+# Derived from AGENT_TOOLS by name — single source of truth for each schema.
+
+def _tools(*names: str) -> List[Dict[str, Any]]:
+    """Filter AGENT_TOOLS to only the named tools, preserving AGENT_TOOLS order."""
+    name_set = set(names)
+    return [t for t in AGENT_TOOLS if t["name"] in name_set]
+
+
+ORCHESTRATOR_TOOLS = _tools("get_user_style", "search_learnings")
+SLACK_TOOLS = _tools("search_memory")
+OUTLOOK_TOOLS = _tools("search_memory", "get_calendar")
+TEAMS_TOOLS = _tools("search_memory")
+FATHOM_TOOLS = _tools("search_memory")
+NOTION_TOOLS = _tools("search_memory")
+CROSS_KNOWLEDGE_TOOLS = _tools("search_memory", "search_learnings", "save_learning", "get_sync_status")
+TASKS_TOOLS = _tools("list_tasks", "get_calendar", "search_learnings", "save_learning")

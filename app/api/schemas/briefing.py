@@ -39,6 +39,9 @@ class AgentQueryRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+AgentStreamRequest = AgentQueryRequest
+
+
 class AgentQueryResponse(BaseModel):
     """Response from POST /agent/query."""
 

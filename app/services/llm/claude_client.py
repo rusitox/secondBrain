@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from anthropic import AsyncAnthropic, RateLimitError, APIStatusError
 from openai import AsyncOpenAI
@@ -55,6 +55,16 @@ def _parse_provider(model: str) -> tuple:
     return "anthropic", model
 
 
+def _is_reasoning_model(model_id: str) -> bool:
+    """Return True for OpenAI reasoning models that accept reasoning_effort.
+
+    Reasoning models: o1, o3, o4-mini, o4, gpt-5.x-luna, etc.
+    Standard models (gpt-4o, gpt-4o-mini, gpt-4.1, etc.) do NOT accept it.
+    """
+    m = model_id.lower()
+    return m.startswith("o1") or m.startswith("o3") or m.startswith("o4") or "luna" in m
+
+
 class LLMClient:
     """Async LLM wrapper supporting multiple providers."""
 
@@ -75,7 +85,7 @@ class LLMClient:
         self,
         system_prompt: str,
         user_message: str,
-        temperature: float = 0.3,
+        temperature: Optional[float] = None,
     ) -> str:
         """Generate a response from the configured LLM.
 
@@ -97,18 +107,22 @@ class LLMClient:
         tool_executors: Dict[str, Callable],
         system: Optional[str] = None,
         max_iterations: int = 10,
+        stream_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> ToolUseResult:
         """Run an agentic tool-use loop until a final answer is produced.
 
         Dispatches to the appropriate provider loop based on configured provider.
+        When stream_callback is provided (Anthropic only), the final answer is
+        streamed token-by-token via the callback. Tool-use iterations remain
+        non-streaming for simplicity.
         """
         if self._provider == "anthropic":
             return await self._generate_with_tools_anthropic(
-                messages, tools, tool_executors, system, max_iterations
+                messages, tools, tool_executors, system, max_iterations, stream_callback
             )
         else:
             return await self._generate_with_tools_openai(
-                messages, tools, tool_executors, system, max_iterations
+                messages, tools, tool_executors, system, max_iterations, stream_callback
             )
 
     async def _call_anthropic_with_retry(
@@ -166,8 +180,14 @@ class LLMClient:
         tool_executors: Dict[str, Callable],
         system: Optional[str],
         max_iterations: int,
+        stream_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> ToolUseResult:
-        """Anthropic agentic loop: call → tool_use → call → … → end_turn."""
+        """Anthropic agentic loop: call → tool_use → call → … → end_turn.
+
+        Tool-use iterations use non-streaming calls. When stream_callback is
+        provided, the final answer is produced via a streaming call so tokens
+        are delivered to the caller incrementally.
+        """
         tool_calls_made: List[ToolCall] = []
         current_messages = list(messages)
         iterations = 0
@@ -186,7 +206,31 @@ class LLMClient:
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
             if not tool_use_blocks:
-                # No tool call — extract final text answer
+                # No tool call — this is the final answer turn.
+                # If a stream_callback is provided, re-issue the same call as a
+                # streaming request so tokens are delivered incrementally.
+                if stream_callback is not None:
+                    client = AsyncAnthropic(api_key=self._api_key)
+                    stream_text_parts: List[str] = []
+                    async with client.messages.stream(  # type: ignore[call-overload]
+                        model=self._model_id,
+                        max_tokens=self._max_tokens,
+                        system=system or "",
+                        messages=current_messages,
+                        tools=tools or [],
+                        tool_choice={"type": "none"},
+                    ) as stream:
+                        async for text_chunk in stream.text_stream:
+                            await stream_callback(text_chunk)
+                            stream_text_parts.append(text_chunk)
+                    return ToolUseResult(
+                        final_answer="".join(stream_text_parts),
+                        tool_calls=tool_calls_made,
+                        iterations=iterations,
+                        stop_reason="end_turn",
+                    )
+
+                # Non-streaming path: extract text from the already-received response
                 final_text = ""
                 for block in response.content:
                     if block.type == "text":
@@ -253,6 +297,7 @@ class LLMClient:
         tool_executors: Dict[str, Callable],
         system: Optional[str],
         max_iterations: int,
+        stream_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> ToolUseResult:
         """OpenAI agentic loop: call → tool_calls → call → … → stop."""
         from openai import RateLimitError as OpenAIRateLimitError
@@ -294,7 +339,8 @@ class LLMClient:
                     }
                     if openai_tools:
                         kwargs["tools"] = openai_tools
-                        kwargs["reasoning_effort"] = "none"
+                        if _is_reasoning_model(self._model_id):
+                            kwargs["reasoning_effort"] = "none"
                     response = await client.chat.completions.create(**kwargs)  # type: ignore[call-overload]
                     last_error = None
                     break
@@ -326,6 +372,31 @@ class LLMClient:
             message = response.choices[0].message
 
             if not message.tool_calls:
+                if stream_callback is not None:
+                    # Stream the final answer using OpenAI streaming
+                    stream_kwargs: Dict[str, Any] = {
+                        "model": self._model_id,
+                        "max_completion_tokens": self._max_tokens,
+                        "messages": current_messages,
+                        "stream": True,
+                    }
+                    if openai_tools:
+                        stream_kwargs["tools"] = openai_tools
+                        stream_kwargs["tool_choice"] = "none"
+                        if _is_reasoning_model(self._model_id):
+                            stream_kwargs["reasoning_effort"] = "none"
+                    stream_parts: List[str] = []
+                    async for chunk in await client.chat.completions.create(**stream_kwargs):  # type: ignore[call-overload]
+                        delta = chunk.choices[0].delta
+                        if delta.content:
+                            await stream_callback(delta.content)
+                            stream_parts.append(delta.content)
+                    return ToolUseResult(
+                        final_answer="".join(stream_parts),
+                        tool_calls=tool_calls_made,
+                        iterations=iterations,
+                        stop_reason="end_turn",
+                    )
                 # No tool calls — return final answer
                 return ToolUseResult(
                     final_answer=message.content or "",
@@ -453,15 +524,17 @@ class LLMClient:
 
         for attempt in range(MAX_RETRIES):
             try:
-                response = await client.chat.completions.create(
-                    model=self._model_id,
-                    max_completion_tokens=self._max_tokens,
-                    messages=[
+                kwargs: Dict[str, Any] = {
+                    "model": self._model_id,
+                    "max_completion_tokens": self._max_tokens,
+                    "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_message},
                     ],
-                    temperature=temperature,
-                )
+                }
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
+                response = await client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content
                 return content or ""
             except OpenAIRateLimitError as e:

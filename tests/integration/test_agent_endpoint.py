@@ -238,6 +238,7 @@ class TestConversationTurnPersistence:
                 stop_reason="end_turn",
             )
         )
+        mock_llm.generate = AsyncMock(return_value="Aquí está tu respuesta.")
         orch = AgentOrchestrator(
             claude_client=mock_llm,
             embedder=MagicMock(spec=Embedder),
@@ -295,6 +296,7 @@ class TestConversationTurnPersistence:
                 stop_reason="end_turn",
             )
         )
+        mock_llm.generate = AsyncMock(return_value="Listo.")
         orch = AgentOrchestrator(
             claude_client=mock_llm,
             embedder=MagicMock(spec=Embedder),
@@ -342,6 +344,7 @@ class TestConversationTurnPersistence:
                     stop_reason="end_turn",
                 )
             )
+            mock_llm.generate = AsyncMock(return_value=answer)
             return AgentOrchestrator(
                 claude_client=mock_llm,
                 embedder=MagicMock(spec=Embedder),

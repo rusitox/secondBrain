@@ -1,0 +1,4 @@
+- [Cloud deployment decision](project_cloud_deployment.md) — Oracle Cloud free-tier ARM VPS, reordered 6-phase plan (0->4->1->2->3->5)
+- [Proactive welcome plan](project_proactive_welcome.md) — CLI startup welcome reuses /agent/query with synthetic prompt; only cli/chat.py changes
+- [Intelligent Learning Agent plan](project_intelligent_learning.md) — Ownership learning, cross-platform correlation, welcome redesign; no DB changes, no new tools; 5-phase sequence
+- [Multi-agent architecture plan](project_multi_agent.md) — 7-agent system; sub-agents as Python async (not Anthropic tools); asyncio.gather(); thin shim on agent.py; no DB changes

@@ -7,7 +7,7 @@ autocompletion.
 import logging
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, List, Optional
 
 import httpx
 
@@ -35,34 +35,19 @@ HISTORY_FILE = DEFAULT_CONFIG_DIR / "history"
 # Prompt sent to the agent as the first turn of every session.
 # Instructs it to build a genuinely personalised, context-aware greeting
 # using everything it knows and can look up — not a generic template.
-_WELCOME_PROMPT = """\
-Estoy iniciando mi jornada. Dame una bienvenida personalizada siguiendo estos pasos \
-en orden — no te saltes ninguno:
+_WELCOME_PROMPT = """
+Inicio de jornada. Hacé solo esto:
+1. list_tasks → cantidad de pendientes detectados
+2. get_calendar → reuniones de hoy que no empezaron
 
-1. Llama a get_user_style para saber cómo comunicarte conmigo.
-2. Llama a search_learnings con queries variadas para recordar qué sabes de mí: \
-mis proyectos actuales, mis preocupaciones, mis prioridades, mi contexto de trabajo, \
-compromisos importantes, cosas que me generan estrés, etc.
-3. Llama a search_memory buscando actividad reciente: qué pasó ayer, cómo viene \
-la semana, conversaciones o emails importantes de los últimos días, decisiones pendientes.
-4. Llama a list_tasks para ver el estado real de mis compromisos y tareas.
-5. Llama a get_calendar para ver qué reuniones tengo hoy que no hayan empezado.
+Respondé en máximo 4 líneas:
+- Saludo breve y cálido (una frase).
+- Reuniones de hoy (solo hora y título, sin descripción).
+- Si hay pendientes: "Encontré X items por verificar — ¿arrancamos por ahí?"
+- Una pregunta o acción concreta para empezar.
 
-Con toda esa información, construye una bienvenida que:
-- Salude de forma cálida y genuina (no genérica) — menciona algo concreto que \
-sepas de mí o de cómo viene mi semana.
-- Pregunte cómo estoy, considerando el contexto real (si hay mucho trabajo, \
-si hay algo estresante, si viene algo importante).
-- Resuma el estado actual: qué tengo pendiente, qué está vencido, qué urge.
-- Mencione las reuniones de hoy con contexto útil (quiénes van, de qué tratan).
-- Dé 2-3 consejos concretos para optimizar el día basándose en lo que tenés \
-que hacer — no consejos genéricos.
-- Ofrezca ayuda proactiva: "puedo ayudarte a preparar la reunión X", \
-"¿querés que revisemos el tema Y?", etc.
-
-Sé directo, cálido y genuinamente útil. Varía el tono según lo que encuentres \
-— si hay urgencias, refléjalo; si el día pinta tranquilo, también. \
-Responde siempre en el idioma del usuario.\
+Sin listas largas. Sin análisis. Sin repetir contexto. Solo lo esencial.
+Respondé en el idioma del usuario.
 """
 
 
@@ -157,42 +142,59 @@ class ChatSession:
             return None
 
     async def _handle_query(self, question: str) -> None:
-        """Send a natural language query to the agent API."""
-        with spinner("Thinking..."):
-            try:
-                result = await self._api.agent_query(question, session_id=self._session_id)
-            except httpx.TimeoutException:
-                print_warning("Query timed out — the server may still be processing. Try again in a moment.")
-                return
-            except APIError as e:
-                if e.status_code == 503:
-                    print_warning("Agent service unavailable. Is the backend running?")
-                else:
-                    print_error("Query failed: %s" % e.detail)
-                return
+        """Send a natural language query to the agent API, streaming the response."""
+        import sys
 
-        # Display answer
-        answer = result.get("answer", "")
-        if answer:
-            print_panel(answer, title="Answer", style="green")
-        else:
+        tools_announced: List[str] = []
+        answer_started = False
+        tools_used: List[Any] = []
+
+        print_muted("Pensando...")
+
+        try:
+            async for event, data in self._api.agent_query_stream(
+                question, session_id=self._session_id
+            ):
+                if event == "tool_call":
+                    tool = data.get("tool", "")
+                    if tool not in tools_announced:
+                        print_muted("  * %s" % tool)
+                        tools_announced.append(tool)
+                elif event == "token":
+                    if not answer_started:
+                        console.print()
+                        console.rule("[bold green]Respuesta[/bold green]")
+                        answer_started = True
+                    sys.stdout.write(data.get("text", ""))
+                    sys.stdout.flush()
+                elif event == "done":
+                    if answer_started:
+                        console.print()
+                        console.rule()
+                    tools_used = data.get("tools_used", [])
+                    session_from_event = data.get("session_id", "")
+                    if session_from_event and not self._session_shown:
+                        console.print("[dim]session: %s...[/dim]" % session_from_event[:8])
+                        self._session_shown = True
+                elif event == "error":
+                    print_error("Query failed: %s" % data.get("detail", "Unknown error"))
+                    return
+        except httpx.TimeoutException:
+            print_warning("Query timed out — the server may still be processing.")
+            return
+        except APIError as e:
+            if e.status_code == 503:
+                print_warning("Agent service unavailable.")
+            else:
+                print_error("Query failed: %s" % e.detail)
+            return
+
+        if not answer_started:
             print_info("No answer returned.")
+            return
 
-        # Show session indicator once per session
-        if not self._session_shown and self._session_id:
-            console.print("[dim]session: %s...[/dim]" % self._session_id[:8])
-            self._session_shown = True
-
-        # Show metadata
-        tools = result.get("tools_used", [])
-        sources = result.get("sources", [])
-        meta_parts = []
-        if tools:
-            meta_parts.append("tools: %s" % ", ".join(tools))
-        if sources:
-            meta_parts.append("sources: %d documents" % len(sources))
-        if meta_parts:
-            print_muted("  " + " | ".join(meta_parts))
+        if tools_used:
+            print_muted("  tools: %s" % ", ".join(tools_used))
 
     async def _show_welcome(self) -> None:
         """Show a proactive, personalised welcome generated by the agent.

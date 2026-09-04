@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>secondBrain</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- Marked.js for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+</head>
+<body>
+
+<!-- ── Auth overlay ──────────────────────────────────────────────────────── -->
+<div id="auth-overlay" style="display:none">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <div class="auth-logo-icon">⬡</div>
+      <div class="auth-logo-text">secondBrain</div>
+    </div>
+    <div class="auth-title">Bienvenido de vuelta</div>
+    <div class="auth-subtitle">Ingresá tus credenciales para acceder.</div>
+    <form id="auth-form">
+      <div class="form-group">
+        <label class="form-label" for="email-input">Email</label>
+        <input
+          id="email-input"
+          class="form-input"
+          type="email"
+          placeholder="tu@email.com"
+          autocomplete="email"
+          spellcheck="false"
+          required
+        />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password-input">Contraseña</label>
+        <input
+          id="password-input"
+          class="form-input"
+          type="password"
+          placeholder="••••••••"
+          autocomplete="current-password"
+          required
+        />
+        <div id="auth-error" class="form-error"></div>
+      </div>
+      <button type="submit" class="auth-btn" id="auth-submit-btn">Entrar</button>
+    </form>
+  </div>
+</div>
+
+<!-- ── Main app ───────────────────────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Header -->
+  <header id="header">
+    <a class="logo" href="#">
+      <div class="logo-icon">⬡</div>
+      secondBrain
+    </a>
+
+    <div class="header-meta">
+      <div class="session-dot"></div>
+      <span id="session-display">—</span>
+    </div>
+
+    <div class="header-spacer"></div>
+
+    <div class="header-controls">
+
+      <!-- Auto-play toggle -->
+      <button id="auto-btn" class="ctrl-btn" title="Auto-play de respuestas">
+        <span class="icon">🔊</span>
+        <span class="label">Auto</span>
+      </button>
+
+      <!-- Wake word toggle -->
+      <button id="wake-btn" class="ctrl-btn" title="Wake word (hey brain)">
+        <span class="icon">🎙</span>
+        <span class="label">Wake</span>
+        <div class="wake-active-ring"></div>
+      </button>
+
+      <!-- Settings -->
+      <button id="settings-btn" class="ctrl-btn" title="Configuración">
+        <span class="icon">⚙</span>
+      </button>
+
+    </div>
+  </header>
+
+  <!-- Settings panel (slide-in) -->
+  <div id="settings-panel">
+    <div class="settings-title">Configuración</div>
+
+    <div class="setting-row">
+      <span class="setting-label">Voz TTS</span>
+      <select id="voice-select" class="setting-select">
+        <option value="nova">Nova (default)</option>
+        <option value="alloy">Alloy</option>
+        <option value="echo">Echo</option>
+        <option value="fable">Fable</option>
+        <option value="onyx">Onyx</option>
+        <option value="shimmer">Shimmer</option>
+      </select>
+    </div>
+
+    <div class="setting-row">
+      <span class="setting-label">Wake phrases</span>
+      <span class="setting-value">hey brain / secondbrain</span>
+    </div>
+
+    <div class="setting-row">
+      <span class="setting-label">Atajo teclado</span>
+      <span class="setting-value">Space = mic</span>
+    </div>
+
+    <div class="setting-row">
+      <span class="setting-label">Enter</span>
+      <span class="setting-value">enviar</span>
+    </div>
+
+    <button id="logout-btn" class="logout-btn">Cerrar sesión</button>
+  </div>
+
+  <!-- Chat history -->
+  <main id="chat">
+    <div id="empty-state" class="empty-state">
+      <div class="empty-icon">🧠</div>
+      <div class="empty-title">Preguntá lo que necesitás</div>
+      <div class="empty-hints" id="hint-chips">
+        <!-- populated by JS -->
+      </div>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:16px">
+        Presioná <strong>Espacio</strong> para hablar · <strong>Enter</strong> para enviar
+      </p>
+    </div>
+  </main>
+
+  <!-- Input area -->
+  <footer id="input-area">
+
+    <!-- Waveform (visible while recording) -->
+    <div id="waveform-container" class="waveform-container">
+      <canvas id="waveform"></canvas>
+      <span id="rec-timer" class="recording-timer">0s</span>
+    </div>
+
+    <div class="input-row">
+      <div class="textarea-wrap">
+        <textarea
+          id="question-input"
+          placeholder="Escribí o presioná el micrófono…"
+          rows="1"
+          spellcheck="false"
+        ></textarea>
+      </div>
+
+      <div class="input-actions">
+        <button id="mic-btn" title="Grabar (Espacio)">
+          <span>🎤</span>
+        </button>
+        <button id="send-btn" title="Enviar (Enter)">Enviar</button>
+      </div>
+    </div>
+
+    <div class="input-hint">
+      <span id="status-hint">Listo</span>
+    </div>
+  </footer>
+
+</div><!-- #app -->
+
+<!-- Toast notification -->
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

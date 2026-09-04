@@ -1,0 +1,23 @@
+- [secondBrain Phase 1 Review](project_secondbrain_phase1.md) -- Key issues: plaintext tokens, UUID type mismatches, unpinned deps, debug default
+- [secondBrain Phase 3 Review](project_secondbrain_phase3.md) -- Ingestion pipeline: connector error handling, sync state, dead code, missing API tests
+- [secondBrain Phase 4 Review](project_secondbrain_phase4.md) -- RAG/query: prompt injection, API key validation, singleton safety, recurring patterns
+- [secondBrain Phase 5 Review](project_secondbrain_phase5.md) -- Commitments: route shadowing, owner dropped, multi-chunk duplicates, recurring patterns
+- [secondBrain Phase 6 Review](project_secondbrain_phase6.md) -- Briefing/agent: str.format prompts, prompt injection, API key, 5 systemic patterns confirmed
+- [secondBrain Phase 7A Review](project_secondbrain_phase7a.md) -- CLI scaffold/identity: API client pooling, config permissions, token transport, Py3.8 CancelledError
+- [secondBrain Phase 7B Review](project_secondbrain_phase7b.md) -- Onboarding wizard: user ID takeover, plaintext tokens, timezone bug, recursion, missing tests
+- [secondBrain Phase 7C Review](project_secondbrain_phase7c.md) -- Chat/commands: prompt_toolkit async misuse, CancelledError, no cleanup guarantee
+- [secondBrain Phase 7D Review](project_secondbrain_phase7d.md) -- Background sync/alerts: CancelledError (7th!), unvalidated prefs, silent task death, alert list mutation
+- [Teams Connector Review](project_teams_connector_review.md) -- Path injection, no retry, unsupported OData filters, raw HTML, unsafe dict access
+- [Notion Connector Review (9A)](project_notion_connector_review.md) -- Broken rate limiter, unbounded pagination (4th!), UUID cleaner too broad
+- [Notion Publisher Review (9B)](project_notion_publisher_review.md) -- Partial failure, 429/retry conflation, 2000-char limit, CLI imports server-side modules
+- [Notion Sync Review (9C)](project_notion_sync_review.md) -- Background sync no-op, missing config_ attr, duplicate briefing, bare exceptions (9th!)
+- [Phase 9D Digest Review](project_phase9d_review.md) -- FastAPI body param mismatch breaks endpoints, prompt injection (4th), bare except (10th+)
+- [Containerization Review](project_containerization_review.md) -- Docker port binding, shell injection, Py version mismatch, CORS wildcards, no .dockerignore
+- [API Key Auth Review](project_apikey_auth_review.md) -- Useless key_prefix (always sb_live_), duplicated key logic, bare except enables prod bypass
+- [Phase 2 Sync Review](project_phase2_sync_review.md) -- Server-side sync: CancelledError (8th+9th), duplicated logic, error leaking, missing tests
+- [Phase 3 User State Review](project_phase3_userstate_review.md) -- server_default mismatch, 4 bare excepts (11th+), no input validation, plaintext api_key
+- [Phase 5 CLI Packaging Review](project_phase5_cli_packaging_review.md) -- Login flow: plaintext api_key (8th), bare except (11th+), HTTP default, reset omits key
+- [Slack/Fathom User Token Review](project_slack_fathom_usertoken_review.md) -- ABC mismatch, raw dict endpoint, bare except (12th+), missing db.commit in sync_platform, test patch path fragility
+- [Agent Memory Upgrade Review](project_agent_memory_review.md) -- flush-no-commit, prompt injection (5th!), ORM/server_default mismatch, ConversationTurn never written, SDK objects in dict messages
+- [Voice Interface Review](project_voice_interface_review.md) -- No content-type check, bare except (14th+), str(e) to SSE client, get_event_loop deprecated, TTS resource leak, XSS in marked.js
+- [User Profile - Mariano](user_mariano.md) -- Building secondBrain/Digital Twin with FastAPI+SQLAlchemy+pgvector on Python 3.8

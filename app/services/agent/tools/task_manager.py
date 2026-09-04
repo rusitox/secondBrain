@@ -63,6 +63,7 @@ class TaskManagerTool:
             "commitment_text": commitment.commitment_text,
             "owner": commitment.owner,
             "due_date": commitment.due_date.isoformat() if commitment.due_date else None,
+            "created_at": commitment.created_at.isoformat() if getattr(commitment, "created_at", None) else None,
             "status": commitment.status.value,
             "priority": commitment.priority,
             "source": None,
