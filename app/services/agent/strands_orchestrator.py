@@ -235,9 +235,16 @@ class StrandsOrchestrator:
         raw_model = settings.llm_model
         model_id = raw_model.split("/", 1)[-1] if "/" in raw_model else raw_model
 
+        # Reasoning models (e.g. gpt-5.6-luna, o1, o3) reject function tools via
+        # /v1/chat/completions unless reasoning_effort is set to "none".
+        _REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+        is_reasoning = any(model_id.startswith(p) for p in _REASONING_PREFIXES)
+        extra_params: dict = {"reasoning_effort": "none"} if is_reasoning else {}
+
         model = OpenAIModel(
             model_id=model_id,
             client_args={"api_key": settings.llm_api_key},
+            params=extra_params if extra_params else None,
         )
 
         tools = make_agent_tools(
