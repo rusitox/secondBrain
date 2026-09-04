@@ -8,13 +8,19 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from strands import tool
 
 __all__ = ["make_agent_tools"]
 
 logger = logging.getLogger(__name__)
+
+_HTTP_TIMEOUT_SECONDS = 10.0
+_HTTP_RESPONSE_CHAR_LIMIT = 8000
+_BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 
 def make_agent_tools(
@@ -173,6 +179,90 @@ def make_agent_tools(
         get_sync_status,
         get_current_datetime,
     ]
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+
+    if settings.brave_search_api_key:
+        @tool
+        async def web_search(query: str, count: int = 5) -> List[Dict[str, str]]:
+            """Search the public web using Brave Search. Use this for questions
+            about current events, facts outside the user's personal knowledge
+            base, or anything not covered by search_memory/search_learnings.
+
+            Args:
+                query: The search query.
+                count: Number of results to return (1-10). Defaults to 5.
+            """
+            capped_count = max(1, min(count, 10))
+            try:
+                async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
+                    resp = await client.get(
+                        _BRAVE_SEARCH_URL,
+                        params={"q": query, "count": capped_count},
+                        headers={
+                            "Accept": "application/json",
+                            "X-Subscription-Token": settings.brave_search_api_key,
+                        },
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+            except httpx.HTTPError as e:
+                logger.warning("web_search: request failed for query=%r: %s", query, e)
+                return []
+
+            results = data.get("web", {}).get("results", [])
+            return [
+                {
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "description": r.get("description", ""),
+                }
+                for r in results[:capped_count]
+            ]
+
+        tools.append(web_search)
+
+    allowed_domains = {
+        d.strip().lower()
+        for d in settings.http_request_allowed_domains.split(",")
+        if d.strip()
+    }
+    if allowed_domains:
+        @tool
+        async def http_request(url: str) -> str:
+            """Fetch the contents of a URL via HTTP GET. Only works for a
+            pre-approved allowlist of domains configured by the operator —
+            use this to look up a specific known page (e.g. documentation),
+            not to browse arbitrary user-supplied links.
+
+            Args:
+                url: The full URL to fetch (must be http:// or https://).
+            """
+            parsed = urlparse(url)
+            hostname = (parsed.hostname or "").lower()
+            if parsed.scheme not in ("http", "https"):
+                return f"Error: unsupported URL scheme {parsed.scheme!r}. Only http/https are allowed."
+            if hostname not in allowed_domains:
+                logger.warning("http_request: blocked disallowed domain=%r for url=%r", hostname, url)
+                return f"Error: domain {hostname!r} is not in the allowed list."
+
+            try:
+                async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS, follow_redirects=False) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+            except httpx.HTTPError as e:
+                logger.warning("http_request: request failed for url=%r: %s", url, e)
+                return f"Error: request failed — {e}"
+
+            content_type = resp.headers.get("content-type", "")
+            if not any(t in content_type for t in ("text/", "application/json", "application/xml")):
+                return f"Error: unsupported content-type {content_type!r}."
+
+            return resp.text[:_HTTP_RESPONSE_CHAR_LIMIT]
+
+        tools.append(http_request)
 
     logger.info("make_agent_tools: created %d tools for user=%s", len(tools), user_id)
     return tools

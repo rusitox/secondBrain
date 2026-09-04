@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # Portal login (voice UI)
     portal_password: str = ""       # if empty, login is disabled in production
 
+    # Agent built-in tools (Strands) — both opt-in, disabled unless configured
+    brave_search_api_key: str = ""            # if empty, web_search tool is not registered
+    http_request_allowed_domains: str = ""    # comma-separated exact hostnames; empty = http_request tool disabled
+
     @field_validator("fernet_key")
     @classmethod
     def validate_fernet_key(cls, v: str) -> str:
