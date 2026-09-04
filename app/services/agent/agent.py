@@ -23,6 +23,8 @@ from app.services.agent.tools.search_learnings import SearchLearningsTool
 from app.services.agent.tool_definitions import AGENT_TOOLS
 from app.services.llm.claude_client import LLMClient, ToolCall
 from app.services.ingestion.embedder import Embedder
+from app.core.config import get_settings
+from app.core.database import get_session_factory
 
 # ClaudeClient re-exported for backward compatibility
 ClaudeClient = LLMClient
@@ -99,8 +101,6 @@ class AgentOrchestrator:
         Returns dict with: answer, tools_used, sources, session_id, iterations.
         """
         from app.services.agent.orchestrator import MultiAgentOrchestrator
-        from app.core.database import get_session_factory
-        from app.core.config import get_settings
         settings = get_settings()
         # Only create a separate sub-agent LLM when explicitly configured.
         # When unset, MultiAgentOrchestrator uses self._llm for both roles,
@@ -250,8 +250,21 @@ class AgentOrchestrator:
     def _make_get_calendar(
         self, db: AsyncSession, user_id: uuid.UUID
     ) -> Callable:
-        async def _get_calendar() -> List[Dict[str, Any]]:
-            return await CalendarSyncTool().get_today_events(db, user_id)
+        async def _get_calendar(
+            date: Optional[str] = None,
+            upcoming_only: bool = True,
+        ) -> List[Dict[str, Any]]:
+            target: Optional[datetime] = None
+            if date:
+                try:
+                    target = datetime.strptime(date, "%Y-%m-%d").replace(
+                        tzinfo=timezone.utc
+                    )
+                except ValueError:
+                    pass
+            return await CalendarSyncTool().get_today_events(
+                db, user_id, date=target, upcoming_only=upcoming_only
+            )
 
         return _get_calendar
 

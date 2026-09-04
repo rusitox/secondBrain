@@ -179,9 +179,23 @@ class TestAgentOrchestrator:
             stop_reason="end_turn",
         ))
         mock_llm.generate = AsyncMock(return_value="Found some notes.")
-        orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
-        db = _make_empty_db()
-        result = await orch.query(db, uuid.uuid4(), "Find my meeting notes")
+
+        # Patch get_settings so no real sub-agent LLM is created (llm_sub_agent_model="")
+        # and no real session_factory is used (sub-agents fall back to the passed db mock).
+        # Explicit llm_sub_agent_model="" overrides any .env value in pydantic-settings.
+        from app.core.config import Settings
+        test_settings = Settings(
+            database_url="sqlite+aiosqlite://",
+            database_url_sync="sqlite://",
+            fernet_key="UoVz65iZZwomYZKNPeWYK_sCieozQPLoezZuUlQwzis=",
+            llm_sub_agent_model="",
+        )
+        with patch("app.services.agent.agent.get_settings", return_value=test_settings), \
+             patch("app.services.agent.agent.get_session_factory", return_value=None):
+            orch = AgentOrchestrator(claude_client=mock_llm, embedder=MagicMock())
+            db = _make_empty_db()
+            result = await orch.query(db, uuid.uuid4(), "Find my meeting notes")
+
         assert isinstance(result["sources"], list)
         # Multi-agent system: each sub-agent produces its own search_memory calls
         assert len(result["sources"]) >= 1

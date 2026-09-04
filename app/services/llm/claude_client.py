@@ -55,6 +55,16 @@ def _parse_provider(model: str) -> tuple:
     return "anthropic", model
 
 
+def _is_reasoning_model(model_id: str) -> bool:
+    """Return True for OpenAI reasoning models that accept reasoning_effort.
+
+    Reasoning models: o1, o3, o4-mini, o4, gpt-5.x-luna, etc.
+    Standard models (gpt-4o, gpt-4o-mini, gpt-4.1, etc.) do NOT accept it.
+    """
+    m = model_id.lower()
+    return m.startswith("o1") or m.startswith("o3") or m.startswith("o4") or "luna" in m
+
+
 class LLMClient:
     """Async LLM wrapper supporting multiple providers."""
 
@@ -329,7 +339,8 @@ class LLMClient:
                     }
                     if openai_tools:
                         kwargs["tools"] = openai_tools
-                        kwargs["reasoning_effort"] = "none"
+                        if _is_reasoning_model(self._model_id):
+                            kwargs["reasoning_effort"] = "none"
                     response = await client.chat.completions.create(**kwargs)  # type: ignore[call-overload]
                     last_error = None
                     break
@@ -372,7 +383,8 @@ class LLMClient:
                     if openai_tools:
                         stream_kwargs["tools"] = openai_tools
                         stream_kwargs["tool_choice"] = "none"
-                        stream_kwargs["reasoning_effort"] = "none"
+                        if _is_reasoning_model(self._model_id):
+                            stream_kwargs["reasoning_effort"] = "none"
                     stream_parts: List[str] = []
                     async for chunk in await client.chat.completions.create(**stream_kwargs):  # type: ignore[call-overload]
                         delta = chunk.choices[0].delta
