@@ -60,8 +60,6 @@ def make_agent_tools(
     @tool
     async def list_tasks() -> List[Dict[str, Any]]:
         """List all pending commitments and action items for the user.
-
-        Args:
         """
         from app.services.agent.tools.task_manager import TaskManagerTool
 
@@ -95,8 +93,6 @@ def make_agent_tools(
     @tool
     async def get_user_style() -> Dict[str, Any]:
         """Get the user's communication persona, tone guidelines, and heuristics.
-
-        Args:
         """
         from app.services.agent.tools.style_analyzer import StyleAnalyzerTool
 
@@ -156,8 +152,6 @@ def make_agent_tools(
     @tool
     async def get_sync_status() -> List[Dict[str, Any]]:
         """Get the last sync timestamp and status for each connected platform integration.
-
-        Args:
         """
         from app.services.agent.tools.sync_status import SyncStatusTool
 
@@ -166,8 +160,6 @@ def make_agent_tools(
     @tool
     def get_current_datetime() -> str:
         """Get the current date and time in UTC ISO 8601 format.
-
-        Args:
         """
         return datetime.now(timezone.utc).isoformat()
 

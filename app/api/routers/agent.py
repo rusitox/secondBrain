@@ -90,12 +90,6 @@ async def agent_stream(
     async def event_generator() -> AsyncIterator[dict]:
         queue: asyncio.Queue = asyncio.Queue()
 
-        async def on_tool_call(tool_name: str) -> None:
-            await queue.put({"event": "tool_call", "data": json_module.dumps({"tool": tool_name, "status": "calling"})})
-
-        async def on_tool_result(tool_name: str) -> None:
-            await queue.put({"event": "tool_result", "data": json_module.dumps({"tool": tool_name, "status": "done"})})
-
         async def on_token(text: str) -> None:
             await queue.put({"event": "token", "data": json_module.dumps({"text": text})})
 
@@ -115,7 +109,7 @@ async def agent_stream(
                 await queue.put({
                     "event": "done",
                     "data": json_module.dumps({
-                        "session_id": result.get("session_id", resolved_session_id),
+                        "session_id": result.get("session_id", ""),
                         "iterations": result.get("iterations", 0),
                         "tools_used": result.get("tools_used", []),
                     }),
@@ -143,7 +137,5 @@ async def agent_stream(
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-
-        await task  # propagate any unhandled exceptions
 
     return EventSourceResponse(event_generator())

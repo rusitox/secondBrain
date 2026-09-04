@@ -69,11 +69,13 @@ class _StreamingCallbackHandler:
             try:
                 loop = asyncio.get_running_loop()
                 coro = self._stream_callback(data)
-                # create_task requires a Coroutine; cast from Awaitable
                 loop.create_task(coro)  # type: ignore[arg-type]
             except RuntimeError:
-                # No running loop — skip streaming (unit-test context)
-                pass
+                # Strands called this callback from a thread without a running loop.
+                # Tokens are lost in this path — log so it's visible if it happens.
+                logger.warning(
+                    "StrandsOrchestrator: stream callback fired outside event loop — token discarded"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -139,14 +141,8 @@ class StrandsOrchestrator:
             style_text=style_text,
         )
 
-        # Augment question with identity prefix so tools have date/user context
-        if user_name:
-            identity_prefix = (
-                f"[IDENTIDAD DEL USUARIO: {user_name} <{user_email}> | "
-                f"ZONA HORARIA: {user_tz} | FECHA DE HOY: {today_str}]\n\n"
-            )
-        else:
-            identity_prefix = f"[FECHA DE HOY: {today_str}]\n\n"
+        # Keep the question clean — identity context lives in system_prompt only
+        identity_prefix = ""
         augmented_question = identity_prefix + question
 
         logger.info(
@@ -177,8 +173,8 @@ class StrandsOrchestrator:
                 # After exhausting the iterator the agent result is in agent.messages
                 answer = _extract_last_assistant_text(agent.messages)
             else:
-                result = await agent.invoke_async(augmented_question)
-                answer = str(result).strip()
+                await agent.invoke_async(augmented_question)
+                answer = _extract_last_assistant_text(agent.messages)
         except Exception:
             logger.exception(
                 "StrandsOrchestrator: agent failed for user=%s question=%r",
@@ -254,7 +250,7 @@ class StrandsOrchestrator:
         callback_handler = _StreamingCallbackHandler(stream_callback)
 
         # Pre-load conversation history as Strands messages if available
-        initial_messages = _history_to_strands_messages(history) if history else None
+        initial_messages = _history_to_strands_messages(history) if history else []
 
         agent = Agent(
             model=model,
@@ -304,10 +300,13 @@ class StrandsOrchestrator:
             return session_id, []
 
         most_recent = rows[0]
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=SESSION_EXPIRY_HOURS)
+        now_utc = datetime.now(timezone.utc)
+        cutoff = now_utc - timedelta(hours=SESSION_EXPIRY_HOURS)
         created = most_recent.created_at
-        if created is not None and hasattr(created, "tzinfo") and created.tzinfo is not None:
-            created = created.replace(tzinfo=None)
+        if created is not None:
+            # Normalize to aware UTC for consistent comparison regardless of DB driver tz handling
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
         if created is not None and created < cutoff:
             return str(uuid.uuid4()), []
 
@@ -419,9 +418,9 @@ def _format_style(style_info: Dict[str, Any]) -> str:
     persona = style_info.get("persona_description", "")
     tone = style_info.get("tone_guidelines", "")
     if persona:
-        parts.append("Persona: %s" % persona)
+        parts.append(f"Persona: {persona}")
     if tone:
-        parts.append("Tone: %s" % tone)
+        parts.append(f"Tone: {tone}")
     return " | ".join(parts) if parts else "No style profile available."
 
 
