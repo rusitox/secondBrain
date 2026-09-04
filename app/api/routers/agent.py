@@ -103,27 +103,8 @@ async def agent_stream(
 
         async def run_query() -> None:
             try:
-                from app.services.agent.orchestrator import MultiAgentOrchestrator
-                from app.core.database import get_session_factory
-                settings = get_settings()
-                sub_api_key = settings.llm_sub_agent_api_key or settings.llm_api_key
-                sub_model = settings.llm_sub_agent_model or settings.llm_model
-                from app.services.llm.claude_client import LLMClient as _LLMClient
-                sub_llm = _LLMClient(api_key=sub_api_key, model=sub_model)
-
-                agent_inst = _get_agent()  # keep for _resolve_session + _persist_turns
-                resolved_session_id, _ = await agent_inst._resolve_session(
-                    db, current_user_id, data.session_id
-                )
-
-                orch = MultiAgentOrchestrator(
-                    llm=agent_inst._llm,
-                    embedder=agent_inst._embedder,
-                    session_factory=get_session_factory(),
-                    sub_agent_llm=sub_llm,
-                )
-
-                result = await orch.query(
+                agent_inst = _get_agent()
+                result = await agent_inst.query(
                     db=db,
                     user_id=current_user_id,
                     question=data.question,
