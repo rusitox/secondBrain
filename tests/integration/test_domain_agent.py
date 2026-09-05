@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entity import EntityType
@@ -220,6 +221,45 @@ class TestFindOrCreateEntityTool:
         assert entity is not None
         assert entity.aliases == ["juan"]
 
+    async def test_new_attributes_merge_into_existing_entity(self, db_session: AsyncSession) -> None:
+        """A later mention that supplies new attributes (e.g. an email a
+        previous source didn't have) must not be silently dropped — this is
+        what lets reconciliation.auto_link_by_email ever find a match."""
+        user_id = await _make_persisted_user(db_session, email="ent4@example.com")
+        agent = _build_agent(db_session, user_id)
+
+        first = await _tool(agent, "find_or_create_entity")(entity_type="person", name="Juan")
+        await db_session.commit()
+
+        await _tool(agent, "find_or_create_entity")(
+            entity_type="person", name="Juan", attributes={"email": "juan@x.com"},
+        )
+        await db_session.commit()
+
+        entity = await store.get_entity(db_session, user_id, uuid.UUID(first["entity_id"]))
+        assert entity is not None
+        assert entity.attributes == {"email": "juan@x.com"}
+
+    async def test_existing_attributes_preserved_when_new_ones_added(
+        self, db_session: AsyncSession
+    ) -> None:
+        user_id = await _make_persisted_user(db_session, email="ent5@example.com")
+        agent = _build_agent(db_session, user_id)
+
+        first = await _tool(agent, "find_or_create_entity")(
+            entity_type="person", name="Juan", attributes={"team": "plataforma"},
+        )
+        await db_session.commit()
+
+        await _tool(agent, "find_or_create_entity")(
+            entity_type="person", name="Juan", attributes={"email": "juan@x.com"},
+        )
+        await db_session.commit()
+
+        entity = await store.get_entity(db_session, user_id, uuid.UUID(first["entity_id"]))
+        assert entity is not None
+        assert entity.attributes == {"team": "plataforma", "email": "juan@x.com"}
+
 
 class TestAddClaimAndConsultKnowledgeBase:
     async def test_claim_is_visible_via_consult_knowledge_base(self, db_session: AsyncSession) -> None:
@@ -315,6 +355,35 @@ class TestAskPeerAgentsTool:
 class TestAskPeerAgentsNegotiation:
     """Exercises _ask_peer_agents directly with fake registered peers — the
     only way to test the Swarm negotiation path without >1 real domain agent."""
+
+    async def test_raise_question_failure_returns_clean_no_peers_shape(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A DB failure recording the question must report the same shape as
+        "nobody relevant" (peers_consulted=[]/question_id=None) — the
+        docstring's contract has no third shape for "relevant peers exist but
+        nothing got recorded"."""
+        user_id = await _make_persisted_user(db_session, email="neg7@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "W")
+        await store.add_claim(db_session, entity.id, user_id, "slack", "c1", "slack_domain_agent")
+        await store.add_claim(db_session, entity.id, user_id, "outlook", "c2", "outlook_domain_agent")
+        await db_session.commit()
+
+        with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
+             patch.object(
+                 domain_agent.store, "raise_question",
+                 AsyncMock(side_effect=SQLAlchemyError("boom")),
+             ), \
+             patch("strands.multiagent.Swarm") as mock_swarm_cls:
+            result = await domain_agent._ask_peer_agents(
+                db_session, user_id, "slack", entity.id, "¿duda?",
+            )
+
+        assert result == {
+            "resolved": False, "answer": None, "confidence": None,
+            "peers_consulted": [], "question_id": None,
+        }
+        mock_swarm_cls.assert_not_called()
 
     async def test_no_relevant_peer_claims_short_circuits_without_swarm(
         self, db_session: AsyncSession
@@ -474,6 +543,54 @@ class TestAskPeerAgentsNegotiation:
         # peers_consulted reflects who's relevant, not who was freshly negotiated —
         # [] specifically means "nobody relevant," which isn't true here.
         assert second["peers_consulted"] == ["outlook"]
+
+    async def test_does_not_reuse_an_unrelated_reconciliation_question(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A reconciliation same_as question about this entity (it carries
+        candidate_entity_id) must not be mistaken for an existing
+        ask_peer_agents doubt — they're different kinds of questions that
+        just happen to reference the same entity_id."""
+        user_id = await _make_persisted_user(db_session, email="neg6@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "W")
+        other_entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "W2")
+        await store.add_claim(db_session, entity.id, user_id, "slack", "c1", "slack_domain_agent")
+        await store.add_claim(db_session, entity.id, user_id, "outlook", "c2", "outlook_domain_agent")
+        await db_session.commit()
+
+        # A reconciliation question already references this entity's id.
+        recon_question = await store.raise_question(
+            db_session, user_id, "reconciliation_engine", "¿son la misma entidad?",
+            context={"entity_id": str(entity.id), "candidate_entity_id": str(other_entity.id)},
+            target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+        mock_swarm_instance = MagicMock()
+        mock_swarm_instance.invoke_async = AsyncMock(return_value=MagicMock())
+
+        with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
+             patch("strands.Agent", return_value=MagicMock()), \
+             patch("strands.multiagent.Swarm", return_value=mock_swarm_instance) as mock_swarm_cls, \
+             patch("app.core.config.get_settings", return_value=settings):
+            result = await domain_agent._ask_peer_agents(
+                db_session, user_id, "slack", entity.id, "¿duda distinta?",
+            )
+
+        # A genuine new negotiation ran — it did NOT reuse the reconciliation question.
+        mock_swarm_cls.assert_called_once()
+        assert result["question_id"] != str(recon_question.id)
+
+        # The original reconciliation question is untouched, and a distinct
+        # new one now exists from this negotiation's own escalation.
+        open_questions = await store.list_open_questions(db_session, user_id, target=QuestionTarget.HUMAN)
+        open_ids = {str(q.id) for q in open_questions}
+        assert str(recon_question.id) in open_ids
+        assert result["question_id"] in open_ids
+        assert len(open_ids) == 2
 
 
 class TestSubmitVerdictTool:

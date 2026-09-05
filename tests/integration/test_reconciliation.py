@@ -281,6 +281,27 @@ class TestNegotiateSameAs:
 
 
 class TestRunReconciliation:
+    async def test_scoping_to_non_person_type_skips_email_auto_link(
+        self, db_session: AsyncSession
+    ) -> None:
+        """--entity-type project must not still auto-link unrelated PERSON
+        entities by email — the CLI's own help text promises scoping."""
+        user_id = await _make_persisted_user(db_session, email="r0@example.com")
+        await store.create_entity(
+            db_session, user_id, EntityType.PERSON, "A", attributes={"email": "x@y.com"},
+        )
+        await store.create_entity(
+            db_session, user_id, EntityType.PERSON, "B", attributes={"email": "x@y.com"},
+        )
+        await db_session.commit()
+
+        with patch.object(reconciliation, "find_candidate_duplicates", AsyncMock(return_value=[])):
+            result = await reconciliation.run_reconciliation(
+                db_session, user_id, entity_type=EntityType.PROJECT,
+            )
+
+        assert result["auto_linked"] == 0
+
     async def test_creates_link_when_negotiation_is_confident(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="r1@example.com")
         a = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")

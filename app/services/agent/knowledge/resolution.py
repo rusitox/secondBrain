@@ -63,7 +63,14 @@ async def find_or_create_entity(
             ]
             if new_aliases:
                 candidate.aliases = [*candidate.aliases, *new_aliases]
-                await db.flush()
+            # New attributes (e.g. an email an earlier source didn't have) must
+            # merge in too — dropping them here would silently break
+            # reconciliation.auto_link_by_email, which keys purely on
+            # attributes["email"] and can never link an entity that never
+            # got one attached.
+            if attributes:
+                candidate.attributes = {**candidate.attributes, **attributes}
+            await db.flush()
             return candidate, False
 
     embedding = None

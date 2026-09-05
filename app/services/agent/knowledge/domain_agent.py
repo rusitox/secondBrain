@@ -354,10 +354,18 @@ async def _find_open_question_for_entity(
     partial index on open questions per entity) once concurrent scheduling
     is introduced. Solving it now means guessing at a locking strategy for
     a scenario that can't happen in production yet.
+
+    Excludes reconciliation's same_as questions (they carry
+    candidate_entity_id in context) — those are a different kind of doubt
+    about this entity, not the one ask_peer_agents is trying to dedup. Two
+    genuinely different domain-agent doubts about the same entity can still
+    collide here (both just key on entity_id); that's an accepted
+    imprecision in exchange for the rate-limit the plan requires, not
+    something this fixes.
     """
     entity_id_str = str(entity_id)
     for q in await store.list_open_questions(db, user_id):
-        if q.context.get("entity_id") == entity_id_str:
+        if q.context.get("entity_id") == entity_id_str and "candidate_entity_id" not in q.context:
             return q
     return None
 
@@ -411,8 +419,12 @@ async def _ask_peer_agents(
                 context={"entity_id": str(entity_id)}, target=QuestionTarget.PEER_AGENTS,
             )
     except SQLAlchemyError:
+        # Nothing was actually recorded, so this must report as cleanly as
+        # the "nobody relevant" case (peers_consulted=[] / question_id=None)
+        # rather than the undocumented peers_consulted-set/question_id=None
+        # combination — the docstring's contract only covers those two shapes.
         logger.exception("ask_peer_agents: failed to raise question for entity=%s", entity_id)
-        return {**no_peers_result, "peers_consulted": relevant_sources}
+        return no_peers_result
 
     from strands import tool
 

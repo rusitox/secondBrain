@@ -25,13 +25,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv(override=False)
 
-from sqlalchemy import select
-
 from app.core.config import get_settings
 from app.core.database import get_session_factory
-from app.models.user import User
 from app.services.agent.knowledge.domain_agent import REGISTERED_SOURCES, run_domain_agent
 from app.services.ingestion.embedder import Embedder
+from app.services.user_service import get_user_by_email
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("run_domain_agent")
@@ -40,8 +38,7 @@ logger = logging.getLogger("run_domain_agent")
 async def _resolve_user_id(db, args: argparse.Namespace) -> uuid.UUID:
     if args.user_id:
         return uuid.UUID(args.user_id)
-    result = await db.execute(select(User).where(User.email == args.email))
-    user = result.scalar_one_or_none()
+    user = await get_user_by_email(db, args.email)
     if user is None:
         raise SystemExit(f"No user found with email={args.email!r}")
     return user.id

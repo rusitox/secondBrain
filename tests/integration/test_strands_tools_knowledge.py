@@ -110,6 +110,34 @@ class TestConfirmPendingAnswerTool:
         )
         assert "error" in result
 
+    async def test_already_resolved_question_is_rejected(self, db_session: AsyncSession) -> None:
+        """Confirming twice (a retried tool call, or the LLM re-confirming
+        the same question) must not double-write the claim/link and
+        double-count it in recompute_confidence."""
+        user_id = await _make_persisted_user(db_session, email="cpa6@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        await db_session.commit()
+        question = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "¿duda?",
+            context={"entity_id": str(entity.id)}, target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+
+        tools = _build_tools(db_session, user_id)
+        first = await _tool(tools, "confirm_pending_answer")(
+            question_id=str(question.id), answer_text="sí",
+        )
+        await db_session.commit()
+        assert first["resolved"] is True
+
+        second = await _tool(tools, "confirm_pending_answer")(
+            question_id=str(question.id), answer_text="sí otra vez",
+        )
+        assert "error" in second
+
+        claims = await store.list_claims(db_session, user_id, entity.id, status=ClaimStatus.CONFIRMED_BY_USER)
+        assert len(claims) == 1  # not duplicated
+
     async def test_confirmed_single_entity_question_creates_claim(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="cpa2@example.com")
         entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")

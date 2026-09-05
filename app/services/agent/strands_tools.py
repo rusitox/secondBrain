@@ -247,6 +247,11 @@ def make_agent_tools(
         question = await knowledge_store.get_question(db, user_id, _uuid.UUID(question_id))
         if question is None:
             return {"error": f"question {question_id} not found"}
+        if question.status != QuestionStatus.OPEN:
+            # Already resolved — re-running this would double-write the claim/
+            # link and double-count it in recompute_confidence. A retried tool
+            # call or the LLM re-confirming the same question must be a no-op.
+            return {"error": f"question {question_id} is already {question.status.value}"}
 
         entity_id = question.context.get("entity_id")
         candidate_entity_id = question.context.get("candidate_entity_id")

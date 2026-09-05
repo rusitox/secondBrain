@@ -269,7 +269,12 @@ async def run_reconciliation(
     and cost (run after every platform sync? on its own daily schedule?).
     Run manually via scripts/run_reconciliation.py until that's decided.
     """
-    auto_linked = await auto_link_by_email(db, user_id)
+    # Email matching only ever applies to people — skip it when the caller
+    # scoped this run to a different entity_type, matching the CLI's own
+    # "limit to one entity type" promise.
+    auto_linked: List[Dict[str, Any]] = []
+    if entity_type is None or entity_type == EntityType.PERSON:
+        auto_linked = await auto_link_by_email(db, user_id)
     candidates = await find_candidate_duplicates(db, user_id, entity_type=entity_type)
 
     negotiated: List[Dict[str, Any]] = []

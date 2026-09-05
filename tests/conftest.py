@@ -195,6 +195,9 @@ def _create_sqlite_tables(connection) -> None:
         CREATE INDEX IF NOT EXISTS ix_entity_claims_entity_id ON entity_claims(entity_id)
     """))
     connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entity_claims_user_id ON entity_claims(user_id)
+    """))
+    connection.execute(text("""
         CREATE TABLE IF NOT EXISTS entity_links (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -206,6 +209,15 @@ def _create_sqlite_tables(connection) -> None:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entity_links_user_id ON entity_links(user_id)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entity_links_entity_id_a ON entity_links(entity_id_a)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entity_links_entity_id_b ON entity_links(entity_id_b)
     """))
     connection.execute(text("""
         CREATE TABLE IF NOT EXISTS pending_questions (
