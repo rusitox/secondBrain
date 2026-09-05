@@ -1,10 +1,13 @@
 """Unit tests for make_agent_tools — Strands @tool wrappers.
 
 Covers tool count/composition (including the opt-in web_search / http_request
-tools added in Phase 5), and the security-relevant behavior of both: Brave
-Search error handling and the http_request domain allowlist (an SSRF /
-prompt-injection guard — the tool is disabled entirely unless the operator
-configures HTTP_REQUEST_ALLOWED_DOMAINS).
+tools, and the always-on knowledge-system tools — query_knowledge,
+get_pending_questions, confirm_pending_answer — from
+specs/plan-multi-agent-knowledge.md Phase 5), and the security-relevant
+behavior of web_search/http_request: Brave Search error handling and the
+http_request domain allowlist (an SSRF / prompt-injection guard — the tool
+is disabled entirely unless the operator configures
+HTTP_REQUEST_ALLOWED_DOMAINS).
 """
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,19 +29,28 @@ def _tool_names(tools) -> set:
     return {t.tool_name for t in tools}
 
 
+CORE_TOOL_COUNT = 11  # 8 original + query_knowledge, get_pending_questions, confirm_pending_answer
+
+
 class TestToolComposition:
-    def test_default_config_registers_only_the_core_eight_tools(self) -> None:
+    def test_default_config_registers_only_the_core_tools(self) -> None:
         with patch("app.core.config.get_settings", return_value=_make_settings()):
             tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
-        assert len(tools) == 8
+        assert len(tools) == CORE_TOOL_COUNT
         assert "web_search" not in _tool_names(tools)
         assert "http_request" not in _tool_names(tools)
+
+    def test_knowledge_tools_always_registered(self) -> None:
+        with patch("app.core.config.get_settings", return_value=_make_settings()):
+            tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
+        names = _tool_names(tools)
+        assert {"query_knowledge", "get_pending_questions", "confirm_pending_answer"}.issubset(names)
 
     def test_web_search_registered_when_brave_key_configured(self) -> None:
         with patch("app.core.config.get_settings", return_value=_make_settings(brave_search_api_key="bsk-test")):
             tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
         assert "web_search" in _tool_names(tools)
-        assert len(tools) == 9
+        assert len(tools) == CORE_TOOL_COUNT + 1
 
     def test_http_request_registered_when_allowlist_configured(self) -> None:
         with patch(
@@ -47,7 +59,7 @@ class TestToolComposition:
         ):
             tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
         assert "http_request" in _tool_names(tools)
-        assert len(tools) == 9
+        assert len(tools) == CORE_TOOL_COUNT + 1
 
     def test_both_optional_tools_registered_when_both_configured(self) -> None:
         settings = _make_settings(
@@ -56,7 +68,7 @@ class TestToolComposition:
         )
         with patch("app.core.config.get_settings", return_value=settings):
             tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
-        assert len(tools) == 10
+        assert len(tools) == CORE_TOOL_COUNT + 2
 
 
 def _get_tool(tools, name: str):

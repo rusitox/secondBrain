@@ -227,8 +227,15 @@ class StrandsOrchestrator:
 
         A new agent is created per request so there is no shared mutable
         state between concurrent queries.
+
+        Uses SequentialToolExecutor: Strands runs multiple tool calls from one
+        LLM turn concurrently by default, but every tool in make_agent_tools
+        closes over this same AsyncSession, which is not safe for concurrent
+        use from more than one task at a time (same reasoning as
+        app/services/agent/knowledge/domain_agent.py's make_domain_agent).
         """
         from strands import Agent
+        from strands.tools.executors import SequentialToolExecutor
 
         from app.services.agent.strands_model import build_openai_model
         from app.services.agent.strands_tools import make_agent_tools
@@ -253,6 +260,7 @@ class StrandsOrchestrator:
             system_prompt=system_prompt,
             callback_handler=callback_handler,
             messages=initial_messages,
+            tool_executor=SequentialToolExecutor(),
         )
 
         return agent
@@ -400,9 +408,18 @@ Estilo de comunicación del usuario:
 
 Workflow obligatorio:
 1. Llamá get_current_datetime si necesitás confirmar la fecha
-2. Llamá search_memory y search_learnings para buscar contexto relevante
-3. Llamá otras tools según lo requiera la pregunta
-4. Sintetizá una respuesta clara y accionable
+2. Si la pregunta es sobre una persona, proyecto o tema específico, probá primero \
+query_knowledge — es la vista consolidada y con proveniencia que arman los agentes \
+de dominio, y trae su propio nivel de confianza. Si no encontrás nada ahí, o \
+necesitás más contexto crudo, usá search_memory y search_learnings.
+3. Al empezar la conversación (o cuando sea natural), llamá get_pending_questions — \
+son dudas que los agentes de dominio no pudieron resolver solos y te piden que se \
+las confirmes al humano. Si hay alguna relevante, planteala con naturalidad, no la \
+fuerces en cada respuesta. Si el usuario confirma o corrige, llamá \
+confirm_pending_answer para cerrar el loop — esa respuesta pasa a ser conocimiento \
+de alta confianza.
+4. Llamá otras tools según lo requiera la pregunta
+5. Sintetizá una respuesta clara y accionable
 
 Respondé siempre en el idioma del usuario."""
 

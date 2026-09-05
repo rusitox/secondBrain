@@ -169,6 +169,120 @@ def make_agent_tools(
         """
         return datetime.now(timezone.utc).isoformat()
 
+    @tool
+    async def query_knowledge(
+        query: str, entity_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search the unified, cross-source knowledge base built by the domain
+        agents — people, projects, topics, each with every source's claims and
+        an aggregate confidence score you can cite and calibrate your certainty
+        against. Prefer this over search_memory when the question is about a
+        specific person, project, or topic the domain agents may have already
+        consolidated.
+
+        Args:
+            query: Name or topic to search for.
+            entity_type: Optional filter — one of person, project, initiative, topic, organization.
+        """
+        from app.models.entity import EntityType
+        from app.services.agent.knowledge import resolution
+
+        parsed_type: Optional[EntityType] = None
+        if entity_type:
+            try:
+                parsed_type = EntityType(entity_type)
+            except ValueError:
+                return []
+        return await resolution.consult_knowledge_base(db, user_id, query, entity_type=parsed_type)
+
+    @tool
+    async def get_pending_questions() -> List[Dict[str, Any]]:
+        """Get open questions the domain agents couldn't resolve on their own
+        and need you to ask the human. Each includes question_text and, when
+        available, a candidate_answer — validate that with the user instead of
+        asking cold. Only bring these up when natural in conversation, not
+        forced into every reply.
+        """
+        from app.models.pending_question import QuestionTarget
+        from app.services.agent.knowledge import store as knowledge_store
+
+        questions = await knowledge_store.list_open_questions(db, user_id, target=QuestionTarget.HUMAN)
+        return [
+            {
+                "question_id": str(q.id),
+                "question_text": q.question_text,
+                "candidate_answer": q.candidate_answer,
+                "candidate_confidence": q.candidate_confidence,
+            }
+            for q in questions
+        ]
+
+    @tool
+    async def confirm_pending_answer(
+        question_id: str, answer_text: str, confirmed: bool = True,
+    ) -> Dict[str, Any]:
+        """Record the human's answer to a question from get_pending_questions —
+        call this once they confirm or correct a candidate_answer. Closes the
+        loop: a confirmed answer becomes a high-confidence claim (or a same_as
+        link, for an "are these the same entity" question), and the question
+        is marked resolved either way.
+
+        Args:
+            question_id: The question_id from get_pending_questions.
+            answer_text: The human's answer, in their own words.
+            confirmed: True if they confirmed/agreed, False if they said no —
+                either way the question is closed, but only a confirmation
+                writes a claim or link.
+        """
+        import uuid as _uuid
+
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from app.models.entity_claim import ClaimStatus
+        from app.models.entity_link import LinkResolvedBy
+        from app.models.pending_question import QuestionStatus, ResolvedBy
+        from app.services.agent.knowledge import reconciliation
+        from app.services.agent.knowledge import store as knowledge_store
+
+        question = await knowledge_store.get_question(db, user_id, _uuid.UUID(question_id))
+        if question is None:
+            return {"error": f"question {question_id} not found"}
+
+        entity_id = question.context.get("entity_id")
+        candidate_entity_id = question.context.get("candidate_entity_id")
+        touched_entity_ids: List[str] = []
+
+        try:
+            async with db.begin_nested():
+                if confirmed and entity_id and candidate_entity_id:
+                    await knowledge_store.link_entities(
+                        db, user_id, _uuid.UUID(entity_id), _uuid.UUID(candidate_entity_id),
+                        relation_type="same_as", resolved_by=LinkResolvedBy.USER, confidence=1.0,
+                    )
+                    touched_entity_ids = [entity_id, candidate_entity_id]
+                elif confirmed and entity_id:
+                    await knowledge_store.add_claim(
+                        db, _uuid.UUID(entity_id), user_id, source="user", claim_text=answer_text,
+                        asserted_by_agent="user", status=ClaimStatus.CONFIRMED_BY_USER, confidence=1.0,
+                    )
+                    touched_entity_ids = [entity_id]
+
+                await knowledge_store.resolve_question(
+                    db, user_id, question.id, ResolvedBy.HUMAN, answer_text=answer_text,
+                    status=QuestionStatus.ANSWERED if confirmed else QuestionStatus.DISMISSED,
+                )
+
+                for eid in touched_entity_ids:
+                    new_confidence = await reconciliation.recompute_confidence(
+                        db, user_id, _uuid.UUID(eid),
+                    )
+                    await knowledge_store.update_entity_confidence(db, user_id, _uuid.UUID(eid), new_confidence)
+        except (SQLAlchemyError, ValueError) as e:
+            logger.warning("confirm_pending_answer failed for question_id=%s: %s", question_id, e)
+            return {"error": str(e)}
+
+        return {"resolved": True, "entities_updated": touched_entity_ids}
+
     tools = [
         search_memory,
         list_tasks,
@@ -178,6 +292,9 @@ def make_agent_tools(
         save_learning,
         get_sync_status,
         get_current_datetime,
+        query_knowledge,
+        get_pending_questions,
+        confirm_pending_answer,
     ]
 
     from app.core.config import get_settings

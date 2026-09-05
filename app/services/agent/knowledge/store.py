@@ -234,9 +234,10 @@ async def raise_question(
     return question
 
 
-async def _get_question(
+async def get_question(
     db: AsyncSession, user_id: uuid.UUID, question_id: uuid.UUID
 ) -> Optional[PendingQuestion]:
+    """Scoped by user_id — a question_id belonging to another user must never resolve."""
     stmt = select(PendingQuestion).where(
         PendingQuestion.id == question_id, PendingQuestion.user_id == user_id
     )
@@ -255,7 +256,7 @@ async def escalate_to_human(
     Carries forward whatever partial answer the peer-agent step produced, if any,
     so the human validates a candidate instead of answering cold.
     """
-    question = await _get_question(db, user_id, question_id)
+    question = await get_question(db, user_id, question_id)
     if question is None:
         return None
     question.target = QuestionTarget.HUMAN
@@ -275,7 +276,7 @@ async def resolve_question(
     answer_text: Optional[str] = None,
     status: QuestionStatus = QuestionStatus.ANSWERED,
 ) -> Optional[PendingQuestion]:
-    question = await _get_question(db, user_id, question_id)
+    question = await get_question(db, user_id, question_id)
     if question is None:
         return None
     question.status = status

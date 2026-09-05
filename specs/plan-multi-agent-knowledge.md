@@ -191,11 +191,19 @@ completo acá antes de replicar.
 obligatorio, con foco en costo (cuántos swarms se disparan por ciclo) y en que el pre-filtro
 determinístico realmente reduce el volumen antes de gastar LLM.
 
-### Phase 5 — Orquestador: lectura + feedback loop
-- [ ] Tool `query_knowledge(entity_or_topic)` en `strands_tools.py`.
-- [ ] El orquestador surge `pending_questions` abiertas en la conversación cuando es relevante.
-- [ ] La respuesta del usuario se escribe como `entity_claims` con `asserted_by_agent="user"` y
-  `status=confirmed_by_user`, sube la confianza de la entidad, y cierra la `pending_question`.
+### Phase 5 — Orquestador: lectura + feedback loop ✅
+- [x] Tool `query_knowledge(entity_or_topic)` en `strands_tools.py`.
+- [x] El orquestador surge `pending_questions` abiertas en la conversación cuando es relevante
+  (tool `get_pending_questions`, instrucción explícita en el system prompt).
+- [x] La respuesta del usuario se escribe como `entity_claims` con `asserted_by_agent="user"` y
+  `status=confirmed_by_user`, sube la confianza de la entidad, y cierra la `pending_question`
+  (tool `confirm_pending_answer`). También maneja preguntas de "¿son la misma entidad?" de
+  reconciliación creando el `entity_link` `same_as` en vez de un claim.
+- [x] Hallazgo no planeado corregido: `StrandsOrchestrator` (el orquestador de chat en producción,
+  mergeado desde antes de este plan) no usaba `SequentialToolExecutor` — mismo bug de concurrencia
+  de sesión que se había corregido en los agentes de dominio durante el code review de Phase 1,
+  pero sin corregir en código ya en producción. Corregido acá al notar que las tools nuevas
+  comparten la misma `AsyncSession`.
 
 **Complejidad**: media.
 
