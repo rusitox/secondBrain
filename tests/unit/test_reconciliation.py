@@ -8,7 +8,7 @@ pair regardless of which side's similarity search surfaced it, skip already-
 linked pairs, and never compare an entity against itself.
 """
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.models.entity import Entity, EntityType
 from app.services.agent.knowledge import reconciliation
@@ -42,7 +42,7 @@ class TestFindCandidateDuplicates:
              patch.object(reconciliation.store, "find_similar_entities", fake_find_similar), \
              patch.object(reconciliation, "_already_linked", AsyncMock(return_value=False)):
             candidates = await reconciliation.find_candidate_duplicates(
-                None, uuid.uuid4(), entity_type=EntityType.PERSON,
+                MagicMock(), uuid.uuid4(), entity_type=EntityType.PERSON,
             )
 
         assert len(candidates) == 1
@@ -61,7 +61,7 @@ class TestFindCandidateDuplicates:
              patch.object(reconciliation.store, "find_similar_entities", fake_find_similar), \
              patch.object(reconciliation, "_already_linked", AsyncMock(return_value=True)):
             candidates = await reconciliation.find_candidate_duplicates(
-                None, uuid.uuid4(), entity_type=EntityType.PERSON,
+                MagicMock(), uuid.uuid4(), entity_type=EntityType.PERSON,
             )
 
         assert candidates == []
@@ -78,7 +78,7 @@ class TestFindCandidateDuplicates:
         with patch.object(reconciliation.store, "list_entities", fake_list_entities), \
              patch.object(reconciliation.store, "find_similar_entities", fake_find_similar):
             candidates = await reconciliation.find_candidate_duplicates(
-                None, uuid.uuid4(), entity_type=EntityType.PERSON,
+                MagicMock(), uuid.uuid4(), entity_type=EntityType.PERSON,
             )
 
         assert candidates == []
@@ -92,6 +92,6 @@ class TestFindCandidateDuplicates:
 
         with patch.object(reconciliation.store, "list_entities", fake_list_entities), \
              patch.object(reconciliation.store, "find_similar_entities", AsyncMock(return_value=[])):
-            await reconciliation.find_candidate_duplicates(None, uuid.uuid4())
+            await reconciliation.find_candidate_duplicates(MagicMock(), uuid.uuid4())
 
         assert set(seen_types) == set(EntityType)

@@ -143,6 +143,7 @@ class TestFindOrCreateEntityTool:
 
         mock_embedder.embed_single.assert_awaited_once_with("Juan")
         entity = await store.get_entity(db_session, user_id, uuid.UUID(result["entity_id"]))
+        assert entity is not None
         assert entity.embedding is not None
 
     async def test_no_embed_call_when_entity_already_exists(self, db_session: AsyncSession) -> None:
@@ -197,6 +198,7 @@ class TestFindOrCreateEntityTool:
         await db_session.commit()
 
         entity = await store.get_entity(db_session, user_id, uuid.UUID(first["entity_id"]))
+        assert entity is not None
         assert entity.aliases == ["juan"]
 
 

@@ -55,6 +55,7 @@ class TestEntityCRUD:
         await db_session.commit()
 
         fetched = await store.get_entity(db_session, user_id, entity.id)
+        assert fetched is not None
         assert fetched.aliases == ["Atlas", "El proyecto de Atlas"]
         assert fetched.attributes == {"team": "I+D"}
         assert fetched.confidence == 0.8
@@ -80,8 +81,10 @@ class TestEntityCRUD:
         updated = await store.update_entity_confidence(db_session, user_id, entity.id, 0.95)
         await db_session.commit()
 
+        assert updated is not None
         assert updated.confidence == 0.95
         refetched = await store.get_entity(db_session, user_id, entity.id)
+        assert refetched is not None
         assert refetched.confidence == 0.95
 
     async def test_update_entity_confidence_missing_entity_returns_none(
@@ -218,6 +221,7 @@ class TestPendingQuestionLifecycle:
         )
         await db_session.commit()
 
+        assert escalated is not None
         assert escalated.target == QuestionTarget.HUMAN
         assert escalated.candidate_answer == "Creemos que sí, por coincidencia de email"
         assert escalated.candidate_confidence == 0.6
@@ -250,6 +254,7 @@ class TestPendingQuestionLifecycle:
         )
         await db_session.commit()
 
+        assert resolved is not None
         assert resolved.status == QuestionStatus.ANSWERED
         assert resolved.resolved_by == ResolvedBy.PEER_SWARM
         assert resolved.answer_text == "Sí, confirmado por email"

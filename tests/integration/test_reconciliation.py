@@ -301,5 +301,6 @@ class TestRunReconciliation:
         assert result["auto_linked"] == 1
         assert result["entities_recomputed"] == 2
         refetched_a = await store.get_entity(db_session, user_id, a.id)
+        assert refetched_a is not None
         # base 0.5 + 0.1 for the one same_as link
         assert refetched_a.confidence == 0.6
