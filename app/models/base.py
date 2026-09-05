@@ -1,9 +1,23 @@
+import enum
 import uuid
 from datetime import datetime
+from typing import Type, TypeVar
 
-from sqlalchemy import DateTime, func
+from sqlalchemy import DateTime, Enum, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+E = TypeVar("E", bound=enum.Enum)
+
+
+def pg_enum(enum_cls: Type[E], name: str) -> Enum:
+    """Postgres ENUM column type storing an str-Enum's .value, not its name.
+
+    Centralizes the values_callable incantation every str-Enum column in
+    this codebase needs (see CommitmentStatus and every model under
+    app/models/entity*.py, pending_question.py) so it's written once.
+    """
+    return Enum(enum_cls, name=name, values_callable=lambda obj: [e.value for e in obj])
 
 
 class Base(DeclarativeBase):

@@ -5,6 +5,7 @@ no agent/LLM logic exists yet. See specs/plan-multi-agent-knowledge.md.
 """
 import uuid
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entity import EntityType
@@ -31,7 +32,7 @@ class TestEntityCRUD:
         )
         await db_session.commit()
 
-        fetched = await store.get_entity(db_session, entity.id)
+        fetched = await store.get_entity(db_session, user_id, entity.id)
         assert fetched is not None
         assert fetched.canonical_name == "Mariano Ortega"
         assert fetched.entity_type == EntityType.PERSON
@@ -53,7 +54,7 @@ class TestEntityCRUD:
         )
         await db_session.commit()
 
-        fetched = await store.get_entity(db_session, entity.id)
+        fetched = await store.get_entity(db_session, user_id, entity.id)
         assert fetched.aliases == ["Atlas", "El proyecto de Atlas"]
         assert fetched.attributes == {"team": "I+D"}
         assert fetched.confidence == 0.8
@@ -76,18 +77,28 @@ class TestEntityCRUD:
         entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
         await db_session.commit()
 
-        updated = await store.update_entity_confidence(db_session, entity.id, 0.95)
+        updated = await store.update_entity_confidence(db_session, user_id, entity.id, 0.95)
         await db_session.commit()
 
         assert updated.confidence == 0.95
-        refetched = await store.get_entity(db_session, entity.id)
+        refetched = await store.get_entity(db_session, user_id, entity.id)
         assert refetched.confidence == 0.95
 
     async def test_update_entity_confidence_missing_entity_returns_none(
         self, db_session: AsyncSession
     ) -> None:
-        result = await store.update_entity_confidence(db_session, uuid.uuid4(), 0.9)
+        user_id = await _make_persisted_user(db_session, email="d2@example.com")
+        result = await store.update_entity_confidence(db_session, user_id, uuid.uuid4(), 0.9)
         assert result is None
+
+    async def test_get_entity_does_not_leak_across_users(self, db_session: AsyncSession) -> None:
+        owner_id = await _make_persisted_user(db_session, email="owner@example.com")
+        other_id = await _make_persisted_user(db_session, email="other@example.com")
+        entity = await store.create_entity(db_session, owner_id, EntityType.PERSON, "Secreto")
+        await db_session.commit()
+
+        assert await store.get_entity(db_session, other_id, entity.id) is None
+        assert await store.get_entity(db_session, owner_id, entity.id) is not None
 
 
 class TestClaimCRUD:
@@ -109,7 +120,7 @@ class TestClaimCRUD:
         await db_session.commit()
 
         assert claim.status == ClaimStatus.ACTIVE
-        claims = await store.list_claims(db_session, entity.id)
+        claims = await store.list_claims(db_session, user_id, entity.id)
         assert len(claims) == 1
         assert claims[0].claim_text == "Trabaja en el equipo de plataforma"
         assert claims[0].source == "slack"
@@ -129,9 +140,20 @@ class TestClaimCRUD:
         )
         await db_session.commit()
 
-        active = await store.list_claims(db_session, entity.id, status=ClaimStatus.ACTIVE)
+        active = await store.list_claims(db_session, user_id, entity.id, status=ClaimStatus.ACTIVE)
         assert len(active) == 1
         assert active[0].claim_text == "claim A"
+
+    async def test_add_claim_rejects_entity_from_another_user(self, db_session: AsyncSession) -> None:
+        owner_id = await _make_persisted_user(db_session, email="owner2@example.com")
+        other_id = await _make_persisted_user(db_session, email="other2@example.com")
+        entity = await store.create_entity(db_session, owner_id, EntityType.PERSON, "X")
+        await db_session.commit()
+
+        with pytest.raises(ValueError):
+            await store.add_claim(
+                db_session, entity.id, other_id, "slack", "claim", "slack_domain_agent",
+            )
 
 
 class TestEntityLinkCRUD:
@@ -148,8 +170,8 @@ class TestEntityLinkCRUD:
         await db_session.commit()
 
         assert link.relation_type == "same_as"
-        links_from_a = await store.list_links_for_entity(db_session, entity_a.id)
-        links_from_b = await store.list_links_for_entity(db_session, entity_b.id)
+        links_from_a = await store.list_links_for_entity(db_session, user_id, entity_a.id)
+        links_from_b = await store.list_links_for_entity(db_session, user_id, entity_b.id)
         assert len(links_from_a) == 1
         assert len(links_from_b) == 1
         assert links_from_a[0].id == links_from_b[0].id
@@ -177,7 +199,7 @@ class TestPendingQuestionLifecycle:
         await db_session.commit()
 
         escalated = await store.escalate_to_human(
-            db_session, question.id,
+            db_session, user_id, question.id,
             candidate_answer="Creemos que sí, por coincidencia de email",
             candidate_confidence=0.6,
         )
@@ -190,8 +212,17 @@ class TestPendingQuestionLifecycle:
     async def test_escalate_to_human_missing_question_returns_none(
         self, db_session: AsyncSession
     ) -> None:
-        result = await store.escalate_to_human(db_session, uuid.uuid4())
+        user_id = await _make_persisted_user(db_session, email="i2@example.com")
+        result = await store.escalate_to_human(db_session, user_id, uuid.uuid4())
         assert result is None
+
+    async def test_escalate_to_human_does_not_leak_across_users(self, db_session: AsyncSession) -> None:
+        owner_id = await _make_persisted_user(db_session, email="owner3@example.com")
+        other_id = await _make_persisted_user(db_session, email="other3@example.com")
+        question = await store.raise_question(db_session, owner_id, "slack_domain_agent", "duda")
+        await db_session.commit()
+
+        assert await store.escalate_to_human(db_session, other_id, question.id) is None
 
     async def test_resolve_question(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="j@example.com")
@@ -201,7 +232,8 @@ class TestPendingQuestionLifecycle:
         await db_session.commit()
 
         resolved = await store.resolve_question(
-            db_session, question.id, ResolvedBy.PEER_SWARM, answer_text="Sí, confirmado por email",
+            db_session, user_id, question.id, ResolvedBy.PEER_SWARM,
+            answer_text="Sí, confirmado por email",
         )
         await db_session.commit()
 
@@ -215,7 +247,7 @@ class TestPendingQuestionLifecycle:
         q1 = await store.raise_question(db_session, user_id, "slack_domain_agent", "duda 1")
         q2 = await store.raise_question(db_session, user_id, "outlook_domain_agent", "duda 2")
         await db_session.commit()
-        await store.resolve_question(db_session, q1.id, ResolvedBy.KNOWLEDGE_BASE)
+        await store.resolve_question(db_session, user_id, q1.id, ResolvedBy.KNOWLEDGE_BASE)
         await db_session.commit()
 
         open_questions = await store.list_open_questions(db_session, user_id)

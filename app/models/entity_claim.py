@@ -9,11 +9,11 @@ import enum
 import uuid
 from typing import Optional
 
-from sqlalchemy import Enum, Float, ForeignKey, Index, Text
+from sqlalchemy import Float, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin, pg_enum
 
 
 class ClaimStatus(str, enum.Enum):
@@ -38,7 +38,7 @@ class EntityClaim(UUIDMixin, TimestampMixin, Base):
     claim_type: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.5, server_default="0.5", nullable=False)
     status: Mapped[ClaimStatus] = mapped_column(
-        Enum(ClaimStatus, name="claim_status_enum", values_callable=lambda obj: [e.value for e in obj]),
+        pg_enum(ClaimStatus, "claim_status_enum"),
         default=ClaimStatus.ACTIVE,
         server_default=ClaimStatus.ACTIVE.value,
         nullable=False,

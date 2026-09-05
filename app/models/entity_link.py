@@ -8,11 +8,11 @@ produced by the reconciliation engine.
 import enum
 import uuid
 
-from sqlalchemy import Enum, Float, ForeignKey, Index, Text
+from sqlalchemy import Float, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin, pg_enum
 
 
 class LinkResolvedBy(str, enum.Enum):
@@ -36,8 +36,7 @@ class EntityLink(UUIDMixin, TimestampMixin, Base):
     relation_type: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=0.5, server_default="0.5", nullable=False)
     resolved_by: Mapped[LinkResolvedBy] = mapped_column(
-        Enum(LinkResolvedBy, name="link_resolved_by_enum", values_callable=lambda obj: [e.value for e in obj]),
-        nullable=False,
+        pg_enum(LinkResolvedBy, "link_resolved_by_enum"), nullable=False,
     )
 
     __table_args__ = (

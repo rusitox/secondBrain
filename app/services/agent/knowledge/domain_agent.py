@@ -11,10 +11,12 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entity import EntityType
-from app.models.pending_question import QuestionTarget
+from app.models.entity_claim import ClaimStatus
+from app.models.pending_question import QuestionTarget, ResolvedBy
 from app.services.agent.knowledge import resolution, store
 
 logger = logging.getLogger(__name__)
@@ -64,8 +66,15 @@ def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
 
     A new agent is built per invocation — no shared mutable state between
     concurrent extraction runs (same rationale as StrandsOrchestrator).
+
+    Uses SequentialToolExecutor: Strands runs multiple tool calls from one
+    LLM turn concurrently by default, but every tool here closes over the
+    same AsyncSession, and AsyncSession is not safe for concurrent use from
+    more than one task at a time. Sequential execution is required, not an
+    optimization.
     """
     from strands import Agent, tool
+    from strands.tools.executors import SequentialToolExecutor
 
     from app.services.agent.strands_model import build_openai_model
 
@@ -88,7 +97,12 @@ def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
     @tool
     async def mark_document_processed(document_id: str) -> Dict[str, Any]:
         """Mark a document as processed so it isn't re-read on the next run."""
-        await store.mark_document_processed(db, user_id, uuid.UUID(document_id), source)
+        try:
+            async with db.begin_nested():
+                await store.mark_document_processed(db, user_id, uuid.UUID(document_id), source)
+        except (SQLAlchemyError, ValueError) as e:
+            logger.warning("mark_document_processed failed for document_id=%s: %s", document_id, e)
+            return {"error": str(e)}
         return {"marked": True}
 
     @tool
@@ -110,9 +124,14 @@ def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
             parsed_type = EntityType(entity_type)
         except ValueError:
             return {"error": f"invalid entity_type {entity_type!r}"}
-        entity, created = await resolution.find_or_create_entity(
-            db, user_id, parsed_type, name, aliases=aliases, attributes=attributes,
-        )
+        try:
+            async with db.begin_nested():
+                entity, created = await resolution.find_or_create_entity(
+                    db, user_id, parsed_type, name, aliases=aliases, attributes=attributes,
+                )
+        except SQLAlchemyError as e:
+            logger.warning("find_or_create_entity failed for name=%r: %s", name, e)
+            return {"error": str(e)}
         return {
             "entity_id": str(entity.id),
             "created": created,
@@ -127,11 +146,16 @@ def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
         source_ref: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Record what this document asserts about an entity, with your real confidence (0-1)."""
-        claim = await store.add_claim(
-            db, uuid.UUID(entity_id), user_id, source, claim_text,
-            asserted_by_agent=f"{source}_domain_agent",
-            source_ref=source_ref, confidence=confidence,
-        )
+        try:
+            async with db.begin_nested():
+                claim = await store.add_claim(
+                    db, uuid.UUID(entity_id), user_id, source, claim_text,
+                    asserted_by_agent=f"{source}_domain_agent",
+                    source_ref=source_ref, confidence=confidence,
+                )
+        except (SQLAlchemyError, ValueError) as e:
+            logger.warning("add_claim failed for entity_id=%s: %s", entity_id, e)
+            return {"error": str(e)}
         return {"claim_id": str(claim.id)}
 
     @tool
@@ -156,8 +180,11 @@ def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
 
         Step 2 of the resolution ladder. Only agents whose source already holds
         a claim about this entity are consulted — returns
-        {resolved, answer, confidence, peers_consulted}. peers_consulted=[] means
-        nobody relevant was available; fall through to escalate_or_validate."""
+        {resolved, answer, confidence, peers_consulted, question_id}.
+        peers_consulted=[] means nobody relevant was available; fall through to
+        escalate_or_validate yourself instead. Otherwise this already recorded
+        the outcome (resolved or escalated to the human) — you don't need to
+        call escalate_or_validate again for the same doubt."""
         return await _ask_peer_agents(db, user_id, source, uuid.UUID(entity_id), question)
 
     @tool
@@ -173,11 +200,16 @@ def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
         anything, even a low-confidence guess, so the human validates instead of
         answering a blind question."""
         context: Dict[str, Any] = {"entity_id": entity_id} if entity_id else {}
-        question = await store.raise_question(
-            db, user_id, f"{source}_domain_agent", question_text,
-            context=context, target=QuestionTarget.HUMAN,
-            candidate_answer=candidate_answer, candidate_confidence=candidate_confidence,
-        )
+        try:
+            async with db.begin_nested():
+                question = await store.raise_question(
+                    db, user_id, f"{source}_domain_agent", question_text,
+                    context=context, target=QuestionTarget.HUMAN,
+                    candidate_answer=candidate_answer, candidate_confidence=candidate_confidence,
+                )
+        except SQLAlchemyError as e:
+            logger.warning("escalate_or_validate failed: %s", e)
+            return {"error": str(e)}
         return {"question_id": str(question.id)}
 
     tools = [
@@ -196,6 +228,7 @@ def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
 
     return Agent(
         model=model, tools=tools, system_prompt=system_prompt, name=f"{source}_domain_agent",
+        tool_executor=SequentialToolExecutor(),
     )
 
 
@@ -247,6 +280,23 @@ def _make_submit_verdict_tool(verdict: Dict[str, Any]):
     return submit_verdict
 
 
+async def _find_open_question_for_entity(
+    db: AsyncSession, user_id: uuid.UUID, entity_id: uuid.UUID
+):
+    """Find an already-open question about this entity, if any.
+
+    The rate-limit the plan's own risk section requires: a batch that
+    processes several documents mentioning the same ambiguous entity must
+    not spin up a fresh Swarm negotiation (or duplicate human question) for
+    every single one of them.
+    """
+    entity_id_str = str(entity_id)
+    for q in await store.list_open_questions(db, user_id):
+        if q.context.get("entity_id") == entity_id_str:
+            return q
+    return None
+
+
 async def _ask_peer_agents(
     db: AsyncSession,
     user_id: uuid.UUID,
@@ -257,25 +307,44 @@ async def _ask_peer_agents(
     """Negotiate a doubt with the peer agents that actually have something to
     say about this entity — a scoped Swarm, never every registered source."""
     no_peers_result: Dict[str, Any] = {
-        "resolved": False, "answer": None, "confidence": None, "peers_consulted": [],
+        "resolved": False, "answer": None, "confidence": None,
+        "peers_consulted": [], "question_id": None,
     }
 
     peer_sources = [s for s in REGISTERED_SOURCES if s != asking_source]
     if not peer_sources:
         return no_peers_result
 
-    # Only consult agents whose source already holds a claim about this
-    # entity — no point negotiating with someone with nothing to contribute.
-    claims = await store.list_claims(db, entity_id)
+    # Only consult agents whose source already holds an ACTIVE claim about
+    # this entity — no point negotiating with someone with nothing to
+    # contribute, and a DISPUTED/SUPERSEDED claim must not be treated as
+    # settled fact during negotiation.
+    claims = await store.list_claims(db, user_id, entity_id, status=ClaimStatus.ACTIVE)
     relevant_sources = [s for s in peer_sources if any(c.source == s for c in claims)]
     if not relevant_sources:
         return no_peers_result
 
-    entity = await store.get_entity(db, entity_id)
+    existing = await _find_open_question_for_entity(db, user_id, entity_id)
+    if existing is not None:
+        return {
+            "resolved": False,
+            "answer": existing.candidate_answer,
+            "confidence": existing.candidate_confidence,
+            "peers_consulted": [],
+            "question_id": str(existing.id),
+        }
+
+    entity = await store.get_entity(db, user_id, entity_id)
     entity_name = entity.canonical_name if entity is not None else str(entity_id)
+
+    pending = await store.raise_question(
+        db, user_id, f"{asking_source}_domain_agent", question,
+        context={"entity_id": str(entity_id)}, target=QuestionTarget.PEER_AGENTS,
+    )
 
     from strands import Agent, tool
     from strands.multiagent import Swarm
+    from strands.tools.executors import SequentialToolExecutor
 
     from app.services.agent.strands_model import build_openai_model
 
@@ -284,8 +353,8 @@ async def _ask_peer_agents(
 
     @tool
     async def view_claims(claim_source: str) -> List[Dict[str, Any]]:
-        """View this entity's claims from a specific source."""
-        all_claims = await store.list_claims(db, entity_id)
+        """View this entity's active claims from a specific source."""
+        all_claims = await store.list_claims(db, user_id, entity_id, status=ClaimStatus.ACTIVE)
         return [
             {"claim_text": c.claim_text, "confidence": c.confidence}
             for c in all_claims if c.source == claim_source
@@ -308,6 +377,7 @@ async def _ask_peer_agents(
             tools=[view_claims, submit_verdict],
             system_prompt=negotiator_prompt_template.format(src=src),
             name=f"{src}_negotiator",
+            tool_executor=SequentialToolExecutor(),
         )
         for src in [asking_source, *relevant_sources]
     ]
@@ -317,6 +387,17 @@ async def _ask_peer_agents(
         await swarm.invoke_async(question)
     except Exception:
         logger.exception("ask_peer_agents: swarm negotiation failed for entity=%s", entity_id)
-        return {**no_peers_result, "peers_consulted": relevant_sources}
 
-    return {**verdict, "peers_consulted": relevant_sources}
+    # Whatever the outcome, the question is resolved one way or another —
+    # never left dangling on the hope that the caller's next turn follows up.
+    if verdict["resolved"]:
+        await store.resolve_question(
+            db, user_id, pending.id, ResolvedBy.PEER_SWARM, answer_text=verdict["answer"],
+        )
+    else:
+        await store.escalate_to_human(
+            db, user_id, pending.id,
+            candidate_answer=verdict["answer"], candidate_confidence=verdict["confidence"],
+        )
+
+    return {**verdict, "peers_consulted": relevant_sources, "question_id": str(pending.id)}

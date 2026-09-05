@@ -33,9 +33,9 @@ async def find_or_create_entity(
     for candidate in candidates:
         existing_names = [candidate.canonical_name, *candidate.aliases]
         if any(n.strip().lower() == normalized for n in existing_names):
+            existing_lower = {n.strip().lower() for n in existing_names}
             new_aliases = [
-                a for a in (aliases or [])
-                if a not in candidate.aliases and a != candidate.canonical_name
+                a for a in (aliases or []) if a.strip().lower() not in existing_lower
             ]
             if new_aliases:
                 candidate.aliases = [*candidate.aliases, *new_aliases]
@@ -68,7 +68,7 @@ async def consult_knowledge_base(
         names = [entity.canonical_name, *entity.aliases]
         if not any(q in n.lower() or n.lower() in q for n in names):
             continue
-        claims = await store.list_claims(db, entity.id, status=ClaimStatus.ACTIVE)
+        claims = await store.list_claims(db, user_id, entity.id, status=ClaimStatus.ACTIVE)
         results.append({
             "entity_id": str(entity.id),
             "canonical_name": entity.canonical_name,

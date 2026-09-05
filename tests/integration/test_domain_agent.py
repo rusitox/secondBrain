@@ -94,6 +94,42 @@ class TestGetAndMarkUnprocessedDocuments:
         results = await _tool(agent, "get_unprocessed_documents")(limit=10)
         assert results == []
 
+    async def test_duplicate_mark_does_not_poison_the_session(self, db_session: AsyncSession) -> None:
+        """mark_document_processed twice on the same document violates the
+        UNIQUE constraint on document_id — that must come back as a tool
+        error, not leave the shared AsyncSession unusable for the rest of
+        the batch (every tool call in one agent run shares this session)."""
+        user_id = await _make_persisted_user(db_session, email="doc4@example.com")
+        doc = make_document(user_id=user_id, source="slack")
+        db_session.add(doc)
+        await db_session.commit()
+
+        agent = _build_agent(db_session, user_id)
+        first = await _tool(agent, "mark_document_processed")(document_id=str(doc.id))
+        assert first == {"marked": True}
+
+        second = await _tool(agent, "mark_document_processed")(document_id=str(doc.id))
+        assert "error" in second
+
+        # The session must still be usable for an unrelated subsequent tool call.
+        other_doc = make_document(user_id=user_id, source="slack")
+        db_session.add(other_doc)
+        await db_session.commit()
+        results = await _tool(agent, "get_unprocessed_documents")(limit=10)
+        assert len(results) == 1
+        assert results[0]["document_id"] == str(other_doc.id)
+
+    async def test_mark_document_from_another_user_is_rejected(self, db_session: AsyncSession) -> None:
+        owner_id = await _make_persisted_user(db_session, email="doc5owner@example.com")
+        other_id = await _make_persisted_user(db_session, email="doc5other@example.com")
+        doc = make_document(user_id=owner_id, source="slack")
+        db_session.add(doc)
+        await db_session.commit()
+
+        agent = _build_agent(db_session, other_id)
+        result = await _tool(agent, "mark_document_processed")(document_id=str(doc.id))
+        assert "error" in result
+
 
 class TestFindOrCreateEntityTool:
     async def test_creates_then_finds_case_insensitively(self, db_session: AsyncSession) -> None:
@@ -116,6 +152,25 @@ class TestFindOrCreateEntityTool:
         result = await _tool(agent, "find_or_create_entity")(entity_type="bogus", name="X")
         assert "error" in result
 
+    async def test_alias_dedup_is_case_insensitive(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ent3@example.com")
+        agent = _build_agent(db_session, user_id)
+
+        first = await _tool(agent, "find_or_create_entity")(
+            entity_type="person", name="Juan", aliases=["juan"],
+        )
+        await db_session.commit()
+
+        # A later mention supplies "Juan" as an alias — already present save
+        # for case, so it must not be appended as a duplicate.
+        await _tool(agent, "find_or_create_entity")(
+            entity_type="person", name="juan", aliases=["Juan"],
+        )
+        await db_session.commit()
+
+        entity = await store.get_entity(db_session, user_id, uuid.UUID(first["entity_id"]))
+        assert entity.aliases == ["juan"]
+
 
 class TestAddClaimAndConsultKnowledgeBase:
     async def test_claim_is_visible_via_consult_knowledge_base(self, db_session: AsyncSession) -> None:
@@ -135,6 +190,21 @@ class TestAddClaimAndConsultKnowledgeBase:
         kb_results = await _tool(agent, "consult_knowledge_base")(query="Mariano")
         assert len(kb_results) == 1
         assert kb_results[0]["claims"][0]["claim_text"] == "Lidera el equipo de plataforma"
+
+    async def test_add_claim_for_nonexistent_entity_errors_without_poisoning_session(
+        self, db_session: AsyncSession
+    ) -> None:
+        user_id = await _make_persisted_user(db_session, email="claim3@example.com")
+        agent = _build_agent(db_session, user_id)
+
+        result = await _tool(agent, "add_claim")(
+            entity_id=str(uuid.uuid4()), claim_text="huérfano",
+        )
+        assert "error" in result
+
+        # Session must still work for a subsequent, unrelated call.
+        entity = await _tool(agent, "find_or_create_entity")(entity_type="person", name="X")
+        assert entity["created"] is True
 
     async def test_invalid_entity_type_returns_empty_list(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="claim2@example.com")
@@ -172,7 +242,10 @@ class TestAskPeerAgentsTool:
         await db_session.commit()
 
         result = await _tool(agent, "ask_peer_agents")(entity_id=entity["entity_id"], question="¿duda?")
-        assert result == {"resolved": False, "answer": None, "confidence": None, "peers_consulted": []}
+        assert result == {
+            "resolved": False, "answer": None, "confidence": None,
+            "peers_consulted": [], "question_id": None,
+        }
 
 
 class TestAskPeerAgentsNegotiation:
@@ -187,6 +260,32 @@ class TestAskPeerAgentsNegotiation:
         await db_session.commit()
         # Only slack has a claim — "outlook" is a registered peer but has nothing to add.
         await store.add_claim(db_session, entity.id, user_id, "slack", "claim", "slack_domain_agent")
+        await db_session.commit()
+
+        with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
+             patch("strands.multiagent.Swarm") as mock_swarm_cls:
+            result = await domain_agent._ask_peer_agents(
+                db_session, user_id, "slack", entity.id, "¿duda?"
+            )
+
+        assert result["peers_consulted"] == []
+        mock_swarm_cls.assert_not_called()
+
+    async def test_disputed_peer_claim_does_not_count_as_relevant(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A DISPUTED (already-contradicted) claim must not be treated as
+        settled fact — the same rung-1 filter consult_knowledge_base applies."""
+        from app.models.entity_claim import ClaimStatus
+
+        user_id = await _make_persisted_user(db_session, email="neg5@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Y")
+        await db_session.commit()
+        await store.add_claim(db_session, entity.id, user_id, "slack", "claim", "slack_domain_agent")
+        await store.add_claim(
+            db_session, entity.id, user_id, "outlook", "claim disputado", "outlook_domain_agent",
+            status=ClaimStatus.DISPUTED,
+        )
         await db_session.commit()
 
         with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
@@ -235,16 +334,20 @@ class TestAskPeerAgentsNegotiation:
                 db_session, user_id, "slack", entity.id, "¿Es la misma persona que en Outlook?",
             )
 
-        assert result == {
-            "resolved": True,
-            "answer": "Sí, es la misma persona",
-            "confidence": 0.9,
-            "peers_consulted": ["outlook"],
-        }
+        assert result["resolved"] is True
+        assert result["answer"] == "Sí, es la misma persona"
+        assert result["confidence"] == 0.9
+        assert result["peers_consulted"] == ["outlook"]
+        assert result["question_id"] is not None
         # One negotiator per side: the asking source + the relevant peer.
         assert mock_agent_cls.call_count == 2
         mock_swarm_cls.assert_called_once()
         mock_swarm_instance.invoke_async.assert_awaited_once()
+
+        # The negotiation's outcome was persisted, not left for the caller's
+        # next turn to remember to record — it's already answered, not open.
+        open_questions = await store.list_open_questions(db_session, user_id)
+        assert result["question_id"] not in {str(q.id) for q in open_questions}
 
     async def test_swarm_exception_falls_back_to_unresolved(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="neg3@example.com")
@@ -271,6 +374,40 @@ class TestAskPeerAgentsNegotiation:
 
         assert result["resolved"] is False
         assert result["peers_consulted"] == ["outlook"]
+
+        # A crashed negotiation still escalates to the human rather than
+        # vanishing silently — the plan's "nunca en silencio" invariant.
+        human_questions = await store.list_open_questions(db_session, user_id, target=QuestionTarget.HUMAN)
+        assert len(human_questions) == 1
+
+    async def test_second_call_for_same_entity_reuses_pending_question(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Rate-limit guard: a batch that hits the same ambiguous entity twice
+        must not spin up a second Swarm while the first is still unresolved."""
+        user_id = await _make_persisted_user(db_session, email="neg4@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "W")
+        await db_session.commit()
+        await store.add_claim(db_session, entity.id, user_id, "slack", "c1", "slack_domain_agent")
+        await store.add_claim(db_session, entity.id, user_id, "outlook", "c2", "outlook_domain_agent")
+        await db_session.commit()
+
+        mock_swarm_instance = MagicMock()
+        mock_swarm_instance.invoke_async = AsyncMock(side_effect=RuntimeError("boom"))
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+
+        with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
+             patch("strands.Agent", return_value=MagicMock()), \
+             patch("strands.multiagent.Swarm", return_value=mock_swarm_instance) as mock_swarm_cls, \
+             patch("app.core.config.get_settings", return_value=settings):
+            first = await domain_agent._ask_peer_agents(db_session, user_id, "slack", entity.id, "¿duda?")
+            second = await domain_agent._ask_peer_agents(db_session, user_id, "slack", entity.id, "¿duda de nuevo?")
+
+        assert mock_swarm_cls.call_count == 1  # only the first call negotiated
+        assert second["question_id"] == first["question_id"]
+        assert second["peers_consulted"] == []
 
 
 class TestSubmitVerdictTool:

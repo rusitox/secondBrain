@@ -10,13 +10,13 @@ import enum
 import uuid
 from typing import Any, Dict, List
 
-from sqlalchemy import Enum, Float, ForeignKey, Index, Text
+from sqlalchemy import Float, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from pgvector.sqlalchemy import Vector
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin, pg_enum
 
 ENTITY_EMBEDDING_DIMENSION = 1536
 
@@ -36,8 +36,7 @@ class Entity(UUIDMixin, TimestampMixin, Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     entity_type: Mapped[EntityType] = mapped_column(
-        Enum(EntityType, name="entity_type_enum", values_callable=lambda obj: [e.value for e in obj]),
-        nullable=False,
+        pg_enum(EntityType, "entity_type_enum"), nullable=False,
     )
     canonical_name: Mapped[str] = mapped_column(Text, nullable=False)
     aliases: Mapped[List[str]] = mapped_column(JSONB, default=list, server_default="[]", nullable=False)

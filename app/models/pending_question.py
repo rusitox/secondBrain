@@ -12,11 +12,11 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin, pg_enum
 
 
 class QuestionTarget(str, enum.Enum):
@@ -46,7 +46,7 @@ class PendingQuestion(UUIDMixin, TimestampMixin, Base):
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     context: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}", nullable=False)
     target: Mapped[QuestionTarget] = mapped_column(
-        Enum(QuestionTarget, name="question_target_enum", values_callable=lambda obj: [e.value for e in obj]),
+        pg_enum(QuestionTarget, "question_target_enum"),
         default=QuestionTarget.PEER_AGENTS,
         server_default=QuestionTarget.PEER_AGENTS.value,
         nullable=False,
@@ -54,14 +54,13 @@ class PendingQuestion(UUIDMixin, TimestampMixin, Base):
     candidate_answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     candidate_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     status: Mapped[QuestionStatus] = mapped_column(
-        Enum(QuestionStatus, name="question_status_enum", values_callable=lambda obj: [e.value for e in obj]),
+        pg_enum(QuestionStatus, "question_status_enum"),
         default=QuestionStatus.OPEN,
         server_default=QuestionStatus.OPEN.value,
         nullable=False,
     )
     resolved_by: Mapped[Optional[ResolvedBy]] = mapped_column(
-        Enum(ResolvedBy, name="resolved_by_enum", values_callable=lambda obj: [e.value for e in obj]),
-        nullable=True,
+        pg_enum(ResolvedBy, "resolved_by_enum"), nullable=True,
     )
     answer_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     answered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
