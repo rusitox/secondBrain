@@ -7,11 +7,6 @@
           {
             "type": "command",
             "command": "echo 'No tests configured' 2>&1 || true"
-          },
-          {
-            "type": "agent",
-            "agent": "qa",
-            "prompt": "Review the files modified in this session (check `git diff`). For each modified file: 1) Check if corresponding test files exist. 2) If tests exist, verify they still pass. 3) If tests are missing for new logic, write them. 4) Report a summary of test coverage status. If any tests fail, return {\"continue\": true} so the main agent can fix the issues."
           }
         ]
       }
