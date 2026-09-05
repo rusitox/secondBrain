@@ -80,6 +80,68 @@ class TestAutoLinkByEmail:
         links = await store.list_links_for_entity(db_session, user_id, a.id)
         assert len(links) == 1
 
+    async def test_a_non_same_as_link_does_not_block_a_same_as_link(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A future relation type (e.g. "collaborates_on") between the same
+        two entities must never be mistaken for an existing same_as merge."""
+        user_id = await _make_persisted_user(db_session, email="a4@example.com")
+        a = await store.create_entity(
+            db_session, user_id, EntityType.PERSON, "A", attributes={"email": "x@y.com"},
+        )
+        b = await store.create_entity(
+            db_session, user_id, EntityType.PERSON, "B", attributes={"email": "x@y.com"},
+        )
+        await db_session.commit()
+        await store.link_entities(
+            db_session, user_id, a.id, b.id,
+            relation_type="collaborates_on", resolved_by=LinkResolvedBy.USER, confidence=1.0,
+        )
+        await db_session.commit()
+
+        created = await reconciliation.auto_link_by_email(db_session, user_id)
+        assert len(created) == 1
+
+    async def test_failed_link_does_not_stop_subsequent_pairs(self, db_session: AsyncSession) -> None:
+        """A savepoint failure on one email group must not roll back an
+        earlier group's already-created link in the same pass."""
+        user_id = await _make_persisted_user(db_session, email="a5@example.com")
+        a = await store.create_entity(
+            db_session, user_id, EntityType.PERSON, "A", attributes={"email": "good@x.com"},
+        )
+        b = await store.create_entity(
+            db_session, user_id, EntityType.PERSON, "B", attributes={"email": "good@x.com"},
+        )
+        await db_session.commit()
+
+        real_link_entities = store.link_entities
+        call_count = 0
+
+        async def flaky_link_entities(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("simulated failure")
+            return await real_link_entities(*args, **kwargs)
+
+        c = await store.create_entity(
+            db_session, user_id, EntityType.PERSON, "C", attributes={"email": "also@y.com"},
+        )
+        d = await store.create_entity(
+            db_session, user_id, EntityType.PERSON, "D", attributes={"email": "also@y.com"},
+        )
+        await db_session.commit()
+
+        with patch.object(store, "link_entities", flaky_link_entities):
+            created = await reconciliation.auto_link_by_email(db_session, user_id)
+        await db_session.commit()
+
+        # One of the two email groups failed; the other still succeeded.
+        assert len(created) == 1
+        all_links = await store.list_links_for_entity(db_session, user_id, a.id)
+        all_links += await store.list_links_for_entity(db_session, user_id, c.id)
+        assert len(all_links) == 1
+
 
 class TestRecomputeConfidence:
     async def test_single_source_stays_near_base(self, db_session: AsyncSession) -> None:

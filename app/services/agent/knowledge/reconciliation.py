@@ -34,6 +34,7 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entity import Entity, EntityType
@@ -55,8 +56,16 @@ SAME_AS_CONFIDENCE_THRESHOLD = 0.7
 async def _already_linked(
     db: AsyncSession, user_id: uuid.UUID, entity_a_id: uuid.UUID, entity_b_id: uuid.UUID
 ) -> bool:
+    """True only for an existing same_as link — entity_link.py's own
+    docstring anticipates other relation types (e.g. a future
+    "collaborates_on"), and those must never block a legitimate same_as
+    merge just because some other relationship already exists between
+    the same two entities."""
     links = await store.list_links_for_entity(db, user_id, entity_a_id)
-    return any({link.entity_id_a, link.entity_id_b} == {entity_a_id, entity_b_id} for link in links)
+    return any(
+        link.relation_type == "same_as" and {link.entity_id_a, link.entity_id_b} == {entity_a_id, entity_b_id}
+        for link in links
+    )
 
 
 async def auto_link_by_email(db: AsyncSession, user_id: uuid.UUID) -> List[Dict[str, Any]]:
@@ -77,11 +86,18 @@ async def auto_link_by_email(db: AsyncSession, user_id: uuid.UUID) -> List[Dict[
         for other in rest:
             if await _already_linked(db, user_id, anchor.id, other.id):
                 continue
-            await store.link_entities(
-                db, user_id, anchor.id, other.id,
-                relation_type="same_as", resolved_by=LinkResolvedBy.DETERMINISTIC,
-                confidence=1.0,
-            )
+            try:
+                async with db.begin_nested():
+                    await store.link_entities(
+                        db, user_id, anchor.id, other.id,
+                        relation_type="same_as", resolved_by=LinkResolvedBy.DETERMINISTIC,
+                        confidence=1.0,
+                    )
+            except (SQLAlchemyError, ValueError):
+                logger.exception(
+                    "auto_link_by_email: failed to link %s <-> %s", anchor.id, other.id,
+                )
+                continue
             created.append({"entity_a": str(anchor.id), "entity_b": str(other.id), "email": email})
     return created
 
@@ -152,11 +168,9 @@ async def negotiate_same_as(
     sources_a = sorted({c.source for c in claims_a})
     sources_b = sorted({c.source for c in claims_b})
 
-    from strands import Agent, tool
-    from strands.multiagent import Swarm
-    from strands.tools.executors import SequentialToolExecutor
+    from strands import tool
 
-    from app.services.agent.strands_model import build_openai_model
+    from app.services.agent.knowledge.swarm_negotiation import run_negotiation
 
     verdict: Dict[str, Any] = {"same_entity": False, "confidence": None, "reasoning": None}
     submit_same_as_verdict = _make_submit_same_as_verdict_tool(verdict)
@@ -167,7 +181,6 @@ async def negotiate_same_as(
         claims = claims_a if entity_label == "a" else claims_b
         return [{"source": c.source, "claim_text": c.claim_text} for c in claims]
 
-    model = build_openai_model()
     question = (
         f"¿'{entity_a.canonical_name}' (entidad 'a', fuentes: {sources_a}) y "
         f"'{entity_b.canonical_name}' (entidad 'b', fuentes: {sources_b}) son la misma "
@@ -181,31 +194,19 @@ async def negotiate_same_as(
         "a una conclusión juntos — o determinen que no se puede resolver entre agentes — "
         "llamá a submit_same_as_verdict. No dejes la negociación sin esa llamada."
     )
-
-    nodes = [
-        Agent(
-            model=model,
-            tools=[view_claims, submit_same_as_verdict],
-            system_prompt=prompt_template.format(sources=sources_a),
-            name="entity_a_negotiator",
-            tool_executor=SequentialToolExecutor(),
-        ),
-        Agent(
-            model=model,
-            tools=[view_claims, submit_same_as_verdict],
-            system_prompt=prompt_template.format(sources=sources_b),
-            name="entity_b_negotiator",
-            tool_executor=SequentialToolExecutor(),
-        ),
+    node_specs = [
+        {
+            "name": "entity_a_negotiator",
+            "system_prompt": prompt_template.format(sources=sources_a),
+            "tools": [view_claims, submit_same_as_verdict],
+        },
+        {
+            "name": "entity_b_negotiator",
+            "system_prompt": prompt_template.format(sources=sources_b),
+            "tools": [view_claims, submit_same_as_verdict],
+        },
     ]
-
-    swarm = Swarm(nodes, max_handoffs=6, max_iterations=6)
-    try:
-        await swarm.invoke_async(question)
-    except Exception:
-        logger.exception(
-            "negotiate_same_as: swarm failed for entities=%s,%s", entity_a.id, entity_b.id,
-        )
+    await run_negotiation(node_specs, question, log_context="negotiate_same_as")
 
     return verdict
 
@@ -288,27 +289,39 @@ async def run_reconciliation(
         touched.update({entity_a.id, entity_b.id})
         verdict = await negotiate_same_as(db, user_id, entity_a, entity_b)
 
-        if verdict["same_entity"] and (verdict["confidence"] or 0) >= SAME_AS_CONFIDENCE_THRESHOLD:
-            await store.link_entities(
-                db, user_id, entity_a.id, entity_b.id,
-                relation_type="same_as", resolved_by=LinkResolvedBy.SWARM,
-                confidence=verdict["confidence"],
+        try:
+            async with db.begin_nested():
+                if verdict["same_entity"] and (verdict["confidence"] or 0) >= SAME_AS_CONFIDENCE_THRESHOLD:
+                    await store.link_entities(
+                        db, user_id, entity_a.id, entity_b.id,
+                        relation_type="same_as", resolved_by=LinkResolvedBy.SWARM,
+                        confidence=verdict["confidence"],
+                    )
+                    negotiated.append({"entity_a": str(entity_a.id), "entity_b": str(entity_b.id)})
+                else:
+                    question = await store.raise_question(
+                        db, user_id, "reconciliation_engine",
+                        f"¿'{entity_a.canonical_name}' y '{entity_b.canonical_name}' son la misma entidad?",
+                        context={"entity_id": str(entity_a.id), "candidate_entity_id": str(entity_b.id)},
+                        target=QuestionTarget.HUMAN,
+                        candidate_answer=verdict.get("reasoning"),
+                        candidate_confidence=verdict.get("confidence"),
+                    )
+                    escalated.append({"question_id": str(question.id)})
+        except (SQLAlchemyError, ValueError):
+            logger.exception(
+                "run_reconciliation: failed to record outcome for %s <-> %s", entity_a.id, entity_b.id,
             )
-            negotiated.append({"entity_a": str(entity_a.id), "entity_b": str(entity_b.id)})
-        else:
-            question = await store.raise_question(
-                db, user_id, "reconciliation_engine",
-                f"¿'{entity_a.canonical_name}' y '{entity_b.canonical_name}' son la misma entidad?",
-                context={"entity_id": str(entity_a.id), "candidate_entity_id": str(entity_b.id)},
-                target=QuestionTarget.HUMAN,
-                candidate_answer=verdict.get("reasoning"),
-                candidate_confidence=verdict.get("confidence"),
-            )
-            escalated.append({"question_id": str(question.id)})
+            continue
 
     for entity_id in touched:
-        new_confidence = await recompute_confidence(db, user_id, entity_id)
-        await store.update_entity_confidence(db, user_id, entity_id, new_confidence)
+        try:
+            async with db.begin_nested():
+                new_confidence = await recompute_confidence(db, user_id, entity_id)
+                await store.update_entity_confidence(db, user_id, entity_id, new_confidence)
+        except SQLAlchemyError:
+            logger.exception("run_reconciliation: failed to recompute confidence for %s", entity_id)
+            continue
 
     return {
         "auto_linked": len(auto_linked),

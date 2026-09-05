@@ -21,15 +21,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entity import EntityType
 from app.models.entity_claim import ClaimStatus
+from app.models.integration import Platform
 from app.models.pending_question import QuestionTarget, ResolvedBy
 from app.services.agent.knowledge import resolution, store
 
 logger = logging.getLogger(__name__)
 
-# Sources with a registered domain agent. Phase 6 (I+D via MCP) appends to
-# this later. ask_peer_agents only negotiates with sources listed here — a
-# source with no domain agent yet simply can't be consulted.
-REGISTERED_SOURCES: List[str] = ["slack", "outlook", "teams", "fathom", "notion"]
+# Sources with a registered domain agent. Derived from Platform so a new
+# connector (new Platform member + sync scheduler entry) automatically gets
+# a domain agent slot without a second, easy-to-forget edit here — a source
+# with no domain agent simply can't be consulted via ask_peer_agents, with
+# no error anywhere to surface that gap if it drifts.
+# Phase 6 (I+D via MCP) will append "rd" or similar here directly — it's not
+# an Integration/Platform connector, so it can't be derived the same way.
+REGISTERED_SOURCES: List[str] = [p.value for p in Platform]
 
 _SOURCE_GUIDANCE: Dict[str, str] = {
     "slack": (
@@ -221,11 +226,20 @@ def make_domain_agent(
         Step 2 of the resolution ladder. Only agents whose source already holds
         a claim about this entity are consulted — returns
         {resolved, answer, confidence, peers_consulted, question_id}.
-        peers_consulted=[] means nobody relevant was available; fall through to
-        escalate_or_validate yourself instead. Otherwise this already recorded
-        the outcome (resolved or escalated to the human) — you don't need to
-        call escalate_or_validate again for the same doubt."""
-        return await _ask_peer_agents(db, user_id, source, uuid.UUID(entity_id), question)
+        peers_consulted=[] with question_id=None means nobody relevant was
+        available; fall through to escalate_or_validate yourself instead. Any
+        other result — question_id set — means the doubt is already tracked
+        (resolved or escalated to the human): never call escalate_or_validate
+        again for the same doubt in that case."""
+        try:
+            parsed_entity_id = uuid.UUID(entity_id)
+        except ValueError as e:
+            return {"error": f"invalid entity_id {entity_id!r}: {e}"}
+        try:
+            return await _ask_peer_agents(db, user_id, source, parsed_entity_id, question)
+        except SQLAlchemyError as e:
+            logger.warning("ask_peer_agents failed for entity_id=%s: %s", entity_id, e)
+            return {"error": str(e)}
 
     @tool
     async def escalate_or_validate(
@@ -330,6 +344,16 @@ async def _find_open_question_for_entity(
     processes several documents mentioning the same ambiguous entity must
     not spin up a fresh Swarm negotiation (or duplicate human question) for
     every single one of them.
+
+    This is a check-then-act race, not atomic: two domain agents for
+    different sources on separate AsyncSessions could both pass this check
+    before either writes its PendingQuestion, and both spin up a swarm for
+    the same entity. Harmless today (nothing runs domain agents
+    concurrently — no scheduler wiring exists yet) and would need a real
+    lock (e.g. a Postgres advisory lock keyed on entity_id, or a unique
+    partial index on open questions per entity) once concurrent scheduling
+    is introduced. Solving it now means guessing at a locking strategy for
+    a scenario that can't happen in production yet.
     """
     entity_id_str = str(entity_id)
     for q in await store.list_open_questions(db, user_id):
@@ -367,27 +391,32 @@ async def _ask_peer_agents(
 
     existing = await _find_open_question_for_entity(db, user_id, entity_id)
     if existing is not None:
+        # Not "no peers" — these sources ARE relevant, we're just not paying
+        # for a second swarm while the first negotiation is still open.
         return {
             "resolved": False,
             "answer": existing.candidate_answer,
             "confidence": existing.candidate_confidence,
-            "peers_consulted": [],
+            "peers_consulted": relevant_sources,
             "question_id": str(existing.id),
         }
 
     entity = await store.get_entity(db, user_id, entity_id)
     entity_name = entity.canonical_name if entity is not None else str(entity_id)
 
-    pending = await store.raise_question(
-        db, user_id, f"{asking_source}_domain_agent", question,
-        context={"entity_id": str(entity_id)}, target=QuestionTarget.PEER_AGENTS,
-    )
+    try:
+        async with db.begin_nested():
+            pending = await store.raise_question(
+                db, user_id, f"{asking_source}_domain_agent", question,
+                context={"entity_id": str(entity_id)}, target=QuestionTarget.PEER_AGENTS,
+            )
+    except SQLAlchemyError:
+        logger.exception("ask_peer_agents: failed to raise question for entity=%s", entity_id)
+        return {**no_peers_result, "peers_consulted": relevant_sources}
 
-    from strands import Agent, tool
-    from strands.multiagent import Swarm
-    from strands.tools.executors import SequentialToolExecutor
+    from strands import tool
 
-    from app.services.agent.strands_model import build_openai_model
+    from app.services.agent.knowledge.swarm_negotiation import run_negotiation
 
     verdict: Dict[str, Any] = {"resolved": False, "answer": None, "confidence": None}
     submit_verdict = _make_submit_verdict_tool(verdict)
@@ -401,7 +430,6 @@ async def _ask_peer_agents(
             for c in all_claims if c.source == claim_source
         ]
 
-    model = build_openai_model()
     negotiator_prompt_template = (
         "Sos un negociador que representa a la fuente '{src}' en una duda sobre la "
         f"entidad '{entity_name}'. Otro agente pregunta: {question}\n\n"
@@ -411,34 +439,30 @@ async def _ask_peer_agents(
         "resolverlo entre agentes, llamá a submit_verdict. No dejes la negociación "
         "sin una llamada a submit_verdict."
     )
-
-    nodes = [
-        Agent(
-            model=model,
-            tools=[view_claims, submit_verdict],
-            system_prompt=negotiator_prompt_template.format(src=src),
-            name=f"{src}_negotiator",
-            tool_executor=SequentialToolExecutor(),
-        )
+    node_specs = [
+        {
+            "name": f"{src}_negotiator",
+            "system_prompt": negotiator_prompt_template.format(src=src),
+            "tools": [view_claims, submit_verdict],
+        }
         for src in [asking_source, *relevant_sources]
     ]
-
-    swarm = Swarm(nodes, max_handoffs=6, max_iterations=6)
-    try:
-        await swarm.invoke_async(question)
-    except Exception:
-        logger.exception("ask_peer_agents: swarm negotiation failed for entity=%s", entity_id)
+    await run_negotiation(node_specs, question, log_context="ask_peer_agents")
 
     # Whatever the outcome, the question is resolved one way or another —
     # never left dangling on the hope that the caller's next turn follows up.
-    if verdict["resolved"]:
-        await store.resolve_question(
-            db, user_id, pending.id, ResolvedBy.PEER_SWARM, answer_text=verdict["answer"],
-        )
-    else:
-        await store.escalate_to_human(
-            db, user_id, pending.id,
-            candidate_answer=verdict["answer"], candidate_confidence=verdict["confidence"],
-        )
+    try:
+        async with db.begin_nested():
+            if verdict["resolved"]:
+                await store.resolve_question(
+                    db, user_id, pending.id, ResolvedBy.PEER_SWARM, answer_text=verdict["answer"],
+                )
+            else:
+                await store.escalate_to_human(
+                    db, user_id, pending.id,
+                    candidate_answer=verdict["answer"], candidate_confidence=verdict["confidence"],
+                )
+    except SQLAlchemyError:
+        logger.exception("ask_peer_agents: failed to record verdict for entity=%s", entity_id)
 
     return {**verdict, "peers_consulted": relevant_sources, "question_id": str(pending.id)}

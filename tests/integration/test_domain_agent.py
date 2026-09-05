@@ -161,6 +161,25 @@ class TestFindOrCreateEntityTool:
 
         mock_embedder.embed_single.assert_not_awaited()
 
+    async def test_embedding_failure_does_not_block_entity_creation(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A transient embedder error (rate limit, timeout) must not crash
+        the whole batch — the entity still gets created, just without an
+        embedding (backfilled by a later reconciliation pass)."""
+        user_id = await _make_persisted_user(db_session, email="ent0c@example.com")
+        mock_embedder = MagicMock()
+        mock_embedder.embed_single = AsyncMock(side_effect=RuntimeError("rate limited"))
+        agent = _build_agent(db_session, user_id, embedder=mock_embedder)
+
+        result = await _tool(agent, "find_or_create_entity")(entity_type="person", name="Juan")
+        await db_session.commit()
+
+        assert result["created"] is True
+        entity = await store.get_entity(db_session, user_id, uuid.UUID(result["entity_id"]))
+        assert entity is not None
+        assert entity.embedding is None
+
     async def test_creates_then_finds_case_insensitively(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="ent1@example.com")
         agent = _build_agent(db_session, user_id)
@@ -278,6 +297,19 @@ class TestAskPeerAgentsTool:
             "resolved": False, "answer": None, "confidence": None,
             "peers_consulted": [], "question_id": None,
         }
+
+    async def test_invalid_entity_id_returns_error_without_poisoning_session(
+        self, db_session: AsyncSession
+    ) -> None:
+        user_id = await _make_persisted_user(db_session, email="peer2@example.com")
+        agent = _build_agent(db_session, user_id)
+
+        result = await _tool(agent, "ask_peer_agents")(entity_id="not-a-uuid", question="¿duda?")
+        assert "error" in result
+
+        # Session must still work for a subsequent, unrelated call.
+        entity = await _tool(agent, "find_or_create_entity")(entity_type="person", name="X")
+        assert entity["created"] is True
 
 
 class TestAskPeerAgentsNegotiation:
@@ -439,7 +471,9 @@ class TestAskPeerAgentsNegotiation:
 
         assert mock_swarm_cls.call_count == 1  # only the first call negotiated
         assert second["question_id"] == first["question_id"]
-        assert second["peers_consulted"] == []
+        # peers_consulted reflects who's relevant, not who was freshly negotiated —
+        # [] specifically means "nobody relevant," which isn't true here.
+        assert second["peers_consulted"] == ["outlook"]
 
 
 class TestSubmitVerdictTool:
@@ -483,6 +517,15 @@ class TestRunDomainAgent:
 class TestPhase2SourceRegistration:
     def test_all_four_sources_registered(self) -> None:
         assert {"slack", "outlook", "teams", "fathom"}.issubset(domain_agent.REGISTERED_SOURCES)
+
+    def test_derived_from_platform_enum_not_hand_duplicated(self) -> None:
+        """A new connector (new Platform member) must automatically get a
+        domain agent slot with no second edit — this fails loudly if
+        REGISTERED_SOURCES ever reverts to a hand-maintained literal list
+        that can drift out of sync."""
+        from app.models.integration import Platform
+
+        assert set(domain_agent.REGISTERED_SOURCES) == {p.value for p in Platform}
 
     @pytest.mark.parametrize("source", ["outlook", "teams", "fathom"])
     async def test_system_prompt_contains_source_guidance(

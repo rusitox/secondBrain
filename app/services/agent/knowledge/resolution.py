@@ -3,10 +3,18 @@
 Deliberately simple within one source: exact/case-insensitive name-or-alias
 matching, scoped to one user and entity type — this is what stops a domain
 agent from creating a second "Juan" entity every time it re-mentions someone
-it already knows about. It also means a same-source, same-name duplicate can
-no longer occur, which is why Phase 4's reconciliation only ever has to deal
-with genuine cross-source ambiguity (different surface name, same real
-person) — never the trivial exact-match case, which never reaches it.
+it already knows about. Within one agent's run this is race-free (see
+make_domain_agent's SequentialToolExecutor — tool calls never overlap), so a
+same-source, same-name duplicate can't occur *there*. It's a check-then-insert
+with no DB uniqueness constraint, though: two genuinely concurrent runs (e.g.
+a slow batch overlapping the next scheduler tick, once real concurrent
+scheduling exists) could both miss the same candidate and both create one.
+No such concurrent execution exists yet, so this is a documented, deferred
+gap rather than a fix — solving it now means guessing at a locking strategy
+for a scenario that can't happen in production today. Whichever
+same-source case slips through anyway is still just an ordinary reconciliation
+candidate; Phase 4's reconciliation is built to handle genuine cross-source
+ambiguity (different surface name, same real person) already.
 
 find_or_create_entity optionally embeds a newly-created entity's name (via
 the same Embedder used for document ingestion) so Phase 4 can find
@@ -14,6 +22,7 @@ candidate cross-source duplicates by cosine similarity — see
 app/services/agent/knowledge/reconciliation.py and
 app/services/agent/knowledge/store.py:find_similar_entities.
 """
+import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,6 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.entity import Entity, EntityType
 from app.models.entity_claim import ClaimStatus
 from app.services.agent.knowledge import store
+
+logger = logging.getLogger(__name__)
 
 
 async def find_or_create_entity(
@@ -57,7 +68,14 @@ async def find_or_create_entity(
 
     embedding = None
     if embedder is not None:
-        embedding = await embedder.embed_single(name)
+        try:
+            embedding = await embedder.embed_single(name)
+        except Exception:
+            # A rate limit or transient API error must not block entity
+            # creation — an entity without an embedding is still fully
+            # functional, just not similarity-searchable by reconciliation
+            # until a future pass backfills it.
+            logger.warning("find_or_create_entity: embedding failed for name=%r", name, exc_info=True)
 
     entity = await store.create_entity(
         db, user_id, entity_type, name, aliases=aliases, attributes=attributes,
