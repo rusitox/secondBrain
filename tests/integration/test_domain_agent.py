@@ -234,7 +234,9 @@ class TestEscalateOrValidateTool:
 
 
 class TestAskPeerAgentsTool:
-    async def test_no_peers_registered_returns_unresolved(self, db_session: AsyncSession) -> None:
+    async def test_no_relevant_peer_claims_returns_unresolved(self, db_session: AsyncSession) -> None:
+        """Peers ARE registered (Phase 2+), but none holds a claim about this
+        brand-new entity — still nothing to negotiate."""
         user_id = await _make_persisted_user(db_session, email="peer1@example.com")
         agent = _build_agent(db_session, user_id)
 
@@ -437,3 +439,103 @@ class TestRunDomainAgent:
         assert "5" in task_arg
         assert "slack" in task_arg
         assert result == {"source": "slack", "summary": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — replicating the pattern to Outlook, Teams, Fathom.
+#
+# make_domain_agent has no source-specific branching, so these don't re-test
+# the tool logic itself (already covered above) — just that each source is
+# correctly wired: right guidance in the prompt, right document scoping, and
+# that ask_peer_agents now has *real* cross-source peers to negotiate with.
+# ---------------------------------------------------------------------------
+
+class TestPhase2SourceRegistration:
+    def test_all_four_sources_registered(self) -> None:
+        assert set(domain_agent.REGISTERED_SOURCES) == {"slack", "outlook", "teams", "fathom"}
+
+    @pytest.mark.parametrize("source", ["outlook", "teams", "fathom"])
+    async def test_system_prompt_contains_source_guidance(
+        self, db_session: AsyncSession, source: str
+    ) -> None:
+        user_id = await _make_persisted_user(db_session, email=f"{source}reg@example.com")
+        agent = _build_agent(db_session, user_id, source=source)
+        assert source in agent.system_prompt
+        assert domain_agent._SOURCE_GUIDANCE[source] in agent.system_prompt
+
+
+class TestPhase2DocumentScoping:
+    @pytest.mark.parametrize("source", ["outlook", "teams", "fathom"])
+    async def test_only_sees_documents_from_its_own_source(
+        self, db_session: AsyncSession, source: str
+    ) -> None:
+        user_id = await _make_persisted_user(db_session, email=f"{source}scope@example.com")
+        db_session.add(make_document(user_id=user_id, source=source, content="mine"))
+        db_session.add(make_document(user_id=user_id, source="slack", content="not mine"))
+        await db_session.commit()
+
+        agent = _build_agent(db_session, user_id, source=source)
+        results = await _tool(agent, "get_unprocessed_documents")(limit=10)
+
+        assert len(results) == 1
+        assert results[0]["content"] == "mine"
+
+
+class TestPhase2FullExtractionFlow:
+    @pytest.mark.parametrize("source", ["outlook", "teams", "fathom"])
+    async def test_extract_entity_and_claim_then_mark_processed(
+        self, db_session: AsyncSession, source: str
+    ) -> None:
+        """Proves the whole tool chain — not just Slack's — end to end."""
+        user_id = await _make_persisted_user(db_session, email=f"{source}flow@example.com")
+        doc = make_document(user_id=user_id, source=source, content="Juan lidera el proyecto Atlas")
+        db_session.add(doc)
+        await db_session.commit()
+
+        agent = _build_agent(db_session, user_id, source=source)
+        docs = await _tool(agent, "get_unprocessed_documents")(limit=10)
+        assert len(docs) == 1
+
+        entity = await _tool(agent, "find_or_create_entity")(entity_type="person", name="Juan")
+        await db_session.commit()
+        claim = await _tool(agent, "add_claim")(
+            entity_id=entity["entity_id"], claim_text="Lidera el proyecto Atlas", confidence=0.7,
+        )
+        await db_session.commit()
+        assert "claim_id" in claim
+
+        await _tool(agent, "mark_document_processed")(document_id=doc.id.__str__())
+        await db_session.commit()
+        assert await _tool(agent, "get_unprocessed_documents")(limit=10) == []
+
+
+class TestPhase2CrossSourceNegotiation:
+    async def test_slack_agent_finds_real_outlook_peer_without_patching_registry(
+        self, db_session: AsyncSession
+    ) -> None:
+        """The point of Phase 2: ask_peer_agents now has a genuine peer to
+        negotiate with, with REGISTERED_SOURCES exactly as shipped — no
+        patch.object needed, unlike every Phase 1 negotiation test."""
+        user_id = await _make_persisted_user(db_session, email="cross1@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+        await store.add_claim(db_session, entity.id, user_id, "slack", "trabaja en Atlas", "slack_domain_agent")
+        await store.add_claim(db_session, entity.id, user_id, "outlook", "email juan@x.com", "outlook_domain_agent")
+        await db_session.commit()
+
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+        mock_swarm_instance = MagicMock()
+        mock_swarm_instance.invoke_async = AsyncMock(return_value=MagicMock())
+
+        with patch("strands.Agent", return_value=MagicMock()) as mock_agent_cls, \
+             patch("strands.multiagent.Swarm", return_value=mock_swarm_instance) as mock_swarm_cls, \
+             patch("app.core.config.get_settings", return_value=settings):
+            result = await domain_agent._ask_peer_agents(
+                db_session, user_id, "slack", entity.id, "¿Es la misma persona que en Outlook?",
+            )
+
+        assert result["peers_consulted"] == ["outlook"]
+        mock_swarm_cls.assert_called_once()
+        assert mock_agent_cls.call_count == 2

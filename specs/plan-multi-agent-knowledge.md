@@ -154,10 +154,10 @@ después de cada ciclo de sync por fuente. El `StrandsOrchestrator` del chat sol
 **Complejidad**: alta — es el patrón que todo lo demás reutiliza. Vale la pena un code review
 completo acá antes de replicar.
 
-### Phase 2 — Réplica a Outlook, Teams, Fathom
-- [ ] Reusar la factory de Phase 1; ajustar el prompt de extracción por fuente (ej: Outlook tiene
+### Phase 2 — Réplica a Outlook, Teams, Fathom ✅
+- [x] Reusar la factory de Phase 1; ajustar el prompt de extracción por fuente (ej: Outlook tiene
   eventos de calendario además de emails; Fathom son transcripciones de reuniones más largas).
-- [ ] Tests por fuente.
+- [x] Tests por fuente.
 
 **Complejidad**: media — mecánica, no de diseño.
 

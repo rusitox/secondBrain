@@ -1,4 +1,4 @@
-"""Domain agent factory — Phase 1 reference implementation.
+"""Domain agent factory — one Strands Agent per data source.
 
 See specs/plan-multi-agent-knowledge.md. A domain agent's mandate: read its
 own source's unprocessed Documents, propose entities/claims into the shared
@@ -6,6 +6,11 @@ knowledge store, and walk the resolution ladder when something doesn't fit
 — consult the knowledge base, then peer agents (if any are registered),
 then propose a candidate for human validation. A blank question to the
 human is the last resort, never the first.
+
+Phase 1 built the pattern against Slack; Phase 2 (specs/plan-multi-agent-
+knowledge.md) replicates it to Outlook/Teams/Fathom purely by registering
+the source and adding its prompt guidance below — make_domain_agent itself
+has no source-specific branching.
 """
 import logging
 import uuid
@@ -21,17 +26,37 @@ from app.services.agent.knowledge import resolution, store
 
 logger = logging.getLogger(__name__)
 
-# Sources with a registered domain agent. Phase 2+ appends to this as each
-# connector gets its own agent. With only "slack" registered, ask_peer_agents
-# correctly finds nobody to negotiate with yet and every doubt falls through
-# to human validation — that's the expected Phase 1 behavior, not a bug.
-REGISTERED_SOURCES: List[str] = ["slack"]
+# Sources with a registered domain agent. Phase 3 (Notion) and Phase 6 (I+D
+# via MCP) append to this later. ask_peer_agents only negotiates with sources
+# listed here — a source with no domain agent yet simply can't be consulted.
+REGISTERED_SOURCES: List[str] = ["slack", "outlook", "teams", "fathom"]
 
 _SOURCE_GUIDANCE: Dict[str, str] = {
     "slack": (
         "Los documentos son mensajes de Slack (canales y DMs). Prestá atención a "
         "menciones de personas (@usuario o nombres propios), proyectos, y decisiones "
         "tomadas en el hilo."
+    ),
+    "outlook": (
+        "Los documentos son emails y eventos de calendario de Outlook — fijate en "
+        "metadata.type ('email' o 'calendar_event') para saber cuál es cuál. El "
+        "remitente/organizador y los asistentes vienen como direcciones de email en "
+        "metadata (author, attendees), no como nombres. Usá ese email como atributo "
+        "(ej. {\"email\": \"...\"}) al crear o encontrar la entidad persona — es una "
+        "señal fuerte para más adelante saber si es la misma persona que aparece en "
+        "otra fuente."
+    ),
+    "teams": (
+        "Los documentos son mensajes de Teams (chats 1:1 y grupales). A diferencia de "
+        "Outlook, metadata.author acá es el nombre para mostrar de quien envió el "
+        "mensaje, no un email — no asumas que es una dirección de correo. metadata "
+        "también trae chat_topic y chat_type (oneOnOne/group) como contexto adicional."
+    ),
+    "fathom": (
+        "Los documentos son transcripciones de reuniones grabadas por Fathom — texto "
+        "largo, potencialmente con etiquetas de orador si la transcripción las trae. "
+        "metadata solo tiene title, date y recording_url — no hay lista estructurada "
+        "de participantes, así que identificá a los asistentes leyendo la transcripción."
     ),
 }
 
