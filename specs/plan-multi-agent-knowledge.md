@@ -207,12 +207,42 @@ determinístico realmente reduce el volumen antes de gastar LLM.
 
 **Complejidad**: media.
 
-### Phase 6 — Agente de I+D (plataforma propia vía MCP)
-- [ ] Diferido hasta tener los datos de conexión del MCP (decisión explícita del usuario).
-- [ ] Mismo patrón de Phase 1, pero `get_unprocessed_documents` consulta el MCP en vez de la tabla
-  `documents`.
+### Phase 6 — Agente de I+D (plataforma propia vía MCP) ✅
+- [x] Probado el MCP en vivo (`i-d-mcp`, transporte HTTP streamable): 14 tools — 13 de lectura
+  (`list_initiatives`, `get_initiative`, `list_tasks`, `get_task_activity_summary`, `list_projects`,
+  `list_publications`, `list_news`, `list_okrs`, `list_team`, `list_commercial_meetings`,
+  `list_trainings`, `get_monthly_plan`, `search_knowledge`) + 1 de escritura (`create_tasks`,
+  auto-documentada por el server como la única tool de escritura).
+- [x] Decisión explícita del usuario (no aplanar a "documentos"): el agente accede directo a las
+  tools nativas del MCP en vez de un `get_unprocessed_documents` genérico — no hay tabla
+  `documents` ni watermark persistido; cada corrida vuelve a explorar el estado vigente y confía en
+  el dedup existente de `find_or_create_entity` para no duplicar entidades ya vistas.
+- [x] `create_tasks` nunca se expone al agente: excluida vía `MCPClient(tool_filters={"rejected":
+  [...]})` en la conexión, y re-afirmada ausente después de `list_tools_sync()` (assert) como
+  defensa en profundidad ante un cambio futuro del catálogo del server.
+- [x] `app/services/agent/knowledge/domain_agent.py`: extraída `make_resolution_ladder_tools()`
+  (find_or_create_entity, add_claim, consult_knowledge_base, ask_peer_agents, escalate_or_validate)
+  de `make_domain_agent`, reutilizada por el agente de I+D sin duplicar la escalera de resolución.
+  `REGISTERED_SOURCES` ahora incluye `"rd"` a mano (no se puede derivar de `Platform`, no es un
+  connector).
+- [x] `app/services/agent/knowledge/rd_agent.py` (nuevo): `run_rd_domain_agent(db, user_id,
+  embedder=None)` — conecta el `MCPClient`, valida la exclusión de `create_tasks`, arma el Agent con
+  las tools del MCP + la escalera de resolución (`SequentialToolExecutor`, mismo motivo que el resto:
+  todas las tools comparten un único `AsyncSession`), y maneja el ciclo de vida `start()`/`stop()`
+  alrededor de todo el `invoke_async`. No-op explícito si `id_brain_mcp_url` no está configurado.
+- [x] `scripts/run_rd_domain_agent.py` (nuevo) — disparador manual, sin `--batch-size` (no aplica:
+  no hay cola de documentos). `scripts/run_domain_agent.py` excluye `"rd"` de sus `--source` choices
+  a propósito.
+- [x] Tests: `tests/integration/test_rd_agent.py` — mockea `MCPClient`/`Agent` (nunca red real),
+  cubre: no-op sin configurar, exclusión de `create_tasks` en las tools que llegan al Agent, el
+  assert de defensa en profundidad si igual se filtrara, y que la escalera de resolución comparte
+  el mismo `db_session` real (no un duplicado hardcodeado).
+- [x] Credenciales del MCP (`id_brain_mcp_url`, `id_brain_mcp_api_key`) sólo como nombres de campo en
+  `app/core/config.py` — los valores reales viven únicamente en el `.env` del usuario, nunca en el
+  repo (ni código, ni tests, ni este plan).
 
-**Complejidad**: por definir — depende de las capabilities que exponga ese MCP.
+**Complejidad**: media — resuelta reutilizando la escalera de resolución existente; lo nuevo fue la
+integración con `MCPClient` y su ciclo de vida.
 
 ### Phase 7 — Observabilidad de solidez
 - [ ] Vista/endpoint (estilo `get_sync_status`) con: entidades por bucket de confianza, claims por

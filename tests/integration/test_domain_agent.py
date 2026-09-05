@@ -639,10 +639,13 @@ class TestPhase2SourceRegistration:
         """A new connector (new Platform member) must automatically get a
         domain agent slot with no second edit — this fails loudly if
         REGISTERED_SOURCES ever reverts to a hand-maintained literal list
-        that can drift out of sync."""
+        that can drift out of sync.
+
+        "rd" is the one deliberate exception (Phase 6, I+D platform via MCP
+        — not a Platform/Integration connector, so it's appended by hand)."""
         from app.models.integration import Platform
 
-        assert set(domain_agent.REGISTERED_SOURCES) == {p.value for p in Platform}
+        assert set(domain_agent.REGISTERED_SOURCES) == {p.value for p in Platform} | {"rd"}
 
     @pytest.mark.parametrize("source", ["outlook", "teams", "fathom"])
     async def test_system_prompt_contains_source_guidance(

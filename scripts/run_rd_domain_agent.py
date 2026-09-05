@@ -1,11 +1,15 @@
-"""Manual trigger for a knowledge domain agent (specs/plan-multi-agent-knowledge.md, Phase 1).
+"""Manual trigger for the I+D platform domain agent (specs/plan-multi-agent-knowledge.md, Phase 6).
 
-Lets you run and inspect a single extraction batch before wiring the agent
-to the sync scheduler.
+Unlike scripts/run_domain_agent.py, this agent has no batch size — it
+queries the I+D platform's MCP server for current state each run rather than
+draining a queue of unprocessed documents.
 
 Usage:
-    python scripts/run_domain_agent.py --source slack --email mariano@example.com
-    python scripts/run_domain_agent.py --source slack --user-id <uuid> --batch-size 10
+    python scripts/run_rd_domain_agent.py --email mariano@example.com
+    python scripts/run_rd_domain_agent.py --user-id <uuid>
+
+Requires id_brain_mcp_url / id_brain_mcp_api_key set in .env — the script
+exits early with a clear message if they're missing.
 """
 import argparse
 import asyncio
@@ -27,12 +31,12 @@ load_dotenv(override=False)
 
 from app.core.config import get_settings
 from app.core.database import get_session_factory
-from app.services.agent.knowledge.domain_agent import REGISTERED_SOURCES, run_domain_agent
+from app.services.agent.knowledge.rd_agent import run_rd_domain_agent
 from app.services.ingestion.embedder import Embedder
 from app.services.user_service import get_user_by_email
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-logger = logging.getLogger("run_domain_agent")
+logger = logging.getLogger("run_rd_domain_agent")
 
 
 async def _resolve_user_id(db, args: argparse.Namespace) -> uuid.UUID:
@@ -46,27 +50,23 @@ async def _resolve_user_id(db, args: argparse.Namespace) -> uuid.UUID:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    # "rd" is excluded here: it's MCP-backed, not Document-table-backed, so it
-    # has its own script (scripts/run_rd_domain_agent.py) rather than this one.
-    parser.add_argument("--source", required=True, choices=[s for s in REGISTERED_SOURCES if s != "rd"])
     parser.add_argument("--user-id", help="User UUID (use this or --email)")
     parser.add_argument("--email", help="User email (looked up to get the UUID)")
-    parser.add_argument("--batch-size", type=int, default=20)
     args = parser.parse_args()
 
     if not args.user_id and not args.email:
         raise SystemExit("Pass either --user-id or --email")
 
     settings = get_settings()
+    if not settings.id_brain_mcp_url:
+        raise SystemExit("id_brain_mcp_url is not set — add it (and id_brain_mcp_api_key) to .env first")
     embedder = Embedder(api_key=settings.openai_api_key) if settings.openai_api_key else None
 
     session_factory = get_session_factory()
     async with session_factory() as db:
         user_id = await _resolve_user_id(db, args)
-        logger.info("Running %s domain agent for user=%s batch_size=%d", args.source, user_id, args.batch_size)
-        result = await run_domain_agent(
-            args.source, db, user_id, batch_size=args.batch_size, embedder=embedder,
-        )
+        logger.info("Running rd domain agent for user=%s", user_id)
+        result = await run_rd_domain_agent(db, user_id, embedder=embedder)
         await db.commit()
         logger.info("Result: %s", result)
 

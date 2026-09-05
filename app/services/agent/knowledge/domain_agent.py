@@ -32,9 +32,10 @@ logger = logging.getLogger(__name__)
 # a domain agent slot without a second, easy-to-forget edit here — a source
 # with no domain agent simply can't be consulted via ask_peer_agents, with
 # no error anywhere to surface that gap if it drifts.
-# Phase 6 (I+D via MCP) will append "rd" or similar here directly — it's not
-# an Integration/Platform connector, so it can't be derived the same way.
-REGISTERED_SOURCES: List[str] = [p.value for p in Platform]
+# "rd" (Phase 6, I+D platform via MCP — rd_agent.py) is appended directly:
+# it's not an Integration/Platform connector, so it can't be derived the
+# same way as the rest.
+REGISTERED_SOURCES: List[str] = [p.value for p in Platform] + ["rd"]
 
 _SOURCE_GUIDANCE: Dict[str, str] = {
     "slack": (
@@ -99,55 +100,25 @@ Priorizá la solidez del conocimiento por sobre la velocidad: mejor un claim con
 confianza baja y correctamente marcada como tal, que inventar certeza."""
 
 
-def make_domain_agent(
+def make_resolution_ladder_tools(
     source: str, db: AsyncSession, user_id: uuid.UUID, embedder: Optional[Any] = None,
-) -> Any:
-    """Build a Strands Agent scoped to one data source.
+) -> List[Any]:
+    """Build the five tools every domain agent shares regardless of how it
+    reads its own source's raw data: find_or_create_entity, add_claim,
+    consult_knowledge_base, ask_peer_agents, escalate_or_validate.
 
-    A new agent is built per invocation — no shared mutable state between
-    concurrent extraction runs (same rationale as StrandsOrchestrator).
+    Split out from make_domain_agent so an MCP-backed agent (Phase 6, I+D
+    platform) can reuse the same resolution ladder without also getting the
+    Document-table-specific get_unprocessed_documents/mark_document_processed
+    pair, which don't apply when the source data comes from an MCP server
+    instead of the documents table.
 
-    Uses SequentialToolExecutor: Strands runs multiple tool calls from one
-    LLM turn concurrently by default, but every tool here closes over the
-    same AsyncSession, and AsyncSession is not safe for concurrent use from
-    more than one task at a time. Sequential execution is required, not an
-    optimization.
-
-    embedder is optional (None in most tests) — when given, newly-created
-    entities get embedded so Phase 4's reconciliation can find cross-source
-    duplicates by similarity.
+    Every closure here shares `db` with whatever other tools the caller adds
+    (e.g. MCP tools) — the caller is responsible for sequential tool
+    execution (SequentialToolExecutor) since AsyncSession is not safe for
+    concurrent use.
     """
-    from strands import Agent, tool
-    from strands.tools.executors import SequentialToolExecutor
-
-    from app.services.agent.strands_model import build_openai_model
-
-    model = build_openai_model()
-
-    @tool
-    async def get_unprocessed_documents(limit: int = 20) -> List[Dict[str, Any]]:
-        """Get up to `limit` documents from this source that haven't been processed yet."""
-        docs = await store.get_unprocessed_documents(db, user_id, source, limit=limit)
-        return [
-            {
-                "document_id": str(d.id),
-                "content": d.content,
-                "source_id": d.source_id,
-                "metadata": d.metadata_,
-            }
-            for d in docs
-        ]
-
-    @tool
-    async def mark_document_processed(document_id: str) -> Dict[str, Any]:
-        """Mark a document as processed so it isn't re-read on the next run."""
-        try:
-            async with db.begin_nested():
-                await store.mark_document_processed(db, user_id, uuid.UUID(document_id), source)
-        except (SQLAlchemyError, ValueError) as e:
-            logger.warning("mark_document_processed failed for document_id=%s: %s", document_id, e)
-            return {"error": str(e)}
-        return {"marked": True}
+    from strands import tool
 
     @tool
     async def find_or_create_entity(
@@ -266,14 +237,69 @@ def make_domain_agent(
             return {"error": str(e)}
         return {"question_id": str(question.id)}
 
-    tools = [
-        get_unprocessed_documents,
-        mark_document_processed,
+    return [
         find_or_create_entity,
         add_claim,
         consult_knowledge_base,
         ask_peer_agents,
         escalate_or_validate,
+    ]
+
+
+def make_domain_agent(
+    source: str, db: AsyncSession, user_id: uuid.UUID, embedder: Optional[Any] = None,
+) -> Any:
+    """Build a Strands Agent scoped to one data source.
+
+    A new agent is built per invocation — no shared mutable state between
+    concurrent extraction runs (same rationale as StrandsOrchestrator).
+
+    Uses SequentialToolExecutor: Strands runs multiple tool calls from one
+    LLM turn concurrently by default, but every tool here closes over the
+    same AsyncSession, and AsyncSession is not safe for concurrent use from
+    more than one task at a time. Sequential execution is required, not an
+    optimization.
+
+    embedder is optional (None in most tests) — when given, newly-created
+    entities get embedded so Phase 4's reconciliation can find cross-source
+    duplicates by similarity.
+    """
+    from strands import Agent, tool
+    from strands.tools.executors import SequentialToolExecutor
+
+    from app.services.agent.strands_model import build_openai_model
+
+    model = build_openai_model()
+
+    @tool
+    async def get_unprocessed_documents(limit: int = 20) -> List[Dict[str, Any]]:
+        """Get up to `limit` documents from this source that haven't been processed yet."""
+        docs = await store.get_unprocessed_documents(db, user_id, source, limit=limit)
+        return [
+            {
+                "document_id": str(d.id),
+                "content": d.content,
+                "source_id": d.source_id,
+                "metadata": d.metadata_,
+            }
+            for d in docs
+        ]
+
+    @tool
+    async def mark_document_processed(document_id: str) -> Dict[str, Any]:
+        """Mark a document as processed so it isn't re-read on the next run."""
+        try:
+            async with db.begin_nested():
+                await store.mark_document_processed(db, user_id, uuid.UUID(document_id), source)
+        except (SQLAlchemyError, ValueError) as e:
+            logger.warning("mark_document_processed failed for document_id=%s: %s", document_id, e)
+            return {"error": str(e)}
+        return {"marked": True}
+
+    tools = [
+        get_unprocessed_documents,
+        mark_document_processed,
+        *make_resolution_ladder_tools(source, db, user_id, embedder=embedder),
     ]
 
     system_prompt = DOMAIN_AGENT_SYSTEM_PROMPT.format(
