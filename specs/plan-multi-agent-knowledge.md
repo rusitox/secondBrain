@@ -161,8 +161,8 @@ completo acá antes de replicar.
 
 **Complejidad**: media — mecánica, no de diseño.
 
-### Phase 3 — Notion
-- [ ] Fase separada porque `app/services/notion/` ya tiene sync bidireccional y publisher propios.
+### Phase 3 — Notion ✅
+- [x] Fase separada porque `app/services/notion/` ya tiene sync bidireccional y publisher propios.
   El agente de dominio acá es de **solo lectura** hacia la Capa 3 — no debe escribir de vuelta a
   Notion ni interferir con `NotionSync`.
 

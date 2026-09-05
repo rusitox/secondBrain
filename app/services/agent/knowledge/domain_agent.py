@@ -26,10 +26,10 @@ from app.services.agent.knowledge import resolution, store
 
 logger = logging.getLogger(__name__)
 
-# Sources with a registered domain agent. Phase 3 (Notion) and Phase 6 (I+D
-# via MCP) append to this later. ask_peer_agents only negotiates with sources
-# listed here — a source with no domain agent yet simply can't be consulted.
-REGISTERED_SOURCES: List[str] = ["slack", "outlook", "teams", "fathom"]
+# Sources with a registered domain agent. Phase 6 (I+D via MCP) appends to
+# this later. ask_peer_agents only negotiates with sources listed here — a
+# source with no domain agent yet simply can't be consulted.
+REGISTERED_SOURCES: List[str] = ["slack", "outlook", "teams", "fathom", "notion"]
 
 _SOURCE_GUIDANCE: Dict[str, str] = {
     "slack": (
@@ -57,6 +57,14 @@ _SOURCE_GUIDANCE: Dict[str, str] = {
         "largo, potencialmente con etiquetas de orador si la transcripción las trae. "
         "metadata solo tiene title, date y recording_url — no hay lista estructurada "
         "de participantes, así que identificá a los asistentes leyendo la transcripción."
+    ),
+    "notion": (
+        "Los documentos son páginas o filas de bases de datos de Notion — metadata.type "
+        "distingue 'notion_page' de 'notion_database_item'. metadata.author es quien "
+        "editó por última vez la página, no necesariamente alguien mencionado en el "
+        "contenido — no lo confundas con las personas de las que habla el documento. "
+        "Este agente es de solo lectura hacia el conocimiento compartido: nunca escribe "
+        "de vuelta a Notion, eso lo maneja NotionSync por separado."
     ),
 }
 

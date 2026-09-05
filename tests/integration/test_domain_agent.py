@@ -452,7 +452,7 @@ class TestRunDomainAgent:
 
 class TestPhase2SourceRegistration:
     def test_all_four_sources_registered(self) -> None:
-        assert set(domain_agent.REGISTERED_SOURCES) == {"slack", "outlook", "teams", "fathom"}
+        assert {"slack", "outlook", "teams", "fathom"}.issubset(domain_agent.REGISTERED_SOURCES)
 
     @pytest.mark.parametrize("source", ["outlook", "teams", "fathom"])
     async def test_system_prompt_contains_source_guidance(
@@ -539,3 +539,68 @@ class TestPhase2CrossSourceNegotiation:
         assert result["peers_consulted"] == ["outlook"]
         mock_swarm_cls.assert_called_once()
         assert mock_agent_cls.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Notion. Separate phase because app/services/notion/ already has
+# its own bidirectional sync (NotionSync) and publisher — this domain agent
+# must be read-only towards the shared knowledge layer and must never import
+# or call anything that writes back to Notion.
+# ---------------------------------------------------------------------------
+
+class TestPhase3NotionRegistration:
+    def test_notion_registered(self) -> None:
+        assert "notion" in domain_agent.REGISTERED_SOURCES
+
+    async def test_system_prompt_contains_notion_guidance(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="notionreg@example.com")
+        agent = _build_agent(db_session, user_id, source="notion")
+        assert domain_agent._SOURCE_GUIDANCE["notion"] in agent.system_prompt
+
+    def test_domain_agent_module_never_imports_notion_write_path(self) -> None:
+        """Architectural guard for the plan's own constraint: this agent reads
+        Documents already ingested by the existing pipeline — it must never
+        touch app.services.notion (NotionSync/NotionPublisher), which is the
+        only thing allowed to write back to Notion."""
+        import inspect
+
+        source_code = inspect.getsource(domain_agent)
+        assert "app.services.notion" not in source_code
+
+
+class TestPhase3DocumentScoping:
+    async def test_only_sees_notion_documents(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="notionscope@example.com")
+        db_session.add(make_document(user_id=user_id, source="notion", content="mine"))
+        db_session.add(make_document(user_id=user_id, source="slack", content="not mine"))
+        await db_session.commit()
+
+        agent = _build_agent(db_session, user_id, source="notion")
+        results = await _tool(agent, "get_unprocessed_documents")(limit=10)
+
+        assert len(results) == 1
+        assert results[0]["content"] == "mine"
+
+
+class TestPhase3FullExtractionFlow:
+    async def test_extract_entity_and_claim_then_mark_processed(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="notionflow@example.com")
+        doc = make_document(user_id=user_id, source="notion", content="Juan lidera el proyecto Atlas")
+        db_session.add(doc)
+        await db_session.commit()
+
+        agent = _build_agent(db_session, user_id, source="notion")
+        docs = await _tool(agent, "get_unprocessed_documents")(limit=10)
+        assert len(docs) == 1
+
+        entity = await _tool(agent, "find_or_create_entity")(entity_type="person", name="Juan")
+        await db_session.commit()
+        claim = await _tool(agent, "add_claim")(
+            entity_id=entity["entity_id"], claim_text="Lidera el proyecto Atlas", confidence=0.7,
+        )
+        await db_session.commit()
+        assert "claim_id" in claim
+
+        await _tool(agent, "mark_document_processed")(document_id=doc.id.__str__())
+        await db_session.commit()
+        assert await _tool(agent, "get_unprocessed_documents")(limit=10) == []
