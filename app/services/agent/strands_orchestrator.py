@@ -8,12 +8,17 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Tuple
+from typing import (
+    TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Tuple, cast,
+)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation_turn import ConversationTurn
+
+if TYPE_CHECKING:
+    from strands.types.content import Message
 
 logger = logging.getLogger(__name__)
 
@@ -433,7 +438,7 @@ def _format_style(style_info: Dict[str, Any]) -> str:
 
 def _history_to_strands_messages(
     history: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+) -> "List[Message]":
     """Convert our DB history format to Strands message format.
 
     Strands messages are dicts with ``role`` and ``content`` where content
@@ -447,7 +452,7 @@ def _history_to_strands_messages(
             "role": role,
             "content": [{"text": content_str}],
         })
-    return messages
+    return cast("List[Message]", messages)
 
 
 def _extract_last_assistant_text(messages: List[Any]) -> str:
