@@ -100,6 +100,19 @@ class TestEntityCRUD:
         assert await store.get_entity(db_session, other_id, entity.id) is None
         assert await store.get_entity(db_session, owner_id, entity.id) is not None
 
+    async def test_find_similar_entities_without_embedding_returns_empty(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Short-circuits before ever issuing the cosine_distance query, which
+        needs pgvector (Postgres) — this path is the only part of
+        find_similar_entities testable without it."""
+        user_id = await _make_persisted_user(db_session, email="sim1@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        await db_session.commit()
+
+        assert entity.embedding is None
+        assert await store.find_similar_entities(db_session, user_id, entity) == []
+
 
 class TestClaimCRUD:
     async def test_add_and_list_claims(self, db_session: AsyncSession) -> None:

@@ -1,11 +1,12 @@
-"""Manual trigger for a knowledge domain agent (specs/plan-multi-agent-knowledge.md, Phase 1).
+"""Manual trigger for the reconciliation engine (specs/plan-multi-agent-knowledge.md, Phase 4).
 
-Lets you run and inspect a single extraction batch before wiring the agent
-to the sync scheduler.
+Not wired to the live sync scheduler yet — see run_reconciliation's
+docstring for why. Run this after a batch of domain agents (scripts/
+run_domain_agent.py) to reconcile whatever they extracted.
 
 Usage:
-    python scripts/run_domain_agent.py --source slack --email mariano@example.com
-    python scripts/run_domain_agent.py --source slack --user-id <uuid> --batch-size 10
+    python scripts/run_reconciliation.py --email mariano@example.com
+    python scripts/run_reconciliation.py --user-id <uuid> --entity-type person
 """
 import argparse
 import asyncio
@@ -15,11 +16,9 @@ import pathlib
 import sys
 import uuid
 
-# Suppress SQLAlchemy echo before the engine is created.
 os.environ["DEBUG"] = "false"
 logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
 
-# Anchor sys.path to the repo root regardless of cwd.
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
@@ -27,14 +26,13 @@ load_dotenv(override=False)
 
 from sqlalchemy import select
 
-from app.core.config import get_settings
 from app.core.database import get_session_factory
+from app.models.entity import EntityType
 from app.models.user import User
-from app.services.agent.knowledge.domain_agent import REGISTERED_SOURCES, run_domain_agent
-from app.services.ingestion.embedder import Embedder
+from app.services.agent.knowledge.reconciliation import run_reconciliation
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-logger = logging.getLogger("run_domain_agent")
+logger = logging.getLogger("run_reconciliation")
 
 
 async def _resolve_user_id(db, args: argparse.Namespace) -> uuid.UUID:
@@ -49,25 +47,23 @@ async def _resolve_user_id(db, args: argparse.Namespace) -> uuid.UUID:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", required=True, choices=REGISTERED_SOURCES)
     parser.add_argument("--user-id", help="User UUID (use this or --email)")
     parser.add_argument("--email", help="User email (looked up to get the UUID)")
-    parser.add_argument("--batch-size", type=int, default=20)
+    parser.add_argument(
+        "--entity-type", choices=[t.value for t in EntityType],
+        help="Limit to one entity type (default: all)",
+    )
     args = parser.parse_args()
 
     if not args.user_id and not args.email:
         raise SystemExit("Pass either --user-id or --email")
 
-    settings = get_settings()
-    embedder = Embedder(api_key=settings.openai_api_key) if settings.openai_api_key else None
-
     session_factory = get_session_factory()
     async with session_factory() as db:
         user_id = await _resolve_user_id(db, args)
-        logger.info("Running %s domain agent for user=%s batch_size=%d", args.source, user_id, args.batch_size)
-        result = await run_domain_agent(
-            args.source, db, user_id, batch_size=args.batch_size, embedder=embedder,
-        )
+        entity_type = EntityType(args.entity_type) if args.entity_type else None
+        logger.info("Running reconciliation for user=%s entity_type=%s", user_id, args.entity_type)
+        result = await run_reconciliation(db, user_id, entity_type=entity_type)
         await db.commit()
         logger.info("Result: %s", result)
 

@@ -168,16 +168,24 @@ completo acá antes de replicar.
 
 **Complejidad**: media, con cuidado de no pisar la integración existente.
 
-### Phase 4 — Motor de reconciliación
-- [ ] Pre-filtro determinístico: email exacto, nombre exacto, similaridad de embedding sobre umbral
-  → auto-link como `same_as` sin gastar LLM.
-- [ ] Zona ambigua → mismo `Swarm` acotado que usa `ask_peer_agents` (Phase 1) — la reconciliación
+### Phase 4 — Motor de reconciliación ✅ (pendiente code review)
+- [x] Pre-filtro determinístico: email exacto → auto-link como `same_as` sin gastar LLM.
+  ("Nombre exacto" quedó cubierto por construcción: `find_or_create_entity` de Phase 1 ya
+  busca entre todas las entidades del usuario, no solo las de su fuente, así que dos
+  entidades separadas con el mismo nombre exacto ya no pueden existir — el único
+  duplicado real que llega a reconciliación es ambigüedad genuina entre fuentes.)
+- [x] Zona ambigua → similaridad de embedding (`store.find_similar_entities`, requiere pgvector)
+  + mismo mecanismo de `Swarm` acotado que usa `ask_peer_agents` (Phase 1) — la reconciliación
   es la invocación *reactiva* (por lote, detectando candidatos) del mismo mecanismo que un agente
   dispara *proactivamente* cuando tiene una duda propia. Un solo código de negociación, dos gatillos.
-- [ ] Sin consenso (swarm no converge) → `pending_questions` con `target=human` y
+- [x] Sin consenso (swarm no converge) → `pending_questions` con `target=human` y
   `candidate_answer` si el swarm llegó a algo parcial, nunca una pregunta en blanco si evitable.
-- [ ] Recalcular `entities.confidence` según corroboración.
-- [ ] Disparo: después de que terminan los agentes de dominio de un ciclo de sync.
+  Un par con pregunta ya abierta se salta en la próxima corrida en vez de re-negociar.
+- [x] Recalcular `entities.confidence` según corroboración (heurística v1, documentada).
+- [ ] Disparo: **no enganchado al scheduler todavía** — cada integración sincroniza en su propio
+  intervalo independiente, así que "después de un ciclo de sync" no tiene un único punto de
+  disparo obvio sin antes decidir cadencia/costo con el usuario. Corre manual por ahora vía
+  `scripts/run_reconciliation.py`.
 
 **Complejidad**: alta — es el corazón de "los agentes se ponen de acuerdo entre ellos". Code review
 obligatorio, con foco en costo (cuántos swarms se disparan por ciclo) y en que el pre-filtro

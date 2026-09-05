@@ -94,7 +94,9 @@ Priorizá la solidez del conocimiento por sobre la velocidad: mejor un claim con
 confianza baja y correctamente marcada como tal, que inventar certeza."""
 
 
-def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
+def make_domain_agent(
+    source: str, db: AsyncSession, user_id: uuid.UUID, embedder: Optional[Any] = None,
+) -> Any:
     """Build a Strands Agent scoped to one data source.
 
     A new agent is built per invocation — no shared mutable state between
@@ -105,6 +107,10 @@ def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
     same AsyncSession, and AsyncSession is not safe for concurrent use from
     more than one task at a time. Sequential execution is required, not an
     optimization.
+
+    embedder is optional (None in most tests) — when given, newly-created
+    entities get embedded so Phase 4's reconciliation can find cross-source
+    duplicates by similarity.
     """
     from strands import Agent, tool
     from strands.tools.executors import SequentialToolExecutor
@@ -161,6 +167,7 @@ def make_domain_agent(source: str, db: AsyncSession, user_id: uuid.UUID) -> Any:
             async with db.begin_nested():
                 entity, created = await resolution.find_or_create_entity(
                     db, user_id, parsed_type, name, aliases=aliases, attributes=attributes,
+                    embedder=embedder,
                 )
         except SQLAlchemyError as e:
             logger.warning("find_or_create_entity failed for name=%r: %s", name, e)
@@ -270,10 +277,11 @@ async def run_domain_agent(
     db: AsyncSession,
     user_id: uuid.UUID,
     batch_size: int = 20,
+    embedder: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Entry point for the sync scheduler (or a manual trigger, Phase 1): process
     one batch of unprocessed documents for this source."""
-    agent = make_domain_agent(source, db, user_id)
+    agent = make_domain_agent(source, db, user_id, embedder=embedder)
     task = (
         f"Procesá hasta {batch_size} documentos no leídos de {source} siguiendo tu mandato. "
         "Si no hay documentos pendientes, no hagas nada."

@@ -81,6 +81,38 @@ async def update_entity_confidence(
     return entity
 
 
+async def find_similar_entities(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity: Entity,
+    max_distance: float = 0.15,
+    limit: int = 5,
+) -> List[Entity]:
+    """Entities of the same type most similar to `entity` by embedding cosine
+    distance (excluding itself) — Phase 4's candidate-duplicate detection.
+
+    max_distance is 1 - cosine_similarity, so lower means more similar; 0.15
+    corresponds to similarity >= 0.85. Requires pgvector (Postgres) — same
+    cosine_distance() pattern as SaveLearningTool's dedup check. Returns []
+    when the entity has no embedding (e.g. created without an embedder).
+    """
+    if entity.embedding is None:
+        return []
+    stmt = (
+        select(Entity)
+        .where(
+            Entity.user_id == user_id,
+            Entity.entity_type == entity.entity_type,
+            Entity.id != entity.id,
+            Entity.embedding.isnot(None),
+            Entity.embedding.cosine_distance(entity.embedding) <= max_distance,
+        )
+        .order_by(Entity.embedding.cosine_distance(entity.embedding))
+        .limit(limit)
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # Claims
 # ---------------------------------------------------------------------------

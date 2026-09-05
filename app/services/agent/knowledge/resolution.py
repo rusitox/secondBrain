@@ -1,11 +1,18 @@
 """Identity resolution and read-only lookup — rung 1 of the resolution ladder.
 
-Deliberately simple for Phase 1 (single source, no cross-source ambiguity
-yet): exact/case-insensitive name-or-alias matching, scoped to one user and
-entity type. Embedding-similarity matching across sources is Phase 4's job
-(specs/plan-multi-agent-knowledge.md) — trying to solve that here would be
-guessing at a problem this phase can't actually observe yet (only one source
-exists until Phase 2).
+Deliberately simple within one source: exact/case-insensitive name-or-alias
+matching, scoped to one user and entity type — this is what stops a domain
+agent from creating a second "Juan" entity every time it re-mentions someone
+it already knows about. It also means a same-source, same-name duplicate can
+no longer occur, which is why Phase 4's reconciliation only ever has to deal
+with genuine cross-source ambiguity (different surface name, same real
+person) — never the trivial exact-match case, which never reaches it.
+
+find_or_create_entity optionally embeds a newly-created entity's name (via
+the same Embedder used for document ingestion) so Phase 4 can find
+candidate cross-source duplicates by cosine similarity — see
+app/services/agent/knowledge/reconciliation.py and
+app/services/agent/knowledge/store.py:find_similar_entities.
 """
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,9 +31,15 @@ async def find_or_create_entity(
     name: str,
     aliases: Optional[List[str]] = None,
     attributes: Optional[Dict[str, Any]] = None,
+    embedder: Optional[Any] = None,
 ) -> Tuple[Entity, bool]:
     """Return (entity, created). Matches by exact case-insensitive name/alias
-    within the same user + entity_type before creating a new one."""
+    within the same user + entity_type before creating a new one.
+
+    When creating a new entity and an embedder is given, embeds
+    `canonical_name` so Phase 4's reconciliation can find it by similarity —
+    skipped entirely (no API call) when embedder is None, e.g. in tests.
+    """
     normalized = name.strip().lower()
     candidates = await store.list_entities(db, user_id, entity_type=entity_type)
 
@@ -42,8 +55,13 @@ async def find_or_create_entity(
                 await db.flush()
             return candidate, False
 
+    embedding = None
+    if embedder is not None:
+        embedding = await embedder.embed_single(name)
+
     entity = await store.create_entity(
         db, user_id, entity_type, name, aliases=aliases, attributes=attributes,
+        embedding=embedding,
     )
     return entity, True
 

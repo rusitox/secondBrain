@@ -24,12 +24,12 @@ async def _make_persisted_user(db: AsyncSession, **kwargs) -> uuid.UUID:
     return user.id
 
 
-def _build_agent(db: AsyncSession, user_id: uuid.UUID, source: str = "slack"):
+def _build_agent(db: AsyncSession, user_id: uuid.UUID, source: str = "slack", embedder: Any = None):
     settings = MagicMock()
     settings.llm_model = "openai/gpt-4o-mini"
     settings.llm_api_key = "sk-test"
     with patch("app.core.config.get_settings", return_value=settings):
-        return domain_agent.make_domain_agent(source, db, user_id)
+        return domain_agent.make_domain_agent(source, db, user_id, embedder=embedder)
 
 
 def _tool(agent: Any, name: str):
@@ -132,6 +132,34 @@ class TestGetAndMarkUnprocessedDocuments:
 
 
 class TestFindOrCreateEntityTool:
+    async def test_embeds_new_entity_when_embedder_given(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ent0@example.com")
+        mock_embedder = MagicMock()
+        mock_embedder.embed_single = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        agent = _build_agent(db_session, user_id, embedder=mock_embedder)
+
+        result = await _tool(agent, "find_or_create_entity")(entity_type="person", name="Juan")
+        await db_session.commit()
+
+        mock_embedder.embed_single.assert_awaited_once_with("Juan")
+        entity = await store.get_entity(db_session, user_id, uuid.UUID(result["entity_id"]))
+        assert entity.embedding is not None
+
+    async def test_no_embed_call_when_entity_already_exists(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ent0b@example.com")
+        mock_embedder = MagicMock()
+        mock_embedder.embed_single = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        agent = _build_agent(db_session, user_id, embedder=mock_embedder)
+
+        await _tool(agent, "find_or_create_entity")(entity_type="person", name="Juan")
+        await db_session.commit()
+        mock_embedder.embed_single.reset_mock()
+
+        await _tool(agent, "find_or_create_entity")(entity_type="person", name="juan")
+        await db_session.commit()
+
+        mock_embedder.embed_single.assert_not_awaited()
+
     async def test_creates_then_finds_case_insensitively(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="ent1@example.com")
         agent = _build_agent(db_session, user_id)
@@ -434,7 +462,7 @@ class TestRunDomainAgent:
                 "slack", db_session, user_id, batch_size=5
             )
 
-        mock_make.assert_called_once_with("slack", db_session, user_id)
+        mock_make.assert_called_once_with("slack", db_session, user_id, embedder=None)
         task_arg = fake_agent.invoke_async.call_args.args[0]
         assert "5" in task_arg
         assert "slack" in task_arg
