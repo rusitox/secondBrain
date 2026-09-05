@@ -191,7 +191,7 @@ completo acá antes de replicar.
 obligatorio, con foco en costo (cuántos swarms se disparan por ciclo) y en que el pre-filtro
 determinístico realmente reduce el volumen antes de gastar LLM.
 
-### Phase 5 — Orquestador: lectura + feedback loop ✅
+### Phase 5 — Orquestador: lectura + feedback loop ✅ (code review completo, hallazgos corregidos)
 - [x] Tool `query_knowledge(entity_or_topic)` en `strands_tools.py`.
 - [x] El orquestador surge `pending_questions` abiertas en la conversación cuando es relevante
   (tool `get_pending_questions`, instrucción explícita en el system prompt).
