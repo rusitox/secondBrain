@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.document import Document
 from app.models.entity import Entity, EntityType
 from app.models.entity_claim import ClaimStatus, EntityClaim
 from app.models.entity_link import EntityLink, LinkResolvedBy
@@ -20,6 +21,7 @@ from app.models.pending_question import (
     QuestionTarget,
     ResolvedBy,
 )
+from app.models.processed_document import ProcessedDocument
 
 
 # ---------------------------------------------------------------------------
@@ -233,3 +235,47 @@ async def list_open_questions(
     if target is not None:
         stmt = stmt.where(PendingQuestion.target == target)
     return list((await db.execute(stmt)).scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Document processing tracking
+# ---------------------------------------------------------------------------
+
+async def get_unprocessed_documents(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    source: str,
+    limit: int = 20,
+) -> List[Document]:
+    """Documents for this source a domain agent hasn't extracted yet.
+
+    A document that yields nothing still gets marked processed (via
+    mark_document_processed) so it isn't re-read on every batch forever.
+    """
+    processed_ids = select(ProcessedDocument.document_id).where(
+        ProcessedDocument.user_id == user_id,
+        ProcessedDocument.source == source,
+    )
+    stmt = (
+        select(Document)
+        .where(
+            Document.user_id == user_id,
+            Document.source == source,
+            Document.id.notin_(processed_ids),
+        )
+        .order_by(Document.created_at.asc())
+        .limit(limit)
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def mark_document_processed(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    document_id: uuid.UUID,
+    source: str,
+) -> ProcessedDocument:
+    record = ProcessedDocument(user_id=user_id, document_id=document_id, source=source)
+    db.add(record)
+    await db.flush()
+    return record

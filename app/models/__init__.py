@@ -13,6 +13,7 @@ from app.models.entity_link import EntityLink, LinkResolvedBy
 from app.models.pending_question import (
     PendingQuestion, QuestionTarget, QuestionStatus, ResolvedBy,
 )
+from app.models.processed_document import ProcessedDocument
 
 __all__ = [
     "Base",
@@ -39,4 +40,5 @@ __all__ = [
     "QuestionTarget",
     "QuestionStatus",
     "ResolvedBy",
+    "ProcessedDocument",
 ]

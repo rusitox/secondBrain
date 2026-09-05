@@ -229,10 +229,24 @@ def _create_sqlite_tables(connection) -> None:
         CREATE INDEX IF NOT EXISTS ix_pending_questions_user_status
         ON pending_questions(user_id, status)
     """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS knowledge_processed_documents (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_knowledge_processed_documents_user_source
+        ON knowledge_processed_documents(user_id, source)
+    """))
 
 
 def _drop_sqlite_tables(connection) -> None:
     for table in [
+        "knowledge_processed_documents",
         "pending_questions", "entity_links", "entity_claims", "entities",
         "conversation_turns", "api_keys", "commitments", "documents", "integrations", "identities", "users",
     ]:
