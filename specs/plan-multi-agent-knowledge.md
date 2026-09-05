@@ -168,7 +168,7 @@ completo acá antes de replicar.
 
 **Complejidad**: media, con cuidado de no pisar la integración existente.
 
-### Phase 4 — Motor de reconciliación ✅ (pendiente code review)
+### Phase 4 — Motor de reconciliación ✅ (code review completo, hallazgos corregidos)
 - [x] Pre-filtro determinístico: email exacto → auto-link como `same_as` sin gastar LLM.
   ("Nombre exacto" quedó cubierto por construcción: `find_or_create_entity` de Phase 1 ya
   busca entre todas las entidades del usuario, no solo las de su fuente, así que dos
