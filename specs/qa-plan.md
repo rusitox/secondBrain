@@ -4,7 +4,7 @@
 
 Definir la estrategia de testing para garantizar la calidad del sistema. Cubre unit tests, integration tests, y E2E tests alineados a todas las features implementadas.
 
-**Estado actual:** 1051 tests, todos passing (salvo fallos preexistentes conocidos y no relacionados en `test_teams_connector.py`).
+**Estado actual:** 1055 tests, todos passing (salvo fallos preexistentes conocidos y no relacionados en `test_teams_connector.py`).
 
 ---
 
@@ -91,8 +91,10 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
   (`test_strands_tools_knowledge.py`)
 - [x] `GET /knowledge/status` observability endpoint, incl. `scheduler_active`/`next_scheduled_run` (`test_knowledge_stats.py`)
 - [x] `scheduler.py`: `KnowledgeAgentScheduler` — lifecycle, minimum-interval enforcement, one job
-  per user with an active integration, per-step failure isolation within a cycle (one source
-  failing doesn't block the rest or reconciliation) (`test_knowledge_scheduler.py`)
+  per user with an active integration, each step on its own fresh session (not a shared one),
+  per-step failure isolation within a cycle (one source failing doesn't block the rest or
+  reconciliation, and a rollback that itself raises doesn't abort the cycle either)
+  (`test_knowledge_scheduler.py`)
 
 #### Services — Notion
 - [x] NotionConnector: page reading, database reading, token validation
@@ -122,7 +124,7 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
 - [x] Endpoints de sync — status, configure, trigger
 - [x] Endpoints de auth — API key creation, listing, revocation
 - [x] Endpoint de voice — transcripción y TTS
-- [x] `GET /knowledge/status` — observabilidad de la base de conocimiento (buckets de confianza, claims por fuente, preguntas pendientes, merges recientes)
+- [x] `GET /knowledge/status` — observabilidad de la base de conocimiento (buckets de confianza, claims por fuente, preguntas pendientes, merges recientes, estado del `KnowledgeAgentScheduler`)
 - [x] `GET /users/me` — Authenticated user profile
 - [x] `GET /users/me/preferences` — Preferences, onboarding, Notion config
 - [x] `PATCH /users/me/preferences` — Merge preferences
@@ -338,7 +340,7 @@ tests/
 
 | Criterio | Umbral | Estado |
 |---|---|---|
-| All tests passing | 1051/1051 (6 fallos preexistentes no relacionados en `test_teams_connector.py`) | **Met** |
+| All tests passing | 1055/1055 (6 fallos preexistentes no relacionados en `test_teams_connector.py`) | **Met** |
 | Type checking (mypy) | No errors in app/ cli/ | **Met** |
 | Security: auth + encryption | All tests passing | **Met** |
 | E2E: happy paths | All passing | **Met** |

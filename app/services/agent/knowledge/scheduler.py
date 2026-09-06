@@ -177,8 +177,17 @@ class KnowledgeAgentScheduler:
                 await db.commit()
                 logger.info("Knowledge cycle step=%s user=%s result=%s", step_name, user_id, result)
             except Exception:
-                await db.rollback()
                 logger.exception("Knowledge cycle step=%s failed for user=%s", step_name, user_id)
+                try:
+                    await db.rollback()
+                except Exception:
+                    # A broken connection/session can make rollback() itself raise. That
+                    # must never escape this step — it would abort the whole cycle (every
+                    # remaining source + reconciliation) for a cleanup failure, exactly the
+                    # isolation this method exists to guarantee.
+                    logger.exception(
+                        "Knowledge cycle step=%s: rollback also failed for user=%s", step_name, user_id,
+                    )
 
     def get_job_info(self) -> List[Dict]:
         if not self._scheduler or not HAS_APSCHEDULER:

@@ -263,11 +263,9 @@ async def run_reconciliation(
     already has an open question from a previous pass), then confidence
     recompute for every entity touched.
 
-    Not wired to the live sync scheduler yet — each platform syncs on its
-    own independent interval, so "after a sync cycle" doesn't map cleanly
-    onto a single trigger point without a product decision about cadence
-    and cost (run after every platform sync? on its own daily schedule?).
-    Run manually via scripts/run_reconciliation.py until that's decided.
+    Wired into KnowledgeAgentScheduler._run_cycle (app/services/agent/knowledge/scheduler.py,
+    Phase 8) — runs once per user at the end of every knowledge cycle, after all domain
+    agents for that cycle finish. Also callable manually via scripts/run_reconciliation.py.
     """
     # Email matching only ever applies to people — skip it when the caller
     # scoped this run to a different entity_type, matching the CLI's own

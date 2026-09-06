@@ -142,16 +142,30 @@ class TestLoadJobs:
             mock_schedule.assert_not_called()
 
 
+def _make_fresh_session_factory():
+    """Returns (factory, sessions) — factory mints a brand-new AsyncMock session on
+    every call (like a real async_sessionmaker), instead of handing back one shared
+    mock, so tests can actually verify each step got its own fresh session."""
+    sessions: list = []
+
+    def _new_session() -> AsyncMock:
+        session = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        sessions.append(session)
+        return session
+
+    factory = MagicMock(side_effect=_new_session)
+    return factory, sessions
+
+
 class TestRunCycle:
     @pytest.mark.asyncio
     async def test_runs_every_document_backed_source_plus_reconciliation_when_rd_unconfigured(self) -> None:
         scheduler = KnowledgeAgentScheduler()
         user_id = str(uuid.uuid4())
 
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_factory = MagicMock(return_value=mock_session)
+        mock_factory, sessions = _make_fresh_session_factory()
 
         mock_run_domain_agent = AsyncMock(return_value={"source": "x", "summary": "ok"})
         mock_run_rd_agent = AsyncMock()
@@ -170,17 +184,18 @@ class TestRunCycle:
         assert "rd" not in called_sources
         mock_run_rd_agent.assert_not_called()
         mock_run_reconciliation.assert_called_once()
-        assert mock_session.commit.await_count == 6  # 5 sources + reconciliation
+        # 5 sources + reconciliation — each got its OWN fresh session (not one shared mock).
+        assert mock_factory.call_count == 6
+        assert len(sessions) == 6
+        assert all(s.commit.await_count == 1 for s in sessions)
+        assert all(s.rollback.await_count == 0 for s in sessions)
 
     @pytest.mark.asyncio
     async def test_runs_rd_agent_when_configured(self) -> None:
         scheduler = KnowledgeAgentScheduler()
         user_id = str(uuid.uuid4())
 
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_factory = MagicMock(return_value=mock_session)
+        mock_factory, sessions = _make_fresh_session_factory()
 
         mock_run_domain_agent = AsyncMock(return_value={})
         mock_run_rd_agent = AsyncMock(return_value={"source": "rd", "summary": "ok"})
@@ -202,10 +217,7 @@ class TestRunCycle:
         scheduler = KnowledgeAgentScheduler()
         user_id = str(uuid.uuid4())
 
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_factory = MagicMock(return_value=mock_session)
+        mock_factory, sessions = _make_fresh_session_factory()
 
         mock_run_domain_agent = AsyncMock(side_effect=[RuntimeError("boom"), {}, {}, {}, {}])
         mock_run_reconciliation = AsyncMock(return_value={})
@@ -218,4 +230,44 @@ class TestRunCycle:
 
         assert mock_run_domain_agent.call_count == 5
         mock_run_reconciliation.assert_called_once()
-        mock_session.rollback.assert_called_once()
+        # 5 sources + reconciliation, each on its own fresh session.
+        assert mock_factory.call_count == 6
+        # Only the first session (the one whose call raised) rolls back; the
+        # other 5 — including reconciliation's — commit normally.
+        assert sessions[0].rollback.await_count == 1
+        assert sessions[0].commit.await_count == 0
+        assert all(s.commit.await_count == 1 for s in sessions[1:])
+        assert all(s.rollback.await_count == 0 for s in sessions[1:])
+
+    @pytest.mark.asyncio
+    async def test_rollback_failure_does_not_abort_the_rest_of_the_cycle(self) -> None:
+        """The Warning fix: if db.rollback() itself raises (e.g. a broken
+        connection), that must be swallowed too — it must never escape and
+        abort the remaining steps in the cycle."""
+        scheduler = KnowledgeAgentScheduler()
+        user_id = str(uuid.uuid4())
+
+        first_call = {"seen": False}
+
+        def _new_session_first_rollback_broken() -> AsyncMock:
+            session = AsyncMock()
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=False)
+            if not first_call["seen"]:
+                first_call["seen"] = True
+                session.rollback = AsyncMock(side_effect=RuntimeError("connection already closed"))
+            return session
+
+        mock_factory = MagicMock(side_effect=_new_session_first_rollback_broken)
+
+        mock_run_domain_agent = AsyncMock(side_effect=[RuntimeError("boom"), {}, {}, {}, {}])
+        mock_run_reconciliation = AsyncMock(return_value={})
+
+        with patch("app.core.config.get_settings", return_value=_settings(id_brain_mcp_url="")), \
+             patch("app.services.agent.knowledge.scheduler.get_session_factory", return_value=mock_factory), \
+             patch("app.services.agent.knowledge.domain_agent.run_domain_agent", mock_run_domain_agent), \
+             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation):
+            await scheduler._run_cycle(user_id)  # must not raise even though rollback() itself raised
+
+        assert mock_run_domain_agent.call_count == 5
+        mock_run_reconciliation.assert_called_once()

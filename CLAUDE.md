@@ -114,7 +114,7 @@ Terminal-based chat interface consuming the REST API:
 - `app/services/connectors/` — Platform connectors (5: outlook, teams, slack, fathom, notion)
 - `app/services/agent/strands_orchestrator.py` — StrandsOrchestrator (main agent entry point)
 - `app/services/agent/strands_tools.py` — Strands `@tool`-decorated wrappers around `tools/`
-- `app/services/agent/knowledge/` — Multi-agent knowledge system: `store.py` (CRUD + observability), `domain_agent.py` (per-source Document agents), `rd_agent.py` (I+D platform via MCP), `resolution.py`, `reconciliation.py`, `swarm_negotiation.py`
+- `app/services/agent/knowledge/` — Multi-agent knowledge system: `store.py` (CRUD + observability), `domain_agent.py` (per-source Document agents), `rd_agent.py` (I+D platform via MCP), `resolution.py`, `reconciliation.py`, `swarm_negotiation.py`, `scheduler.py` (opt-in periodic knowledge cycles)
 - `app/services/ingestion/pipeline.py` — Central data flow
 - `app/services/retrieval/search.py` — Hybrid vector search
 - `app/services/sync/scheduler.py` — APScheduler-based periodic sync

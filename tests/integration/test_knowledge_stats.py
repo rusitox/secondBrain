@@ -5,10 +5,13 @@ specs/plan-multi-agent-knowledge.md, Phase 7 — the concrete check that "the
 knowledge base gets more solid over time" is a verifiable claim.
 """
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.main import app as fastapi_app
 
 from app.models.entity import EntityType
 from app.models.entity_link import LinkResolvedBy
@@ -133,3 +136,54 @@ class TestGetKnowledgeStatusEndpoint:
 
         assert resp.status_code == 200
         assert resp.json()["merged_window_hours"] == 72
+
+    async def test_scheduler_active_false_when_no_scheduler_attached(self, client: AsyncClient) -> None:
+        resp = await client.post("/users/", json={"email": "ksapi3@example.com", "full_name": "KS User 3"})
+        user_id = resp.json()["id"]
+
+        resp = await client.get("/knowledge/status", headers={"X-User-Id": user_id})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scheduler_active"] is False
+        assert data["next_scheduled_run"] is None
+
+    async def test_reports_scheduler_active_and_next_run_when_job_exists(self, client: AsyncClient) -> None:
+        resp = await client.post("/users/", json={"email": "ksapi4@example.com", "full_name": "KS User 4"})
+        user_id = resp.json()["id"]
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.is_running = True
+        mock_scheduler.get_job_info.return_value = [
+            {"job_id": f"knowledge_cycle_{user_id}", "next_run": "2026-09-07T00:00:00+00:00"},
+        ]
+        fastapi_app.state.knowledge_scheduler = mock_scheduler
+        try:
+            resp = await client.get("/knowledge/status", headers={"X-User-Id": user_id})
+        finally:
+            del fastapi_app.state.knowledge_scheduler
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scheduler_active"] is True
+        assert data["next_scheduled_run"] == "2026-09-07T00:00:00+00:00"
+
+    async def test_next_scheduled_run_none_when_job_not_yet_loaded(self, client: AsyncClient) -> None:
+        """Scheduler running but this user's job isn't in it yet (e.g. no
+        active integration) must not raise — just report no next run."""
+        resp = await client.post("/users/", json={"email": "ksapi5@example.com", "full_name": "KS User 5"})
+        user_id = resp.json()["id"]
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.is_running = True
+        mock_scheduler.get_job_info.return_value = []
+        fastapi_app.state.knowledge_scheduler = mock_scheduler
+        try:
+            resp = await client.get("/knowledge/status", headers={"X-User-Id": user_id})
+        finally:
+            del fastapi_app.state.knowledge_scheduler
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scheduler_active"] is True
+        assert data["next_scheduled_run"] is None
