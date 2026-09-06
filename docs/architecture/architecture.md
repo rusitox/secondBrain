@@ -10,7 +10,7 @@ The Digital Twin is a personalized AI assistant that acts as an AI Chief of Staf
 - **Privacy-First**: Tokens encrypted at rest (Fernet), row-level isolation by user_id.
 
 ## Component Stack
-- **API**: FastAPI (async, 12 routers)
+- **API**: FastAPI (async, 13 routers)
 - **ORM**: SQLAlchemy 2.0 (async with asyncpg)
 - **Memory Store**: PostgreSQL + pgvector (Supabase)
 - **LLM**: Claude (Anthropic API) for reasoning, commitment detection, briefings; OpenAI models via Strands for the agent loop

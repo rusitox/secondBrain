@@ -197,7 +197,7 @@ Daily Briefing / Weekly Digest / Meeting Prep → Notion
 |-------|------|-------------|
 | Core | `app/core/` | Config, database, security, logging |
 | Models | `app/models/` | User, Identity, Integration, Document, Commitment, APIKey |
-| API | `app/api/routers/` | 12 REST routers (health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth, voice, knowledge) |
+| API | `app/api/routers/` | 13 REST routers (health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth, voice, knowledge) |
 | Auth | `app/core/security.py` | API key authentication (Bearer token, bcrypt) |
 | Connectors | `app/services/connectors/` | Outlook, Teams, Slack, Fathom, Notion |
 | Ingestion | `app/services/ingestion/` | Cleaner, chunker, embedder, pipeline |
@@ -256,7 +256,7 @@ secondBrain/
 │   ├── core/               # Config, database, security (API key auth)
 │   ├── models/             # SQLAlchemy models (User, APIKey, etc.)
 │   ├── api/
-│   │   ├── routers/        # REST endpoints (12 routers)
+│   │   ├── routers/        # REST endpoints (13 routers)
 │   │   └── schemas/        # Pydantic models
 │   └── services/
 │       ├── connectors/     # Platform connectors (5)

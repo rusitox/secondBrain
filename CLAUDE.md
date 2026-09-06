@@ -105,12 +105,12 @@ Terminal-based chat interface consuming the REST API:
 
 ## Key Files
 
-- `app/main.py` — Entry point, router registration, lifespan (starts sync scheduler)
+- `app/main.py` — Entry point, router registration, lifespan (starts sync scheduler, and the knowledge agent scheduler if `enable_knowledge_agents`)
 - `app/core/config.py` — Settings (pydantic-settings, .env)
 - `app/core/database.py` — Async engine, session factory
 - `app/core/security.py` — API key authentication (Bearer token + bcrypt verification)
 - `app/models/` — SQLAlchemy models (Base, UUIDMixin, TimestampMixin, APIKey)
-- `app/api/routers/` — API endpoints (12 routers)
+- `app/api/routers/` — API endpoints (13 routers)
 - `app/services/connectors/` — Platform connectors (5: outlook, teams, slack, fathom, notion)
 - `app/services/agent/strands_orchestrator.py` — StrandsOrchestrator (main agent entry point)
 - `app/services/agent/strands_tools.py` — Strands `@tool`-decorated wrappers around `tools/`
