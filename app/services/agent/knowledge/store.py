@@ -5,10 +5,10 @@ agent logic. Domain agents (Phase 1+) call these functions as the building
 blocks for their tools; this module has no opinion on when/why to call them.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
@@ -348,3 +348,103 @@ async def mark_document_processed(
     db.add(record)
     await db.flush()
     return record
+
+
+# ---------------------------------------------------------------------------
+# Observability (Phase 7) — is the knowledge base actually getting more solid?
+# ---------------------------------------------------------------------------
+
+CONFIDENCE_BUCKETS = ("low", "medium", "high")
+
+
+async def get_knowledge_stats(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    merged_window_hours: int = 24,
+) -> Dict[str, Any]:
+    """Aggregate snapshot of the shared knowledge base's current solidity.
+
+    Every count is computed in SQL (GROUP BY / COUNT), never by loading every
+    Entity/EntityClaim/PendingQuestion row into Python — this is meant to run
+    cheaply on every dashboard/status check, not just once in a while.
+    """
+    confidence_bucket = case(
+        (Entity.confidence < 0.4, "low"),
+        (Entity.confidence < 0.7, "medium"),
+        else_="high",
+    )
+    confidence_rows = (
+        await db.execute(
+            select(confidence_bucket, func.count())
+            .where(Entity.user_id == user_id)
+            .group_by(confidence_bucket)
+        )
+    ).all()
+    entities_by_confidence = {bucket: 0 for bucket in CONFIDENCE_BUCKETS}
+    for bucket, count in confidence_rows:
+        entities_by_confidence[bucket] = count
+
+    type_rows = (
+        await db.execute(
+            select(Entity.entity_type, func.count())
+            .where(Entity.user_id == user_id)
+            .group_by(Entity.entity_type)
+        )
+    ).all()
+    entities_by_type = {entity_type.value: count for entity_type, count in type_rows}
+
+    source_rows = (
+        await db.execute(
+            select(EntityClaim.source, func.count())
+            .where(EntityClaim.user_id == user_id)
+            .group_by(EntityClaim.source)
+        )
+    ).all()
+    claims_by_source = {source: count for source, count in source_rows}
+
+    status_rows = (
+        await db.execute(
+            select(EntityClaim.status, func.count())
+            .where(EntityClaim.user_id == user_id)
+            .group_by(EntityClaim.status)
+        )
+    ).all()
+    claims_by_status = {claim_status.value: count for claim_status, count in status_rows}
+
+    target_rows = (
+        await db.execute(
+            select(PendingQuestion.target, func.count())
+            .where(
+                PendingQuestion.user_id == user_id,
+                PendingQuestion.status == QuestionStatus.OPEN,
+            )
+            .group_by(PendingQuestion.target)
+        )
+    ).all()
+    pending_questions_by_target = {target.value: count for target, count in target_rows}
+
+    since = datetime.now(timezone.utc) - timedelta(hours=merged_window_hours)
+    entities_merged_recent = (
+        await db.execute(
+            select(func.count())
+            .select_from(EntityLink)
+            .where(
+                EntityLink.user_id == user_id,
+                EntityLink.relation_type == "same_as",
+                EntityLink.created_at >= since,
+            )
+        )
+    ).scalar_one()
+
+    return {
+        "total_entities": sum(entities_by_confidence.values()),
+        "entities_by_confidence": entities_by_confidence,
+        "entities_by_type": entities_by_type,
+        "total_claims": sum(claims_by_source.values()),
+        "claims_by_source": claims_by_source,
+        "claims_by_status": claims_by_status,
+        "pending_questions_open": sum(pending_questions_by_target.values()),
+        "pending_questions_by_target": pending_questions_by_target,
+        "entities_merged_recent": entities_merged_recent,
+        "merged_window_hours": merged_window_hours,
+    }

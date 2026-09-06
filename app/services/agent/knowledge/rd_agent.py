@@ -106,12 +106,13 @@ async def run_rd_domain_agent(
     from app.services.agent.strands_model import build_openai_model
 
     mcp_client = _build_mcp_client()
-    mcp_client.start()
     try:
+        mcp_client.start()
         mcp_tools = mcp_client.list_tools_sync()
         loaded_names = {t.tool_name for t in mcp_tools}
         leaked = loaded_names & set(EXCLUDED_MCP_TOOLS)
-        assert not leaked, f"MCP write tool(s) leaked past tool_filters: {leaked}"
+        if leaked:
+            raise RuntimeError(f"MCP write tool(s) leaked past tool_filters: {leaked}")
 
         tools = [
             *mcp_tools,

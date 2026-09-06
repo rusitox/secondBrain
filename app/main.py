@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging
-from app.api.routers import health, users, commitments, integrations, ingestion, query, agent, briefing, identity, auth, sync, voice
+from app.api.routers import health, users, commitments, integrations, ingestion, query, agent, briefing, identity, auth, sync, voice, knowledge
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,7 @@ app.include_router(briefing.router)
 app.include_router(identity.router)
 app.include_router(sync.router)
 app.include_router(voice.router)
+app.include_router(knowledge.router)
 
 # Mount static files for voice UI (only if directory exists)
 _static_voice_dir = os.path.join(os.path.dirname(__file__), "..", "static", "voice")

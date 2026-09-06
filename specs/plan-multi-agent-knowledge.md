@@ -244,13 +244,24 @@ determinístico realmente reduce el volumen antes de gastar LLM.
 **Complejidad**: media — resuelta reutilizando la escalera de resolución existente; lo nuevo fue la
 integración con `MCPClient` y su ciclo de vida.
 
-### Phase 7 — Observabilidad de solidez
-- [ ] Vista/endpoint (estilo `get_sync_status`) con: entidades por bucket de confianza, claims por
-  fuente, `pending_questions` abiertas, entidades fusionadas en el último ciclo.
-- [ ] Es el chequeo concreto de que "la fuente de conocimiento se pone cada vez más sólida" — sin
-  esto la afirmación no es verificable.
+### Phase 7 — Observabilidad de solidez ✅
+- [x] `app/services/agent/knowledge/store.py`: `get_knowledge_stats(db, user_id,
+  merged_window_hours=24)` — todo agregado en SQL (`GROUP BY`/`COUNT`), nunca cargando cada fila a
+  Python. Devuelve: entidades por bucket de confianza (low `<0.4` / medium `<0.7` / high `>=0.7`),
+  entidades por tipo, claims por fuente, claims por status, `pending_questions` abiertas por target
+  (solo `status=OPEN`), y entidades fusionadas (`relation_type="same_as"`) creadas dentro de la
+  ventana (`merged_window_hours`, default 24h).
+- [x] `GET /knowledge/status` (`app/api/routers/knowledge.py` + `app/api/schemas/knowledge.py`,
+  registrado en `app/main.py`) — mismo patrón que `GET /sync/status`: `X-User-Id` /
+  `get_current_user_id`, `merged_window_hours` como query param opcional (`ge=1, le=720`).
+- [x] Es el chequeo concreto de que "la fuente de conocimiento se pone cada vez más sólida" — ahora
+  es una afirmación verificable, no una aspiración.
+- [x] Tests: `tests/integration/test_knowledge_stats.py` — cubre base vacía, buckets de confianza,
+  claims por fuente/status, filtrado de preguntas resueltas, ventana de merges recientes (incluye
+  caso `merged_window_hours=0` para confirmar que excluye hasta los links recién creados), scoping
+  por `user_id`, y el endpoint HTTP con y sin el query param.
 
-**Complejidad**: baja.
+**Complejidad**: baja — confirmado, sin sorpresas de diseño.
 
 ---
 

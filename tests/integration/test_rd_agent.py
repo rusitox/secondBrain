@@ -104,11 +104,28 @@ class TestRunRdDomainAgentExcludesCreateTasks:
 
         with patch("app.services.agent.knowledge.rd_agent.get_settings", return_value=settings), \
              patch("strands.tools.mcp.MCPClient", return_value=mock_client_instance):
-            with pytest.raises(AssertionError):
+            with pytest.raises(RuntimeError, match="create_tasks"):
                 await rd_agent.run_rd_domain_agent(db_session, user_id)
 
         # The client must still be stopped even though the run blew up.
         mock_client_instance.stop.assert_called_once()
+
+    async def test_mcp_start_failure_still_stops_the_client(self, db_session: AsyncSession) -> None:
+        """A dead/unreachable MCP server must not leak the client's resources —
+        stop() must run even when start() itself is what fails."""
+        user_id = await _make_persisted_user(db_session, email="rd5@example.com")
+        settings = _settings()
+
+        mock_client_instance = MagicMock()
+        mock_client_instance.start.side_effect = ConnectionError("MCP server unreachable")
+
+        with patch("app.services.agent.knowledge.rd_agent.get_settings", return_value=settings), \
+             patch("strands.tools.mcp.MCPClient", return_value=mock_client_instance):
+            with pytest.raises(ConnectionError):
+                await rd_agent.run_rd_domain_agent(db_session, user_id)
+
+        mock_client_instance.stop.assert_called_once()
+        mock_client_instance.list_tools_sync.assert_not_called()
 
 
 class TestRunRdDomainAgentUsesSharedResolutionLadder:
