@@ -158,10 +158,110 @@ def _create_sqlite_tables(connection) -> None:
         CREATE INDEX IF NOT EXISTS ix_conversation_turns_session_created
         ON conversation_turns(session_id, created_at)
     """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS entities (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            entity_type TEXT NOT NULL,
+            canonical_name TEXT NOT NULL,
+            aliases TEXT DEFAULT '[]',
+            attributes TEXT DEFAULT '{}',
+            embedding TEXT,
+            confidence REAL DEFAULT 0.5,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entities_user_id ON entities(user_id)
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS entity_claims (
+            id TEXT PRIMARY KEY,
+            entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            source_ref TEXT,
+            claim_text TEXT NOT NULL,
+            claim_type TEXT,
+            confidence REAL DEFAULT 0.5,
+            status TEXT DEFAULT 'active',
+            asserted_by_agent TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entity_claims_entity_id ON entity_claims(entity_id)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entity_claims_user_id ON entity_claims(user_id)
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS entity_links (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            entity_id_a TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            entity_id_b TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+            relation_type TEXT NOT NULL,
+            confidence REAL DEFAULT 0.5,
+            resolved_by TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entity_links_user_id ON entity_links(user_id)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entity_links_entity_id_a ON entity_links(entity_id_a)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_entity_links_entity_id_b ON entity_links(entity_id_b)
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS pending_questions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            raised_by_agent TEXT NOT NULL,
+            question_text TEXT NOT NULL,
+            context TEXT DEFAULT '{}',
+            target TEXT DEFAULT 'peer_agents',
+            candidate_answer TEXT,
+            candidate_confidence REAL,
+            status TEXT DEFAULT 'open',
+            resolved_by TEXT,
+            answer_text TEXT,
+            answered_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_pending_questions_user_status
+        ON pending_questions(user_id, status)
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS knowledge_processed_documents (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_knowledge_processed_documents_user_source
+        ON knowledge_processed_documents(user_id, source)
+    """))
 
 
 def _drop_sqlite_tables(connection) -> None:
-    for table in ["conversation_turns", "api_keys", "commitments", "documents", "integrations", "identities", "users"]:
+    for table in [
+        "knowledge_processed_documents",
+        "pending_questions", "entity_links", "entity_claims", "entities",
+        "conversation_turns", "api_keys", "commitments", "documents", "integrations", "identities", "users",
+    ]:
         connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
 
 

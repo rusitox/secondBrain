@@ -1,5 +1,14 @@
 # Plan: Multi-Agent Architecture
 
+> **⚠️ SUPERSEDED — not the current architecture.** This plan's `delegate_to_agent`/
+> `MultiAgentOrchestrator` design (keyword-routed sub-agents invoked via `asyncio.gather()`)
+> was replaced before being built out this way. The request-time agent is now
+> `StrandsOrchestrator` — a single Strands `Agent` per request (`specs/plan-strands-migration.md`).
+> Separately, a background multi-agent system does exist, but with a different design entirely
+> (a shared entity/claim knowledge graph reconciled via peer-agent negotiation, not query-time
+> sub-agent delegation) — see `specs/plan-multi-agent-knowledge.md`. Kept here only as a historical
+> record of the design considered at the time.
+
 **Goal**: Redesign AgentOrchestrator from a single agent with 6 tools into a coordinated
 team of specialized agents, each with domain expertise, sharing DB and user context.
 

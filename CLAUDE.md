@@ -41,8 +41,8 @@ docker compose up -d                      # Start local DB + server
 FastAPI backend with async SQLAlchemy, organized in layers:
 
 - **`app/core/`** — Config (pydantic-settings), database engine/session, security (Fernet encryption + API key auth), logging
-- **`app/models/`** — SQLAlchemy models: User, Identity, Integration, Document (with pgvector), Commitment, APIKey
-- **`app/api/routers/`** — REST endpoints: health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth
+- **`app/models/`** — SQLAlchemy models: User, Identity, Integration, Document (with pgvector), Commitment, APIKey, plus the knowledge-graph models (Entity, EntityClaim, EntityLink, PendingQuestion, ProcessedDocument)
+- **`app/api/routers/`** — REST endpoints: health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth, voice, knowledge
 - **`app/api/schemas/`** — Pydantic request/response models
 - **`app/services/`** — Business logic:
   - `connectors/` — Platform connectors: MSGraph (Outlook), Teams, Slack, Fathom, Notion
@@ -50,7 +50,8 @@ FastAPI backend with async SQLAlchemy, organized in layers:
   - `retrieval/` — Semantic search with metadata filters
   - `llm/` — Claude client + prompt templates
   - `commitments/` — AI-powered commitment detection
-  - `agent/` — `StrandsOrchestrator` (AWS Strands Agents): builds a single stateless Strands `Agent` per request with all tools attached, runs Strands' native multi-turn tool-use loop, and returns the synthesized answer directly — no manual tool-use loop or sub-agent fan-out. Tools are `@tool`-decorated closures from `strands_tools.py` wrapping the implementations in `tools/`.
+  - `agent/` — `StrandsOrchestrator` (AWS Strands Agents): builds a single stateless Strands `Agent` per request with all tools attached, runs Strands' native multi-turn tool-use loop, and returns the synthesized answer directly — no manual tool-use loop or sub-agent fan-out. Tools are `@tool`-decorated closures from `strands_tools.py` wrapping the implementations in `tools/`, plus knowledge-graph tools (`query_knowledge`, `get_pending_questions`, `confirm_pending_answer`) backed by `agent/knowledge/`.
+    - `knowledge/` — Multi-agent knowledge system (see `specs/plan-multi-agent-knowledge.md`): one Strands domain agent per data source (Slack/Outlook/Teams/Fathom/Notion, plus I+D via its own MCP server) proposes entities/claims into a shared graph. A resolution ladder — `consult_knowledge_base` → `ask_peer_agents` (scoped Strands `Swarm` negotiation) → `escalate_or_validate` (human validation) — means agents only ask the human as a last resort, carrying a candidate answer when they have one. `store.py` (CRUD + `get_knowledge_stats` observability), `resolution.py` (find-or-create-entity, consult), `reconciliation.py` (cross-source duplicate detection + `same_as` merging via embedding similarity), `swarm_negotiation.py` (shared Swarm core), `domain_agent.py` (Document-table-backed agents + shared resolution-ladder tools), `rd_agent.py` (I+D platform agent via MCP, read-only), `scheduler.py` (`KnowledgeAgentScheduler` — opt-in periodic per-user cycle: every source, then reconciliation; not tied to `is_production` since every cycle costs real LLM calls).
   - `briefing/` — Daily briefing generator + scheduler
   - `sync/` — Server-side periodic sync scheduler (APScheduler)
   - `notion/` — Notion publisher, bidirectional sync, weekly digest, block parsing, workspace config
@@ -104,15 +105,16 @@ Terminal-based chat interface consuming the REST API:
 
 ## Key Files
 
-- `app/main.py` — Entry point, router registration, lifespan (starts sync scheduler)
+- `app/main.py` — Entry point, router registration, lifespan (starts sync scheduler, and the knowledge agent scheduler if `enable_knowledge_agents`)
 - `app/core/config.py` — Settings (pydantic-settings, .env)
 - `app/core/database.py` — Async engine, session factory
 - `app/core/security.py` — API key authentication (Bearer token + bcrypt verification)
 - `app/models/` — SQLAlchemy models (Base, UUIDMixin, TimestampMixin, APIKey)
-- `app/api/routers/` — API endpoints (11 routers)
+- `app/api/routers/` — API endpoints (13 routers)
 - `app/services/connectors/` — Platform connectors (5: outlook, teams, slack, fathom, notion)
 - `app/services/agent/strands_orchestrator.py` — StrandsOrchestrator (main agent entry point)
 - `app/services/agent/strands_tools.py` — Strands `@tool`-decorated wrappers around `tools/`
+- `app/services/agent/knowledge/` — Multi-agent knowledge system: `store.py` (CRUD + observability), `domain_agent.py` (per-source Document agents), `rd_agent.py` (I+D platform via MCP), `resolution.py`, `reconciliation.py`, `swarm_negotiation.py`, `scheduler.py` (opt-in periodic knowledge cycles)
 - `app/services/ingestion/pipeline.py` — Central data flow
 - `app/services/retrieval/search.py` — Hybrid vector search
 - `app/services/sync/scheduler.py` — APScheduler-based periodic sync

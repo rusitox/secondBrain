@@ -1,7 +1,10 @@
 # Plan: Proactive Welcome on CLI Startup
 
 **Date**: 2026-09-02
-**Status**: Draft
+**Status**: Implemented (`cli/chat.py`'s `_show_welcome`/`_show_static_welcome`). References below to
+`AgentOrchestrator`/`tool_definitions.py` are historical — the agent loop now runs through
+`StrandsOrchestrator` (`specs/plan-strands-migration.md`); the welcome flow itself is unchanged in
+behavior, just built on the new orchestrator.
 
 ---
 

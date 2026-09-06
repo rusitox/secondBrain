@@ -8,7 +8,8 @@
 - **Database:** PostgreSQL 16+ with pgvector (Supabase-compatible)
 - **Embeddings:** OpenAI (`text-embedding-3-small`, 1536 dims)
 - **LLM:** Claude (Anthropic API) for reasoning, commitment detection, briefings, digests
-- **Agent:** Custom multi-agent orchestrator (Anthropic tool-use API, asyncio.gather parallelism)
+- **Agent:** AWS Strands Agents — `StrandsOrchestrator` builds one Strands `Agent` per request with all tools attached and runs Strands' native multi-turn tool-use loop
+- **Knowledge graph:** A separate multi-agent system — one Strands domain agent per data source, negotiating via scoped `Swarm`s — builds and reconciles a shared entity/claim graph in the background
 - **CLI:** Rich + prompt_toolkit
 - **Security:** Fernet encryption for stored tokens
 
@@ -44,26 +45,54 @@ Modular connector architecture to ingest text from multiple sources:
 
 ### 3. The Agentic Core
 
-Multi-agent orchestrator (`MultiAgentOrchestrator`) with parallel domain specialists:
+`StrandsOrchestrator` (`app/services/agent/strands_orchestrator.py`) builds a single stateless
+Strands `Agent` per request with every tool attached, and runs Strands' native multi-turn
+tool-use loop directly — no manual loop, no keyword-routed sub-agent fan-out. Earlier iterations
+of this project used a custom multi-agent orchestrator with domain-specific sub-agents invoked via
+`asyncio.gather()`; that design was replaced by the Strands migration (`specs/plan-strands-migration.md`).
 
-| Sub-agent | Tools | Responsibility |
-|---|---|---|
-| `SlackAgent` | search_memory(slack) | Slack channels and DMs |
-| `OutlookAgent` | search_memory(outlook), get_calendar | Emails + calendar |
-| `TeamsAgent` | search_memory(teams) | Microsoft Teams chats |
-| `FathomAgent` | search_memory(fathom) | Meeting transcripts (with speaker attribution) |
-| `NotionAgent` | search_memory(notion) | Pages and database items |
-| `CrossKnowledgeAgent` | search_memory(all), search_learnings, save_learning | Cross-platform patterns and long-term memory |
-| `TasksAgent` | list_tasks, get_calendar, search_learnings, save_learning | Pending commitments with ownership verification |
+**Tools attached to the request-time agent** (`strands_tools.py`, wrapping implementations in `tools/`):
+- `memory_retriever` — vector search across all ingested sources
+- `task_manager` — reads/writes to `commitments`
+- `calendar_sync` — checks upcoming meetings
+- `style_analyzer` — retrieves the user's identity for tone/style matching
+- `save_learning` / `search_learnings` — long-term cross-session memory (`memories` table)
+- `web_search` / `http_request` — opt-in, only registered when configured
+- `query_knowledge` / `get_pending_questions` / `confirm_pending_answer` — read/write access to
+  the knowledge graph built by the domain agents below
+- `SequentialToolExecutor` forces one tool call at a time within a turn, since every tool closes
+  over the same `AsyncSession`
 
 **Query pipeline:**
-1. Keyword routing selects relevant domain agents (always includes CrossKnowledge + Tasks)
-2. Sub-agents run concurrently via `asyncio.gather()`, each with an isolated DB session
-3. Sub-agent outputs are synthesized into a single response via a final LLM call
-4. Conversation history persisted to `conversation_turns` table for multi-turn sessions
-5. Long-term memory (cross-session insights) stored in `memories` table via `save_learning`
+1. `StrandsOrchestrator` builds the Agent and hands it the question; Strands drives tool calls and
+   multi-turn reasoning itself
+2. Conversation history persisted to `conversation_turns` table for multi-turn sessions
+3. Long-term memory (cross-session insights) stored in `memories` table via `save_learning`
 
-**Ownership policy:** TasksAgent never assumes task ownership — always asks for explicit user confirmation; confirmations saved as high-importance learnings.
+### 3.1 The Multi-Agent Knowledge System (background, separate from the request-time agent)
+
+A second, independent multi-agent system builds a shared entity/claim graph over time —
+see `specs/plan-multi-agent-knowledge.md` for the full design. One Strands domain agent per
+data source proposes entities and claims into the graph; agents resolve doubts among themselves
+before ever asking the human:
+
+| Component | Responsibility |
+|---|---|
+| `domain_agent.py` | Per-source (Slack/Outlook/Teams/Fathom/Notion) agent reading unprocessed `documents` |
+| `rd_agent.py` | I+D platform agent — reads live from its own MCP server (no `documents` row), read-only (its one write tool is excluded) |
+| `resolution.py` | `find_or_create_entity` (case-insensitive match), `consult_knowledge_base` |
+| `swarm_negotiation.py` | Shared scoped-`Swarm` core used both proactively and by reconciliation |
+| `reconciliation.py` | Cross-source duplicate detection (embedding similarity + deterministic email match), `same_as` merging, confidence recomputation |
+| `store.py` | CRUD for entities/claims/links/pending_questions + `get_knowledge_stats` observability |
+| `scheduler.py` | `KnowledgeAgentScheduler` — opt-in (`enable_knowledge_agents`) periodic per-user cycle: every Document-backed source, then the I+D agent if configured, then reconciliation. Not tied to `is_production` like the ingestion sync scheduler — every cycle makes real LLM calls |
+
+**Resolution ladder** (never asks the human cold): `consult_knowledge_base` →
+`ask_peer_agents` (a scoped `Swarm` with only the peer sources that already hold a claim about
+the entity) → `escalate_or_validate` (raises a `pending_question` for the human, carrying a
+candidate answer/confidence if the earlier steps produced one).
+
+**Ownership policy:** claims are never overwritten in place — a contradiction becomes a second,
+`disputed` claim, so both sides of a disagreement remain available to reconciliation.
 
 ### 4. Proactive Features
 
@@ -88,14 +117,14 @@ Bidirectional integration with Notion workspaces:
 Sources (Outlook/Teams/Slack/Fathom/Notion)
     ↓
 FastAPI Ingestion Pipeline → Clean → Chunk → Embed → PostgreSQL+pgvector
-    ↓
-Commitment Detection (Claude) → Commitments table ←→ Notion Sync
-    ↓
-CLI Chat ←→ REST API ←→ MultiAgentOrchestrator
-                            ↓ asyncio.gather()
-                Slack / Outlook / Teams / Fathom / Notion / CrossKnowledge / Tasks agents
-                            ↓ synthesis
-                        Final answer (Claude)
+    ↓                                                        ↓ (background, async)
+Commitment Detection (Claude) → Commitments table ←→   Domain agents (Strands) per source
+    ↓                                Notion Sync            ↓ resolution ladder / Swarm negotiation
+CLI Chat ←→ REST API ←→ StrandsOrchestrator            Entities / Claims / Links / PendingQuestions
+                            ↓ Strands tool-use loop          ↓
+                query_knowledge / get_pending_questions ←────┘
+                            ↓
+                        Final answer
     ↓
 Daily Briefing / Weekly Digest / Meeting Prep → Notion
 ```
@@ -113,7 +142,8 @@ Daily Briefing / Weekly Digest / Meeting Prep → Notion
 
 ## Database Schema
 
-5 core models with UUID primary keys and timestamps:
+Core models, all with UUID primary keys and timestamps — see `specs/database-schema.md` for full
+field lists including the knowledge-graph tables:
 
 | Model | Key Fields | Notes |
 |---|---|---|
@@ -122,3 +152,7 @@ Daily Briefing / Weekly Digest / Meeting Prep → Notion
 | Integration | platform (enum), encrypted access/refresh tokens | Fernet-encrypted tokens |
 | Document | content, embedding (vector 1536), source, source_id | pgvector for semantic search |
 | Commitment | commitment_text, owner, due_date, priority, status, notion_page_id | Bidirectional Notion sync |
+| Entity | entity_type, canonical_name, aliases, attributes, embedding, confidence | Knowledge-graph node |
+| EntityClaim | entity_id, source, claim_text, confidence, status | One source's assertion about an Entity, never overwritten in place |
+| EntityLink | entity_id_a, entity_id_b, relation_type, resolved_by | `same_as` is the reconciliation merge relation |
+| PendingQuestion | raised_by_agent, question_text, target, candidate_answer, status | The resolution-ladder state machine |

@@ -1,5 +1,11 @@
 # Plan: Migración del orquestador multi-agente a AWS Strands Agents
 
+**Status**: Implemented y mergeado a `main`. `StrandsOrchestrator` (`app/services/agent/strands_orchestrator.py`)
+es el orquestador vigente; `agent.py`, `orchestrator.py` y `tool_definitions.py` fueron eliminados
+en el cleanup de Phase 6. Ver `CLAUDE.md` / `specs/technical-architecture.md` para la descripción
+actualizada, y `specs/plan-multi-agent-knowledge.md` para el sistema multi-agente de conocimiento
+construido después, encima de este orquestador.
+
 ## Goal
 
 Reemplazar el orquestador multi-agente custom de `app/services/agent/` por AWS Strands Agents,

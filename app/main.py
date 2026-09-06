@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging
-from app.api.routers import health, users, commitments, integrations, ingestion, query, agent, briefing, identity, auth, sync, voice
+from app.api.routers import health, users, commitments, integrations, ingestion, query, agent, briefing, identity, auth, sync, voice, knowledge
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +36,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else:
             logger.warning("Sync scheduler requested but APScheduler not installed")
 
+    # Start knowledge agent scheduler if enabled — explicit opt-in only, NOT tied to
+    # is_production like the sync scheduler above (every cycle makes real LLM calls).
+    knowledge_scheduler = None
+    if settings.enable_knowledge_agents:
+        from app.services.agent.knowledge.scheduler import KnowledgeAgentScheduler
+        knowledge_scheduler = KnowledgeAgentScheduler()
+        if knowledge_scheduler.is_available:
+            await knowledge_scheduler.start()
+            app.state.knowledge_scheduler = knowledge_scheduler  # type: ignore[arg-type]
+            logger.info("Knowledge agent scheduler started")
+        else:
+            logger.warning("Knowledge agent scheduler requested but APScheduler not installed")
+
     yield
 
     # Shutdown sync scheduler
     if sync_scheduler and sync_scheduler.is_running:
         await sync_scheduler.shutdown()
+
+    # Shutdown knowledge agent scheduler
+    if knowledge_scheduler and knowledge_scheduler.is_running:
+        await knowledge_scheduler.shutdown()
 
     logger.info("Shutting down %s", settings.app_name)
 
@@ -107,6 +124,7 @@ app.include_router(briefing.router)
 app.include_router(identity.router)
 app.include_router(sync.router)
 app.include_router(voice.router)
+app.include_router(knowledge.router)
 
 # Mount static files for voice UI (only if directory exists)
 _static_voice_dir = os.path.join(os.path.dirname(__file__), "..", "static", "voice")

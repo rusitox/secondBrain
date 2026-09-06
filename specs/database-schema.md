@@ -54,6 +54,41 @@ Relational table to track explicit promises extracted from interactions.
 - `priority`: Integer (1-5, default 3)
 - `created_at`, `updated_at`: Timestamp with timezone
 
+### 6. `entities` (Knowledge Graph Node)
+Part of the multi-agent knowledge system (`specs/plan-multi-agent-knowledge.md`) — separate from
+`documents`. Domain agents propose these; `confidence` is recalculated during reconciliation.
+- `id`: UUID (PK), `user_id`: UUID (FK -> users.id)
+- `entity_type`: Enum ('person', 'project', 'initiative', 'topic', 'organization')
+- `canonical_name`: Text, `aliases`: JSONB (list), `attributes`: JSONB (free-form facts)
+- `embedding`: Vector(1536), nullable — cross-source duplicate detection
+- `confidence`: Float (default 0.5) — the entity's "solidity" score
+
+### 7. `entity_claims` (Provenance)
+- `id`: UUID (PK), `entity_id`: UUID (FK -> entities.id), `user_id`: UUID (FK -> users.id)
+- `source`: Text (e.g. 'slack', 'rd'), `source_ref`: Text (nullable)
+- `claim_text`: Text, `claim_type`: Text (nullable), `confidence`: Float (default 0.5)
+- `status`: Enum ('active', 'superseded', 'disputed', 'confirmed_by_user')
+- `asserted_by_agent`: Text — a contradiction becomes a new `disputed` claim, never a silent overwrite
+
+### 8. `entity_links` (Relationships & Merges)
+- `id`: UUID (PK), `user_id`: UUID (FK -> users.id)
+- `entity_id_a`, `entity_id_b`: UUID (FK -> entities.id)
+- `relation_type`: Text (free-text; 'same_as' = reconciliation merge), `confidence`: Float (default 0.5)
+- `resolved_by`: Enum ('deterministic', 'swarm', 'user')
+
+### 9. `pending_questions` (Resolution-Ladder State Machine)
+- `id`: UUID (PK), `user_id`: UUID (FK -> users.id)
+- `raised_by_agent`: Text, `question_text`: Text, `context`: JSONB
+- `target`: Enum ('peer_agents', 'human') — starts at peer_agents, flips to human only if unresolved
+- `candidate_answer`: Text (nullable), `candidate_confidence`: Float (nullable)
+- `status`: Enum ('open', 'answered', 'dismissed'), `resolved_by`: Enum ('knowledge_base', 'peer_swarm', 'human')
+- `answer_text`: Text (nullable), `answered_at`: Timestamp (nullable)
+
+### 10. `knowledge_processed_documents` (Watermark)
+- `id`: UUID (PK), `user_id`: UUID (FK -> users.id)
+- `document_id`: UUID (FK -> documents.id), unique
+- `source`: Text — tracks which documents a domain agent already extracted
+
 ---
 
 ## 🔍 Key Queries
