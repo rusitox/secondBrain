@@ -197,14 +197,15 @@ Daily Briefing / Weekly Digest / Meeting Prep → Notion
 |-------|------|-------------|
 | Core | `app/core/` | Config, database, security, logging |
 | Models | `app/models/` | User, Identity, Integration, Document, Commitment, APIKey |
-| API | `app/api/routers/` | 11 REST routers (health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth) |
+| API | `app/api/routers/` | 12 REST routers (health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth, voice, knowledge) |
 | Auth | `app/core/security.py` | API key authentication (Bearer token, bcrypt) |
 | Connectors | `app/services/connectors/` | Outlook, Teams, Slack, Fathom, Notion |
 | Ingestion | `app/services/ingestion/` | Cleaner, chunker, embedder, pipeline |
 | Retrieval | `app/services/retrieval/` | Semantic search with metadata filters |
 | LLM | `app/services/llm/` | Claude client + prompt templates |
 | Commitments | `app/services/commitments/` | AI-powered commitment detection |
-| Agent | `app/services/agent/` | LangChain agent with tools |
+| Agent | `app/services/agent/` | Strands Agent (AWS Strands Agents framework) with tool-use loop |
+| Knowledge | `app/services/agent/knowledge/` | Multi-agent knowledge graph: one domain agent per data source proposes entities/claims, resolving doubts via peer-agent negotiation before ever asking the human |
 | Briefing | `app/services/briefing/` | Daily briefing generator + scheduler |
 | Sync | `app/services/sync/` | Server-side periodic sync (APScheduler) |
 | Notion | `app/services/notion/` | Publisher, sync, digest, blocks, config |
@@ -255,7 +256,7 @@ secondBrain/
 │   ├── core/               # Config, database, security (API key auth)
 │   ├── models/             # SQLAlchemy models (User, APIKey, etc.)
 │   ├── api/
-│   │   ├── routers/        # REST endpoints (11 routers)
+│   │   ├── routers/        # REST endpoints (12 routers)
 │   │   └── schemas/        # Pydantic models
 │   └── services/
 │       ├── connectors/     # Platform connectors (5)
@@ -263,7 +264,7 @@ secondBrain/
 │       ├── retrieval/      # Semantic search
 │       ├── llm/            # Claude client
 │       ├── commitments/    # Commitment detection
-│       ├── agent/          # LangChain agent
+│       ├── agent/          # Strands agent + multi-agent knowledge graph
 │       ├── briefing/       # Daily briefings
 │       ├── sync/           # Server-side periodic sync
 │       └── notion/         # Notion publisher, sync, digest

@@ -1,5 +1,8 @@
 # Plan: Sistema multi-agente de conocimiento unificado
 
+**Status**: Todas las fases (0-8) implementadas en `feat/multi-agent-knowledge`, con code review y
+fixes aplicados en los checkpoints marcados. Pendiente: merge a `main`.
+
 ## Goal
 
 Construir, sobre el `StrandsOrchestrator` ya en producción, un sistema de agentes de dominio (uno
@@ -132,27 +135,29 @@ después de cada ciclo de sync por fuente. El `StrandsOrchestrator` del chat sol
 
 ## Fases
 
-### Phase 0 — Esquema base
-- [ ] Migración Alembic: `entities`, `entity_claims`, `entity_links`, `pending_questions`.
-- [ ] Modelos SQLAlchemy en `app/models/` (siguiendo `UUIDMixin`/`TimestampMixin` existentes).
-- [ ] Sin lógica de agentes todavía — solo esquema + CRUD helpers + tests de modelo.
+### Phase 0 — Esquema base ✅
+- [x] Migración Alembic: `entities`, `entity_claims`, `entity_links`, `pending_questions`
+  (`alembic/versions/011_add_knowledge_tables.py`, `012_add_processed_documents.py`).
+- [x] Modelos SQLAlchemy en `app/models/` (siguiendo `UUIDMixin`/`TimestampMixin` existentes).
+- [x] Sin lógica de agentes todavía — solo esquema + CRUD helpers (`store.py`) + tests de modelo.
 
 **Complejidad**: baja. Prerequisito de todo lo demás.
 
-### Phase 1 — Agente de dominio: implementación de referencia (Slack)
-- [ ] `app/services/agent/knowledge/domain_agent.py`: factory `make_domain_agent(source, ...)` —
+### Phase 1 — Agente de dominio: implementación de referencia (Slack) ✅
+- [x] `app/services/agent/knowledge/domain_agent.py`: factory `make_domain_agent(source, ...)` —
   un Strands `Agent` cuyo mandato es leer `Document` rows nuevos de esa fuente, proponer
   entidades/claims a la Capa 3, autoevaluar su confianza, y recorrer la escalera de resolución
   (consultar conocimiento existente → consultar pares vía swarm si hay uno plausible → validar con
   el humano con una candidata → escalada en blanco) cuando algo no le cierra, sin necesidad de que
   sea un conflicto cruzado — puede dudar de algo puramente dentro de su propia fuente.
-- [ ] Tools propios: `propose_entity`, `propose_claim`, `consult_knowledge_base`,
-  `ask_peer_agents` (dispara el swarm acotado), `escalate_or_validate`, `get_unprocessed_documents`.
-- [ ] Implementación completa + tests para Slack como referencia.
-- [ ] Disparo manual (CLI o endpoint) para poder probarlo antes de engancharlo al scheduler.
+- [x] Tools propios (nombres finales, distintos del borrador inicial): `find_or_create_entity`,
+  `add_claim`, `consult_knowledge_base`, `ask_peer_agents` (dispara el swarm acotado),
+  `escalate_or_validate`, `get_unprocessed_documents`, `mark_document_processed`.
+- [x] Implementación completa + tests para Slack como referencia.
+- [x] Disparo manual: `scripts/run_domain_agent.py`.
 
-**Complejidad**: alta — es el patrón que todo lo demás reutiliza. Vale la pena un code review
-completo acá antes de replicar.
+**Complejidad**: alta — es el patrón que todo lo demás reutiliza. Code review completo hecho acá
+antes de replicar.
 
 ### Phase 2 — Réplica a Outlook, Teams, Fathom ✅
 - [x] Reusar la factory de Phase 1; ajustar el prompt de extracción por fuente (ej: Outlook tiene
@@ -262,6 +267,35 @@ integración con `MCPClient` y su ciclo de vida.
   por `user_id`, y el endpoint HTTP con y sin el query param.
 
 **Complejidad**: baja — confirmado, sin sorpresas de diseño.
+
+### Phase 8 — Scheduler: backfill automático + ciclos periódicos ✅
+- [x] Motivación: hasta esta fase, `run_domain_agent`/`run_rd_domain_agent`/`run_reconciliation`
+  solo se disparaban a mano vía `scripts/`. Como `knowledge_processed_documents` arranca vacía, la
+  primera corrida de cada agente encuentra **todo el historial ya ingerido** como "no procesado" —
+  no hace falta una migración de datos separada — pero sin nada que dispare corridas periódicas,
+  ese backfill nunca pasaba de una corrida manual de `batch_size` documentos.
+- [x] `app/services/agent/knowledge/scheduler.py`: `KnowledgeAgentScheduler` — mismo patrón que
+  `SyncScheduler` (APScheduler opcional, un job por usuario). Un job por `user_id` con al menos una
+  integración activa, con intervalo `knowledge_agent_interval_minutes` (default 60m, mínimo 5m
+  forzado). Cada ciclo (`_run_cycle`): todas las fuentes respaldadas por `documents`
+  (`run_domain_agent` con `knowledge_agent_batch_size`, default 20), después el agente de I+D si
+  `id_brain_mcp_url` está configurado, después `run_reconciliation` — cada paso con su propia
+  `AsyncSession` y su propio commit, así que una fuente fallando no bloquea ni revierte las demás.
+- [x] Backfill de un backlog grande ocurre en varios ciclos (una porción de `batch_size` por fuente
+  por ciclo), no en una ráfaga — acota costo/latencia por ciclo a cambio de un backfill inicial más
+  lento para cuentas con mucho historial.
+- [x] **Explícitamente opt-in** (`enable_knowledge_agents`, default `False`) — a diferencia de
+  `SyncScheduler`, NO se activa solo por `is_production`: cada ciclo hace llamadas reales a LLMs
+  encima del costo de ingesta ya existente.
+- [x] `app/main.py`: arranque/apagado del scheduler en el lifespan, igual que `sync_scheduler`.
+- [x] `GET /knowledge/status` ahora también expone `scheduler_active` y `next_scheduled_run` (mismo
+  patrón que `GET /sync/status`).
+- [x] Tests: `tests/unit/test_knowledge_scheduler.py` — ciclo de vida, intervalo mínimo, carga de
+  jobs por usuario, corrida completa del ciclo (incluye skip de `rd` sin configurar, y que una
+  fuente fallando con `RuntimeError` no bloquea las demás ni la reconciliación).
+
+**Complejidad**: media — reutiliza `SyncScheduler` como plantilla; lo nuevo fue encadenar múltiples
+pasos con aislamiento de fallas por paso en vez de por integración.
 
 ---
 

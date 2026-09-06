@@ -13,11 +13,17 @@ User query -> Embed query (OpenAI) -> pgvector cosine similarity search with HNS
 Context string + User query + User identity (persona, tone, heuristics) -> Claude -> Grounded response with source traceability. Anti-hallucination: system prompt instructs Claude to answer only based on retrieved context.
 
 ## 5. The Agent Loop (Orchestration)
-LangChain agent with Claude + 4 tools:
+`StrandsOrchestrator` builds a single stateless AWS Strands `Agent` per request and runs Strands'
+native multi-turn tool-use loop — no manual loop, no sub-agent fan-out. Core tools:
 - **Memory Retriever**: Searches vector DB for relevant context
 - **Task Manager**: Reads/writes to commitments table
 - **Calendar Sync**: Checks upcoming meetings
 - **Style Analyzer**: Retrieves user's identity for tone/style matching
+- **Web Search / HTTP Request**: opt-in, only registered when configured (Brave API key /
+  allowed domains)
+- **Knowledge-graph tools**: `query_knowledge`, `get_pending_questions`, `confirm_pending_answer`
+  — the orchestrator's read/write connection into the knowledge graph built by domain agents
+  (see loop 7 below)
 
 The agent decides which tools to invoke based on the query, enabling complex multi-step reasoning.
 
@@ -27,3 +33,30 @@ Scheduler triggers daily at user's configured time:
 2. Query pending/overdue commitments
 3. Cross-reference participants with open commitments (contextual alerts)
 4. Generate structured briefing via Claude
+
+## 7. The Knowledge Graph Loop (Background, Multi-Agent)
+Independent of the request/response agent loop above — see `specs/plan-multi-agent-knowledge.md`.
+Driven by `KnowledgeAgentScheduler` (opt-in, `enable_knowledge_agents`): one periodic cycle per
+user with an active integration, at `knowledge_agent_interval_minutes` (default 60m). Since the
+"already processed" tracking table starts empty, the first cycle for any user finds their entire
+pre-existing document history as unprocessed — backfill and ongoing processing are the same
+mechanism, just spread across cycles rather than done in one burst. Each cycle:
+One Strands domain agent per data source (Slack/Outlook/Teams/Fathom/Notion from the `documents`
+table, plus an I+D-platform agent reading live from its own MCP server) runs a batch pass:
+1. Read unprocessed source data (`get_unprocessed_documents`, or live MCP tools for I+D).
+2. Identify entities (people, projects, initiatives, topics) and find-or-create them in the
+   shared graph (case-insensitive name/alias match, or embedding similarity for cross-source
+   candidates).
+3. Record claims with real confidence, never overwriting a prior claim — a contradiction becomes
+   a second, `disputed` claim.
+4. **Resolution ladder** for anything unclear — never asks the human cold:
+   `consult_knowledge_base` → `ask_peer_agents` (a scoped Strands `Swarm` negotiation with only
+   the peer sources that already hold a claim about the entity) → `escalate_or_validate` (raises
+   a `pending_question` for the human, carrying a candidate answer/confidence if steps 1-2
+   produced one).
+5. A separate reconciliation pass periodically finds cross-source duplicate entities (embedding
+   similarity, or a deterministic email match) and merges them via a `same_as` `entity_link`,
+   negotiating disagreements the same way (peer `Swarm`) before falling back to the human.
+6. `GET /knowledge/status` exposes aggregate solidity metrics (entities by confidence bucket,
+   claims by source, open pending questions, recent merges) so "the knowledge base gets more
+   solid over time" is a verifiable claim, not an aspiration.

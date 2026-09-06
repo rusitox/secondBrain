@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     id_brain_mcp_url: str = ""
     id_brain_mcp_api_key: str = ""
 
+    # Knowledge agent scheduler (Phase 8) — opt-in, NOT tied to is_production like the sync
+    # scheduler: every cycle makes real LLM calls on top of whatever ingestion already costs.
+    enable_knowledge_agents: bool = False
+    knowledge_agent_interval_minutes: int = 60
+    knowledge_agent_batch_size: int = 20
+
     @field_validator("fernet_key")
     @classmethod
     def validate_fernet_key(cls, v: str) -> str:

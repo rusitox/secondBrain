@@ -4,7 +4,7 @@
 
 Definir la estrategia de testing para garantizar la calidad del sistema. Cubre unit tests, integration tests, y E2E tests alineados a todas las features implementadas.
 
-**Estado actual:** 785 tests, todos passing.
+**Estado actual:** 1051 tests, todos passing (salvo fallos preexistentes conocidos y no relacionados en `test_teams_connector.py`).
 
 ---
 
@@ -59,10 +59,40 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
 - [x] Ranking de resultados por similaridad
 - [x] Manejo de query sin resultados relevantes
 
-#### Services — Agent
-- [x] Agent tool registration and execution
+#### Services — Agent (Strands)
+- [x] Agent tool registration and execution (`test_agent.py` — tools only; the old
+  `AgentOrchestrator`/`orchestrator.py` were removed in the Strands migration)
 - [x] Memory retriever tool
 - [x] Agent query endpoint validation
+- [x] `StrandsOrchestrator`: model construction (reasoning-model `reasoning_effort` guard),
+  conversation history round-tripping, `ConversationTurn` persistence (`test_strands_orchestrator.py`, `test_strands_model.py`)
+- [x] Strands `@tool` wrappers: memory retriever, task manager, calendar sync, style analyzer,
+  `save_learning`/`search_learnings`, opt-in `web_search`/`http_request`, knowledge-graph tools
+  (`test_strands_tools.py`, `test_learning_tools.py`)
+- [x] `SequentialToolExecutor` enforced (shared `AsyncSession` across all tools in a turn)
+
+#### Services — Multi-Agent Knowledge System
+- [x] `store.py`: entity/claim/link/pending_question CRUD, user-id scoping, `get_knowledge_stats`
+  observability aggregation (`test_knowledge_store.py`, `test_knowledge_stats.py`)
+- [x] `domain_agent.py`: per-source (Slack/Outlook/Teams/Fathom/Notion) agent tool set, shared
+  resolution-ladder extraction (`make_resolution_ladder_tools`), `REGISTERED_SOURCES` derivation
+  (`test_domain_agent.py`)
+- [x] `rd_agent.py`: I+D-platform agent via MCP — `create_tasks` write-tool exclusion (`tool_filters`
+  + defensive re-check), MCP client lifecycle (`start`/`stop`, including on connection failure),
+  no real network calls (`MCPClient` mocked) (`test_rd_agent.py`)
+- [x] `resolution.py`: find-or-create-entity (case-insensitive match, attribute merging), consult
+  knowledge base (`test_reconciliation.py` covers the shared helpers)
+- [x] `reconciliation.py`: deterministic email-based auto-link, embedding-similarity candidate
+  detection, `same_as` merge negotiation, confidence recomputation, `entity_type`-scoped auto-link
+  (`test_reconciliation.py`, unit + integration)
+- [x] `swarm_negotiation.py`: shared scoped-`Swarm` core (`test_swarm_negotiation.py`)
+- [x] Knowledge tools exposed to the request-time agent: `query_knowledge`, `get_pending_questions`,
+  `confirm_pending_answer` — including idempotency (confirming twice doesn't double-write)
+  (`test_strands_tools_knowledge.py`)
+- [x] `GET /knowledge/status` observability endpoint, incl. `scheduler_active`/`next_scheduled_run` (`test_knowledge_stats.py`)
+- [x] `scheduler.py`: `KnowledgeAgentScheduler` — lifecycle, minimum-interval enforcement, one job
+  per user with an active integration, per-step failure isolation within a cycle (one source
+  failing doesn't block the rest or reconciliation) (`test_knowledge_scheduler.py`)
 
 #### Services — Notion
 - [x] NotionConnector: page reading, database reading, token validation
@@ -91,6 +121,8 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
 - [x] Endpoints de identity — create, get, update
 - [x] Endpoints de sync — status, configure, trigger
 - [x] Endpoints de auth — API key creation, listing, revocation
+- [x] Endpoint de voice — transcripción y TTS
+- [x] `GET /knowledge/status` — observabilidad de la base de conocimiento (buckets de confianza, claims por fuente, preguntas pendientes, merges recientes)
 - [x] `GET /users/me` — Authenticated user profile
 - [x] `GET /users/me/preferences` — Preferences, onboarding, Notion config
 - [x] `PATCH /users/me/preferences` — Merge preferences
@@ -216,7 +248,8 @@ Tests de flujos completos de usuario, simulando el uso real.
 
 ```
 tests/
-├── conftest.py                        # Fixtures globales (DB, test client, SQLite)
+├── conftest.py                        # Fixtures globales (DB, test client, SQLite — incluye
+│                                       # el esquema de las tablas de conocimiento)
 ├── factories.py                       # Factory definitions
 ├── unit/
 │   ├── test_models.py                 # SQLAlchemy models
@@ -227,16 +260,26 @@ tests/
 │   ├── test_briefing.py               # Briefing generator + scheduler
 │   ├── test_retrieval.py              # Semantic search
 │   ├── test_claude_client.py          # LLM client
+│   ├── test_agent_tool_use.py         # LLMClient.generate_with_tools() agentic loop
 │   ├── test_prompts.py                # Prompt templates
-│   ├── test_agent.py                  # LangChain agent
+│   ├── test_agent.py                  # Agent tools (Strands orchestrator itself removed here)
+│   ├── test_strands_orchestrator.py   # StrandsOrchestrator: model, history, persistence
+│   ├── test_strands_tools.py          # Strands @tool wrappers
+│   ├── test_strands_model.py          # build_openai_model() reasoning_effort guard
+│   ├── test_learning_tools.py         # save_learning / search_learnings tools
+│   ├── test_reconciliation.py         # Reconciliation engine (unit-level helpers)
+│   ├── test_swarm_negotiation.py      # Shared scoped-Swarm negotiation core
+│   ├── test_knowledge_scheduler.py    # KnowledgeAgentScheduler (periodic knowledge cycles)
 │   ├── test_encryption.py             # Fernet encryption
 │   ├── test_security.py               # API key auth
+│   ├── test_voice_transcriber.py      # Voice transcription (local + API mode)
 │   ├── test_api_users.py              # User endpoints
 │   ├── test_api_commitments.py        # Commitment endpoints
 │   ├── test_api_integrations.py       # Integration endpoints
 │   ├── test_api_key_auth.py           # API key auth endpoints
 │   ├── test_identity_api.py           # Identity endpoints
 │   ├── test_sync_scheduler.py         # APScheduler sync
+│   ├── test_sync_fathom_incremental.py # Fathom incremental sync
 │   ├── test_user_preferences.py       # User model properties + schemas
 │   ├── test_notion_connector.py       # Notion connector
 │   ├── test_notion_publisher.py       # Notion publisher
@@ -250,7 +293,7 @@ tests/
 │   ├── test_cli_display.py            # CLI display helpers
 │   ├── test_validators.py             # Input validators
 │   ├── test_onboarding_flow.py        # Onboarding wizard
-│   ├── test_chat_session.py           # Chat loop
+│   ├── test_chat_session.py           # Chat loop (incl. proactive welcome)
 │   ├── test_command_router.py         # Slash commands
 │   ├── test_background_sync.py        # Background sync
 │   ├── test_alert_manager.py          # Commitment alerts
@@ -264,6 +307,13 @@ tests/
 │   ├── test_commitment_pipeline.py    # Commitment detection pipeline
 │   ├── test_briefing_generation.py    # Briefing generation
 │   ├── test_identity_crud.py          # Identity CRUD
+│   ├── test_agent_endpoint.py         # POST /agent/query — full HTTP stack, StrandsOrchestrator
+│   ├── test_knowledge_store.py        # Entity/claim/link/pending_question CRUD
+│   ├── test_knowledge_stats.py        # get_knowledge_stats() + GET /knowledge/status
+│   ├── test_domain_agent.py           # Per-source domain agents + resolution ladder
+│   ├── test_rd_agent.py               # I+D platform agent via MCP
+│   ├── test_reconciliation.py         # Cross-source duplicate detection + same_as merging
+│   ├── test_strands_tools_knowledge.py # query_knowledge/get_pending_questions/confirm_pending_answer
 │   ├── test_msgraph_connector.py      # Outlook/Calendar connector
 │   ├── test_teams_connector.py        # Teams connector
 │   ├── test_slack_connector.py        # Slack connector
@@ -274,6 +324,7 @@ tests/
 │   ├── test_auth_endpoints.py         # API key auth
 │   ├── test_sync_endpoints.py         # Sync scheduler endpoints
 │   ├── test_preferences_endpoints.py  # User preferences endpoints
+│   ├── test_voice_endpoints.py        # Voice transcription/TTS endpoints
 │   └── test_users_me_endpoint.py      # GET /users/me
 └── e2e/
     ├── test_agent_query.py            # Agent query endpoint
@@ -287,7 +338,7 @@ tests/
 
 | Criterio | Umbral | Estado |
 |---|---|---|
-| All tests passing | 785/785 | **Met** |
+| All tests passing | 1051/1051 (6 fallos preexistentes no relacionados en `test_teams_connector.py`) | **Met** |
 | Type checking (mypy) | No errors in app/ cli/ | **Met** |
 | Security: auth + encryption | All tests passing | **Met** |
 | E2E: happy paths | All passing | **Met** |

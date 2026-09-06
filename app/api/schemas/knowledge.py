@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 from pydantic import BaseModel
 
@@ -14,3 +14,5 @@ class KnowledgeStatsResponse(BaseModel):
     pending_questions_by_target: Dict[str, int]
     entities_merged_recent: int
     merged_window_hours: int
+    scheduler_active: bool
+    next_scheduled_run: Optional[str] = None
