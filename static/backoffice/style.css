@@ -358,7 +358,7 @@ tbody tr.selected { background: var(--accent-dim); }
 
 .graph-layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; align-items: start; }
 .cy-canvas {
-  height: 68vh; background: var(--bg-surface);
+  height: 68vh; background: var(--bg-base);
   border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
 }
 .graph-detail {

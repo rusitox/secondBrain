@@ -20,6 +20,7 @@ GET /backoffice/runs/{run_id} — one run, its events, and any sub-runs
 
 GET  /backoffice/graph/entities — list/search entities (X-Total-Count response header)
 GET  /backoffice/graph/entities/{entity_id} — one entity with claims + links
+GET  /backoffice/graph/links — every entity link for the user, for graph-wide rendering
 GET  /backoffice/graph/claims — every claim for the user (filter by source/status)
 GET  /backoffice/graph/questions — pending questions (filter by status/target)
 POST /backoffice/graph/questions/{question_id}/answer — answer, closing the loop
@@ -415,6 +416,17 @@ async def get_entity(
         claims=[ClaimRead.model_validate(c) for c in claims],
         links=[EntityLinkRead.model_validate(link) for link in links],
     )
+
+
+@router.get("/graph/links", response_model=List[EntityLinkRead])
+async def list_links(
+    current_user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> List[EntityLinkRead]:
+    """Every link for the user — the graph view draws an edge for any link whose
+    two endpoints are both in the entity set it already loaded from GET /graph/entities."""
+    links = await store.list_links_for_user(db, current_user_id)
+    return [EntityLinkRead.model_validate(link) for link in links]
 
 
 @router.get("/graph/claims", response_model=List[ClaimRead])

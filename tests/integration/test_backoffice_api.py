@@ -506,6 +506,33 @@ class TestGraphEntities:
         assert resp.status_code == 404
 
 
+class TestGraphLinks:
+    async def test_list_returns_only_own_links(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ) -> None:
+        user_a = await _make_persisted_user(db_session, email="links1a@example.com")
+        user_b = await _make_persisted_user(db_session, email="links1b@example.com")
+        a1 = await store.create_entity(db_session, user_a, EntityType.PERSON, "A1")
+        a2 = await store.create_entity(db_session, user_a, EntityType.PERSON, "A2")
+        b1 = await store.create_entity(db_session, user_b, EntityType.PERSON, "B1")
+        b2 = await store.create_entity(db_session, user_b, EntityType.PERSON, "B2")
+        await store.link_entities(
+            db_session, user_a, a1.id, a2.id,
+            relation_type="same_as", resolved_by=LinkResolvedBy.DETERMINISTIC, confidence=1.0,
+        )
+        await store.link_entities(
+            db_session, user_b, b1.id, b2.id,
+            relation_type="same_as", resolved_by=LinkResolvedBy.DETERMINISTIC, confidence=1.0,
+        )
+        await db_session.commit()
+
+        resp = await client.get("/backoffice/graph/links", headers={"X-User-Id": str(user_a)})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert {data[0]["entity_id_a"], data[0]["entity_id_b"]} == {str(a1.id), str(a2.id)}
+
+
 class TestGraphQuestions:
     async def test_list_filters_by_status(self, client: AsyncClient, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="q1@example.com")

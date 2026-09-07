@@ -584,8 +584,11 @@ async function loadGraph() {
   params.set('limit', '150');
 
   try {
-    const entities = await apiGet(`/backoffice/graph/entities?${params}`);
-    renderGraph(entities);
+    const [entities, links] = await Promise.all([
+      apiGet(`/backoffice/graph/entities?${params}`),
+      apiGet('/backoffice/graph/links'),
+    ]);
+    renderGraph(entities, links);
   } catch (e) {
     showToast('Error cargando el grafo: ' + e.message, true);
   }
@@ -596,41 +599,93 @@ const TYPE_COLORS = {
   topic: '#38bdf8', organization: '#a78bfa',
 };
 
-function renderGraph(entities) {
+// Obsidian-style graph: node size driven by how connected an entity is (not
+// just its confidence), thin low-opacity edges, and hover dims everything
+// outside the focused node's neighborhood.
+function renderGraph(entities, links) {
   const container = document.getElementById('cy');
-  const elements = entities.map((e) => ({
-    data: { id: e.id, label: e.canonical_name, type: e.entity_type, confidence: e.confidence },
+  const nodeIds = new Set(entities.map((e) => e.id));
+  const degree = {};
+  const edgeElements = [];
+  for (const link of links) {
+    if (!nodeIds.has(link.entity_id_a) || !nodeIds.has(link.entity_id_b)) continue;
+    degree[link.entity_id_a] = (degree[link.entity_id_a] || 0) + 1;
+    degree[link.entity_id_b] = (degree[link.entity_id_b] || 0) + 1;
+    edgeElements.push({
+      data: {
+        id: link.id, source: link.entity_id_a, target: link.entity_id_b,
+        relation: link.relation_type, confidence: link.confidence,
+      },
+    });
+  }
+
+  const nodeElements = entities.map((e) => ({
+    data: {
+      id: e.id, label: e.canonical_name, type: e.entity_type,
+      confidence: e.confidence, degree: degree[e.id] || 0,
+    },
   }));
 
   if (cy) cy.destroy();
   cy = cytoscape({
     container,
-    elements,
+    elements: [...nodeElements, ...edgeElements],
     style: [
       {
         selector: 'node',
         style: {
           'background-color': (n) => TYPE_COLORS[n.data('type')] || '#94a3b8',
           'label': 'data(label)',
-          'color': '#f1f5f9',
+          'color': '#c9d1e0',
           'font-size': 10,
           'text-valign': 'bottom',
           'text-margin-y': 4,
-          'width': (n) => 18 + n.data('confidence') * 28,
-          'height': (n) => 18 + n.data('confidence') * 28,
-          'opacity': (n) => 0.4 + n.data('confidence') * 0.6,
+          'width': (n) => 9 + Math.min(n.data('degree'), 10) * 3.5,
+          'height': (n) => 9 + Math.min(n.data('degree'), 10) * 3.5,
+          'opacity': (n) => 0.5 + n.data('confidence') * 0.5,
           'border-width': 1,
           'border-color': 'rgba(255,255,255,0.2)',
+          'transition-property': 'opacity',
+          'transition-duration': 150,
         },
       },
       { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#f1f5f9' } },
-      { selector: 'edge', style: { 'width': 1.5, 'line-color': 'rgba(255,255,255,0.2)', 'curve-style': 'bezier' } },
+      { selector: 'node.faded', style: { 'opacity': 0.08 } },
+      {
+        selector: 'edge',
+        style: {
+          'width': 1,
+          'line-color': 'rgba(255,255,255,0.15)',
+          'curve-style': 'haystack',
+          'haystack-radius': 0,
+          'opacity': 1,
+          'transition-property': 'opacity',
+          'transition-duration': 150,
+        },
+      },
+      { selector: 'edge.faded', style: { 'opacity': 0.03 } },
+      { selector: 'edge.highlighted', style: { 'line-color': 'rgba(255,255,255,0.5)' } },
     ],
-    layout: { name: 'cose', animate: false, padding: 30 },
+    layout: {
+      name: 'cose', animate: true, randomize: true, fit: true, padding: 30,
+      nodeRepulsion: 9000, idealEdgeLength: 70, gravity: 40, numIter: 1500,
+    },
     wheelSensitivity: 0.3,
+    minZoom: 0.2,
+    maxZoom: 3,
   });
 
   cy.on('tap', 'node', (evt) => selectGraphEntity(evt.target.id()));
+
+  cy.on('mouseover', 'node', (evt) => {
+    const node = evt.target;
+    const neighborhood = node.closedNeighborhood();
+    cy.elements().difference(neighborhood).addClass('faded');
+    neighborhood.edges().addClass('highlighted');
+  });
+  cy.on('mouseout', 'node', () => {
+    cy.elements().removeClass('faded').removeClass('highlighted');
+  });
 
   if (!entities.length) {
     document.getElementById('graph-detail').innerHTML = '<div class="empty-hint">Sin resultados.</div>';

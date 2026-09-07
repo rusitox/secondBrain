@@ -264,6 +264,19 @@ async def list_links_for_entity(
     return list((await db.execute(stmt)).scalars().all())
 
 
+async def list_links_for_user(
+    db: AsyncSession, user_id: uuid.UUID, limit: int = 2000
+) -> List[EntityLink]:
+    """Every link for the user, for graph-wide rendering (not scoped to one entity)."""
+    stmt = (
+        select(EntityLink)
+        .where(EntityLink.user_id == user_id)
+        .order_by(EntityLink.created_at.desc())
+        .limit(limit)
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # Pending questions — the resolution-ladder state machine
 # ---------------------------------------------------------------------------
