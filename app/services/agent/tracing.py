@@ -23,7 +23,7 @@ asserting rollback-independence in a test against this engine.
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import func, select
@@ -149,6 +149,33 @@ def _as_int(value: Any) -> Optional[int]:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+async def prune_traces(db: Any, user_id: uuid.UUID, retention_days: int) -> int:
+    """Delete this user's AgentRun rows older than retention_days (their
+    AgentRunEvent rows cascade via the FK's ON DELETE CASCADE — see
+    alembic/versions/013_add_backoffice_tables.py). Returns the number of
+    runs deleted, or 0 on failure — same "never raise" contract as the rest
+    of this module, since a failed cleanup must not block the knowledge
+    cycle step that calls it (see KnowledgeAgentScheduler._run_cycle).
+
+    Uses the caller's own session/transaction rather than opening its own,
+    unlike every other function here — this is a scheduled maintenance step
+    invoked as its own KnowledgeAgentScheduler._run_step (which already
+    provides a fresh session with per-step failure isolation), not something
+    that needs to survive an unrelated run's rollback.
+    """
+    from sqlalchemy import delete
+
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        result = await db.execute(
+            delete(AgentRun).where(AgentRun.user_id == user_id, AgentRun.started_at < cutoff)
+        )
+        return result.rowcount or 0
+    except Exception:
+        logger.exception("prune_traces failed for user=%s", user_id)
+        return 0
 
 
 async def record_agent_events(

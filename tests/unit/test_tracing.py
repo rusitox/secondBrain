@@ -2,7 +2,8 @@
 recorder (specs/plan-knowledge-backoffice.md, Phase 1).
 """
 import uuid
-from unittest.mock import MagicMock
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
 from typing import List
 
 import pytest
@@ -398,3 +399,55 @@ class TestSharedTestConnectionCaveat:
             # Same shared connection => tracing's commit landed the caller's
             # pending insert too, so the "rolled back" user still exists.
             assert await check.get(AgentRun, run_id) is not None
+
+
+class TestPruneTraces:
+    async def test_deletes_runs_older_than_retention_and_cascades_events(
+        self, db_session: AsyncSession,
+    ) -> None:
+        user_id = await _make_persisted_user(db_session, email="prune1@example.com")
+        old_run = AgentRun(
+            user_id=user_id, agent_key="slack", run_type=RunType.DOMAIN_AGENT, trigger=RunTrigger.MANUAL,
+            started_at=datetime.now(timezone.utc) - timedelta(days=45),
+        )
+        recent_run = AgentRun(
+            user_id=user_id, agent_key="slack", run_type=RunType.DOMAIN_AGENT, trigger=RunTrigger.MANUAL,
+            started_at=datetime.now(timezone.utc) - timedelta(days=5),
+        )
+        db_session.add_all([old_run, recent_run])
+        await db_session.flush()
+        db_session.add(AgentRunEvent(
+            run_id=old_run.id, seq=0, event_type=RunEventType.ASSISTANT_TEXT, payload={"text": "old"},
+        ))
+        await db_session.commit()
+        old_run_id, recent_run_id = old_run.id, recent_run.id
+
+        deleted = await tracing.prune_traces(db_session, user_id, retention_days=30)
+        await db_session.commit()
+
+        assert deleted == 1
+        assert await db_session.get(AgentRun, old_run_id) is None
+        assert await db_session.get(AgentRun, recent_run_id) is not None
+        assert await _events_for(db_session, old_run_id) == []
+
+    async def test_scoped_by_user(self, db_session: AsyncSession) -> None:
+        user_a = await _make_persisted_user(db_session, email="prune2a@example.com")
+        user_b = await _make_persisted_user(db_session, email="prune2b@example.com")
+        old_run_a = AgentRun(
+            user_id=user_a, agent_key="slack", run_type=RunType.DOMAIN_AGENT, trigger=RunTrigger.MANUAL,
+            started_at=datetime.now(timezone.utc) - timedelta(days=45),
+        )
+        db_session.add(old_run_a)
+        await db_session.commit()
+
+        deleted = await tracing.prune_traces(db_session, user_b, retention_days=30)
+        await db_session.commit()
+
+        assert deleted == 0
+        assert await db_session.get(AgentRun, old_run_a.id) is not None
+
+    async def test_failure_returns_zero_without_raising(self, db_session: AsyncSession) -> None:
+        broken_session = MagicMock()
+        broken_session.execute = AsyncMock(side_effect=RuntimeError("boom"))
+        deleted = await tracing.prune_traces(broken_session, uuid.uuid4(), retention_days=30)
+        assert deleted == 0

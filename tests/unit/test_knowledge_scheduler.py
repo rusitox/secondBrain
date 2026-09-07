@@ -13,6 +13,7 @@ def _settings(
     knowledge_agent_batch_size: int = 20,
     id_brain_mcp_url: str = "",
     openai_api_key: str = "",
+    trace_retention_days: int = 30,
 ) -> MagicMock:
     settings = MagicMock()
     settings.enable_knowledge_agents = enable_knowledge_agents
@@ -20,6 +21,7 @@ def _settings(
     settings.knowledge_agent_batch_size = knowledge_agent_batch_size
     settings.id_brain_mcp_url = id_brain_mcp_url
     settings.openai_api_key = openai_api_key
+    settings.trace_retention_days = trace_retention_days
     return settings
 
 
@@ -170,12 +172,14 @@ class TestRunCycle:
         mock_run_domain_agent = AsyncMock(return_value={"source": "x", "summary": "ok"})
         mock_run_rd_agent = AsyncMock()
         mock_run_reconciliation = AsyncMock(return_value={"merged": 0})
+        mock_prune_traces = AsyncMock(return_value=0)
 
         with patch("app.core.config.get_settings", return_value=_settings(id_brain_mcp_url="")), \
              patch("app.services.agent.knowledge.scheduler.get_session_factory", return_value=mock_factory), \
              patch("app.services.agent.knowledge.domain_agent.run_domain_agent", mock_run_domain_agent), \
              patch("app.services.agent.knowledge.rd_agent.run_rd_domain_agent", mock_run_rd_agent), \
-             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation):
+             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation), \
+             patch("app.services.agent.tracing.prune_traces", mock_prune_traces):
             await scheduler._run_cycle(user_id)
 
         # 5 document-backed sources (Platform enum), never "rd" since it's unconfigured.
@@ -184,9 +188,11 @@ class TestRunCycle:
         assert "rd" not in called_sources
         mock_run_rd_agent.assert_not_called()
         mock_run_reconciliation.assert_called_once()
-        # 5 sources + reconciliation — each got its OWN fresh session (not one shared mock).
-        assert mock_factory.call_count == 6
-        assert len(sessions) == 6
+        mock_prune_traces.assert_called_once()
+        # 5 sources + reconciliation + prune_traces — each got its OWN fresh
+        # session (not one shared mock).
+        assert mock_factory.call_count == 7
+        assert len(sessions) == 7
         assert all(s.commit.await_count == 1 for s in sessions)
         assert all(s.rollback.await_count == 0 for s in sessions)
 
@@ -205,7 +211,8 @@ class TestRunCycle:
              patch("app.services.agent.knowledge.scheduler.get_session_factory", return_value=mock_factory), \
              patch("app.services.agent.knowledge.domain_agent.run_domain_agent", mock_run_domain_agent), \
              patch("app.services.agent.knowledge.rd_agent.run_rd_domain_agent", mock_run_rd_agent), \
-             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation):
+             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation), \
+             patch("app.services.agent.tracing.prune_traces", AsyncMock(return_value=0)):
             await scheduler._run_cycle(user_id)
 
         mock_run_rd_agent.assert_called_once()
@@ -225,15 +232,16 @@ class TestRunCycle:
         with patch("app.core.config.get_settings", return_value=_settings(id_brain_mcp_url="")), \
              patch("app.services.agent.knowledge.scheduler.get_session_factory", return_value=mock_factory), \
              patch("app.services.agent.knowledge.domain_agent.run_domain_agent", mock_run_domain_agent), \
-             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation):
+             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation), \
+             patch("app.services.agent.tracing.prune_traces", AsyncMock(return_value=0)):
             await scheduler._run_cycle(user_id)  # must not raise
 
         assert mock_run_domain_agent.call_count == 5
         mock_run_reconciliation.assert_called_once()
-        # 5 sources + reconciliation, each on its own fresh session.
-        assert mock_factory.call_count == 6
+        # 5 sources + reconciliation + prune_traces, each on its own fresh session.
+        assert mock_factory.call_count == 7
         # Only the first session (the one whose call raised) rolls back; the
-        # other 5 — including reconciliation's — commit normally.
+        # rest — including reconciliation's and prune_traces' — commit normally.
         assert sessions[0].rollback.await_count == 1
         assert sessions[0].commit.await_count == 0
         assert all(s.commit.await_count == 1 for s in sessions[1:])
@@ -266,7 +274,8 @@ class TestRunCycle:
         with patch("app.core.config.get_settings", return_value=_settings(id_brain_mcp_url="")), \
              patch("app.services.agent.knowledge.scheduler.get_session_factory", return_value=mock_factory), \
              patch("app.services.agent.knowledge.domain_agent.run_domain_agent", mock_run_domain_agent), \
-             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation):
+             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation), \
+             patch("app.services.agent.tracing.prune_traces", AsyncMock(return_value=0)):
             await scheduler._run_cycle(user_id)  # must not raise even though rollback() itself raised
 
         assert mock_run_domain_agent.call_count == 5

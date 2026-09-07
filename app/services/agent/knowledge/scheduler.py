@@ -128,6 +128,7 @@ class KnowledgeAgentScheduler:
         """
         from app.core.config import get_settings
         from app.models.agent_run import RunTrigger
+        from app.services.agent import tracing
         from app.services.agent.knowledge.domain_agent import REGISTERED_SOURCES, run_domain_agent
         from app.services.agent.knowledge.rd_agent import run_rd_domain_agent
         from app.services.agent.knowledge.reconciliation import run_reconciliation
@@ -165,6 +166,12 @@ class KnowledgeAgentScheduler:
             session_factory, "reconciliation", user_id,
             lambda db: run_reconciliation(db, uid, trigger=RunTrigger.SCHEDULER),
         )
+
+        async def _prune_traces_call(db: AsyncSession) -> Dict[str, Any]:
+            deleted = await tracing.prune_traces(db, uid, settings.trace_retention_days)
+            return {"runs_deleted": deleted}
+
+        await self._run_step(session_factory, "prune_traces", user_id, _prune_traces_call)
 
     @staticmethod
     async def _run_step(
