@@ -434,6 +434,6 @@ tbody tr.selected { background: var(--accent-dim); }
 
 @media (max-width: 860px) {
   #sidebar { width: 64px; }
-  .brand span, .nav-item span:not(.nav-icon) { display: none; }
+  .brand span, .nav-item .nav-label { display: none; }
   .agents-layout, .runs-layout, .graph-layout { grid-template-columns: 1fr; }
 }

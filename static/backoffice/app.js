@@ -12,6 +12,7 @@ let apiKey = localStorage.getItem(STORAGE_KEY) || '';
 let currentView = 'dashboard';
 let agentsCache = [];          // [{agent_key, enabled, model_id, ...}]
 let selectedAgentKey = null;
+const runningAgentKeys = new Set(); // agent_keys with a manual run in flight — survives re-render/navigation
 let selectedRunId = null;
 let cy = null;                 // cytoscape instance
 let claimsChart = null;
@@ -309,7 +310,7 @@ function renderAgentList() {
   const el = document.getElementById('agent-list');
   el.innerHTML = agentsCache.map((a) => {
     const meta = AGENT_KEYS_META[a.agent_key] || { label: a.agent_key, icon: '🤖' };
-    return `<div class="agent-card ${a.agent_key === selectedAgentKey ? 'selected' : ''}" data-key="${a.agent_key}">
+    return `<div class="agent-card ${a.agent_key === selectedAgentKey ? 'selected' : ''}" data-key="${escapeHtml(a.agent_key)}">
       <div class="agent-card-name">${meta.icon} ${escapeHtml(meta.label)}</div>
       <div class="agent-card-meta">
         <span class="badge ${a.enabled ? 'badge-completed' : 'badge-failed'}">${a.enabled ? 'enabled' : 'disabled'}</span>
@@ -326,7 +327,7 @@ function populateRunsAgentFilter() {
   const sel = document.getElementById('runs-agent-filter');
   const current = sel.value;
   sel.innerHTML = '<option value="">Todos los agentes</option>' +
-    agentsCache.map((a) => `<option value="${a.agent_key}">${escapeHtml((AGENT_KEYS_META[a.agent_key] || {}).label || a.agent_key)}</option>`).join('');
+    agentsCache.map((a) => `<option value="${escapeHtml(a.agent_key)}">${escapeHtml((AGENT_KEYS_META[a.agent_key] || {}).label || a.agent_key)}</option>`).join('');
   sel.value = current;
 }
 
@@ -357,7 +358,7 @@ function renderAgentDetail(config, tools, mcpServers) {
       <div class="detail-title">${meta.icon} ${escapeHtml(meta.label)}</div>
       <div class="detail-actions">
         <button class="btn-secondary btn-small" id="agent-reset-btn">Reset a defaults</button>
-        <button class="btn-primary btn-small" id="agent-run-btn">▶ Correr ahora</button>
+        <button class="btn-primary btn-small" id="agent-run-btn"></button>
       </div>
     </div>
     <form id="agent-form">
@@ -403,6 +404,7 @@ function renderAgentDetail(config, tools, mcpServers) {
   document.getElementById('agent-form').addEventListener('submit', (e) => saveAgentConfig(e, config, tools));
   document.getElementById('agent-reset-btn').addEventListener('click', () => resetAgentConfig(config.agent_key));
   document.getElementById('agent-run-btn').addEventListener('click', () => runAgentNow(config.agent_key));
+  setAgentRunButtonState(config.agent_key);
 }
 
 async function saveAgentConfig(e, config, tools) {
@@ -455,9 +457,12 @@ async function resetAgentConfig(agentKey) {
 }
 
 async function runAgentNow(agentKey) {
-  const btn = document.getElementById('agent-run-btn');
-  btn.disabled = true;
-  btn.textContent = 'Corriendo… (puede tardar)';
+  if (runningAgentKeys.has(agentKey)) return; // already in flight (e.g. navigated away and back)
+  runningAgentKeys.add(agentKey);
+  // Re-render the button if this agent is still the one on screen — the
+  // handler that fired this may be on a stale, already-detached button
+  // (user navigated to another agent while a previous run was in flight).
+  if (selectedAgentKey === agentKey) setAgentRunButtonState(agentKey);
   try {
     const run = await apiSend('POST', `/backoffice/agents/${agentKey}/run`);
     showToast(`Corrida completa: ${run.status}`);
@@ -465,9 +470,17 @@ async function runAgentNow(agentKey) {
   } catch (e) {
     showToast('Error al correr el agente: ' + e.message, true);
   } finally {
-    btn.disabled = false;
-    btn.textContent = '▶ Correr ahora';
+    runningAgentKeys.delete(agentKey);
+    if (selectedAgentKey === agentKey) setAgentRunButtonState(agentKey);
   }
+}
+
+function setAgentRunButtonState(agentKey) {
+  const btn = document.getElementById('agent-run-btn');
+  if (!btn) return;
+  const running = runningAgentKeys.has(agentKey);
+  btn.disabled = running;
+  btn.textContent = running ? 'Corriendo… (puede tardar)' : '▶ Correr ahora';
 }
 
 // ── Runs ──────────────────────────────────────────────────────────────────────
@@ -570,14 +583,12 @@ async function loadGraph() {
   if (entityType) params.set('entity_type', entityType);
   params.set('limit', '150');
 
-  let entities = [];
   try {
-    entities = await apiGet(`/backoffice/graph/entities?${params}`);
+    const entities = await apiGet(`/backoffice/graph/entities?${params}`);
+    renderGraph(entities);
   } catch (e) {
     showToast('Error cargando el grafo: ' + e.message, true);
-    return;
   }
-  renderGraph(entities);
 }
 
 const TYPE_COLORS = {
@@ -827,15 +838,17 @@ async function submitMcpForm(e) {
   e.preventDefault();
   const id = document.getElementById('mcp-form-id').value;
   const errorEl = document.getElementById('mcp-form-error');
+  const submitBtn = e.target.querySelector('button[type=submit]');
   const body = {
     name: document.getElementById('mcp-form-name').value.trim(),
     url: document.getElementById('mcp-form-url').value.trim(),
     auth_header: document.getElementById('mcp-form-auth-header').value.trim() || 'Authorization',
     enabled: document.getElementById('mcp-form-enabled').checked,
   };
-  const apiKeyInput = document.getElementById('mcp-form-api-key').value;
+  const apiKeyInput = document.getElementById('mcp-form-api-key').value.trim();
   if (apiKeyInput) body.api_key = apiKeyInput;
 
+  submitBtn.disabled = true;
   try {
     if (id) {
       await apiSend('PUT', `/backoffice/mcp-servers/${id}`, body);
@@ -848,6 +861,8 @@ async function submitMcpForm(e) {
   } catch (err) {
     errorEl.textContent = err.message;
     errorEl.classList.add('visible');
+  } finally {
+    submitBtn.disabled = false;
   }
 }
 
