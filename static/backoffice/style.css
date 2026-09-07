@@ -408,6 +408,7 @@ tbody tr.selected { background: var(--accent-dim); }
   backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center;
   z-index: 900; padding: 20px;
 }
+.modal-overlay[hidden] { display: none; }
 .modal {
   background: var(--bg-surface); border: 1px solid var(--border-mid);
   border-radius: var(--radius-lg); padding: 28px; width: 100%; max-width: 460px;
