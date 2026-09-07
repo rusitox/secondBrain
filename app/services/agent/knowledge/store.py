@@ -64,11 +64,48 @@ async def list_entities(
     db: AsyncSession,
     user_id: uuid.UUID,
     entity_type: Optional[EntityType] = None,
+    search: Optional[str] = None,
+    min_confidence: Optional[float] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
 ) -> List[Entity]:
+    """search does a case-insensitive substring match against canonical_name
+    only (not aliases — aliases is a JSONB array, and a cross-database
+    "does this JSON array contain a substring" query isn't worth the
+    complexity for the backoffice's search box; exact alias lookups already
+    go through resolution.find_or_create_entity, not this listing path).
+    limit=None (the default) returns everything — the backoffice API layer
+    is what applies a required limit; store.py itself imposes none, matching
+    every other list_* function in this module.
+    """
     stmt = select(Entity).where(Entity.user_id == user_id)
     if entity_type is not None:
         stmt = stmt.where(Entity.entity_type == entity_type)
+    if search:
+        stmt = stmt.where(Entity.canonical_name.ilike(f"%{search}%"))
+    if min_confidence is not None:
+        stmt = stmt.where(Entity.confidence >= min_confidence)
+    stmt = stmt.order_by(Entity.canonical_name).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     return list((await db.execute(stmt)).scalars().all())
+
+
+async def count_entities(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_type: Optional[EntityType] = None,
+    search: Optional[str] = None,
+    min_confidence: Optional[float] = None,
+) -> int:
+    stmt = select(func.count()).select_from(Entity).where(Entity.user_id == user_id)
+    if entity_type is not None:
+        stmt = stmt.where(Entity.entity_type == entity_type)
+    if search:
+        stmt = stmt.where(Entity.canonical_name.ilike(f"%{search}%"))
+    if min_confidence is not None:
+        stmt = stmt.where(Entity.confidence >= min_confidence)
+    return (await db.execute(stmt)).scalar_one()
 
 
 async def update_entity_confidence(
@@ -160,6 +197,28 @@ async def list_claims(
     )
     if status is not None:
         stmt = stmt.where(EntityClaim.status == status)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def list_claims_for_user(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    source: Optional[str] = None,
+    status: Optional[ClaimStatus] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> List[EntityClaim]:
+    """Every claim for a user, optionally scoped to one source/status — unlike
+    list_claims, not scoped to a single entity. Backs the backoffice's
+    per-agent claim listing (source == agent_key for every domain agent)."""
+    stmt = select(EntityClaim).where(EntityClaim.user_id == user_id)
+    if source is not None:
+        stmt = stmt.where(EntityClaim.source == source)
+    if status is not None:
+        stmt = stmt.where(EntityClaim.status == status)
+    stmt = stmt.order_by(EntityClaim.created_at.desc()).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     return list((await db.execute(stmt)).scalars().all())
 
 
@@ -298,6 +357,29 @@ async def list_open_questions(
     )
     if target is not None:
         stmt = stmt.where(PendingQuestion.target == target)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def list_questions(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    status: Optional[QuestionStatus] = None,
+    target: Optional[QuestionTarget] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> List[PendingQuestion]:
+    """Unlike list_open_questions (hardcoded to status=OPEN, no pagination —
+    every existing caller is an agent tool checking "is there already an open
+    question about this"), this is the general listing the backoffice's
+    questions inbox needs: any status, paginated."""
+    stmt = select(PendingQuestion).where(PendingQuestion.user_id == user_id)
+    if status is not None:
+        stmt = stmt.where(PendingQuestion.status == status)
+    if target is not None:
+        stmt = stmt.where(PendingQuestion.target == target)
+    stmt = stmt.order_by(PendingQuestion.created_at.desc()).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     return list((await db.execute(stmt)).scalars().all())
 
 

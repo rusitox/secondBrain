@@ -289,3 +289,117 @@ class TestPendingQuestionLifecycle:
         )
         assert len(human_questions) == 1
         assert human_questions[0].question_text == "duda para humano"
+
+
+class TestListEntitiesSearchAndPagination:
+    """Phase 4 (specs/plan-knowledge-backoffice.md) additions to list_entities."""
+
+    async def test_search_matches_case_insensitive_substring(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="m1@example.com")
+        await store.create_entity(db_session, user_id, EntityType.PERSON, "Mariano Ortega")
+        await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan Perez")
+        await db_session.commit()
+
+        results = await store.list_entities(db_session, user_id, search="mariano")
+        assert [e.canonical_name for e in results] == ["Mariano Ortega"]
+
+    async def test_min_confidence_filters_out_lower(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="m2@example.com")
+        await store.create_entity(db_session, user_id, EntityType.PERSON, "Low", confidence=0.2)
+        await store.create_entity(db_session, user_id, EntityType.PERSON, "High", confidence=0.9)
+        await db_session.commit()
+
+        results = await store.list_entities(db_session, user_id, min_confidence=0.5)
+        assert [e.canonical_name for e in results] == ["High"]
+
+    async def test_limit_and_offset_paginate(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="m3@example.com")
+        for name in ("A", "B", "C"):
+            await store.create_entity(db_session, user_id, EntityType.PERSON, name)
+        await db_session.commit()
+
+        first_page = await store.list_entities(db_session, user_id, limit=2, offset=0)
+        second_page = await store.list_entities(db_session, user_id, limit=2, offset=2)
+        assert [e.canonical_name for e in first_page] == ["A", "B"]
+        assert [e.canonical_name for e in second_page] == ["C"]
+
+    async def test_count_entities_matches_filters(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="m4@example.com")
+        await store.create_entity(db_session, user_id, EntityType.PERSON, "A")
+        await store.create_entity(db_session, user_id, EntityType.PROJECT, "B")
+        await db_session.commit()
+
+        assert await store.count_entities(db_session, user_id) == 2
+        assert await store.count_entities(db_session, user_id, entity_type=EntityType.PROJECT) == 1
+
+    async def test_scoped_by_user(self, db_session: AsyncSession) -> None:
+        user_a = await _make_persisted_user(db_session, email="m5a@example.com")
+        user_b = await _make_persisted_user(db_session, email="m5b@example.com")
+        await store.create_entity(db_session, user_a, EntityType.PERSON, "A")
+        await db_session.commit()
+
+        assert await store.list_entities(db_session, user_b, search="a") == []
+
+
+class TestListClaimsForUser:
+    async def test_lists_across_entities_scoped_by_user(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="n1@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "A")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.PERSON, "B")
+        await db_session.commit()
+        await store.add_claim(db_session, entity_a.id, user_id, "slack", "claim1", "slack_domain_agent")
+        await store.add_claim(db_session, entity_b.id, user_id, "outlook", "claim2", "outlook_domain_agent")
+        await db_session.commit()
+
+        claims = await store.list_claims_for_user(db_session, user_id)
+        assert {c.claim_text for c in claims} == {"claim1", "claim2"}
+
+    async def test_filters_by_source_and_status(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="n2@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "A")
+        await db_session.commit()
+        await store.add_claim(
+            db_session, entity.id, user_id, "slack", "active claim", "slack_domain_agent",
+            status=ClaimStatus.ACTIVE,
+        )
+        await store.add_claim(
+            db_session, entity.id, user_id, "outlook", "disputed claim", "outlook_domain_agent",
+            status=ClaimStatus.DISPUTED,
+        )
+        await db_session.commit()
+
+        slack_only = await store.list_claims_for_user(db_session, user_id, source="slack")
+        assert [c.claim_text for c in slack_only] == ["active claim"]
+
+        active_only = await store.list_claims_for_user(db_session, user_id, status=ClaimStatus.ACTIVE)
+        assert [c.claim_text for c in active_only] == ["active claim"]
+
+
+class TestListQuestions:
+    async def test_returns_any_status_unlike_list_open_questions(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="o1@example.com")
+        open_q = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "open", target=QuestionTarget.HUMAN,
+        )
+        answered_q = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "answered", target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+        await store.resolve_question(db_session, user_id, answered_q.id, resolved_by=ResolvedBy.HUMAN)
+        await db_session.commit()
+
+        all_questions = await store.list_questions(db_session, user_id)
+        assert {q.id for q in all_questions} == {open_q.id, answered_q.id}
+
+        open_only = await store.list_questions(db_session, user_id, status=QuestionStatus.OPEN)
+        assert [q.id for q in open_only] == [open_q.id]
+
+    async def test_scoped_by_user(self, db_session: AsyncSession) -> None:
+        user_a = await _make_persisted_user(db_session, email="o2a@example.com")
+        user_b = await _make_persisted_user(db_session, email="o2b@example.com")
+        await store.raise_question(
+            db_session, user_a, "slack_domain_agent", "q", target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+
+        assert await store.list_questions(db_session, user_b) == []

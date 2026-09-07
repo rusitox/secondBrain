@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging
-from app.api.routers import health, users, commitments, integrations, ingestion, query, agent, briefing, identity, auth, sync, voice, knowledge
+from app.api.routers import health, users, commitments, integrations, ingestion, query, agent, briefing, identity, auth, sync, voice, knowledge, backoffice
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +125,21 @@ app.include_router(identity.router)
 app.include_router(sync.router)
 app.include_router(voice.router)
 app.include_router(knowledge.router)
+app.include_router(backoffice.router)
 
-# Mount static files for voice UI (only if directory exists)
+# Mount static files for voice UI and the knowledge backoffice (only if the
+# directory exists)
 _static_voice_dir = os.path.join(os.path.dirname(__file__), "..", "static", "voice")
 if os.path.isdir(_static_voice_dir):
     from fastapi.staticfiles import StaticFiles
     app.mount("/voice-ui", StaticFiles(directory=_static_voice_dir, html=True), name="voice-ui")
+
+_static_backoffice_dir = os.path.join(os.path.dirname(__file__), "..", "static", "backoffice")
+if os.path.isdir(_static_backoffice_dir):
+    from fastapi.staticfiles import StaticFiles
+    app.mount(
+        "/backoffice-ui", StaticFiles(directory=_static_backoffice_dir, html=True), name="backoffice-ui",
+    )
 
 
 if __name__ == "__main__":

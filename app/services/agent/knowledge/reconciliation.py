@@ -30,6 +30,7 @@ partial verdict the swarm reached, never a blind question. A pair with an
 already-open question is skipped rather than re-negotiated every cycle —
 the same cost-threshold requirement the plan's risk section calls for.
 """
+import asyncio
 import logging
 import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -37,10 +38,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_run import RunStatus, RunTrigger, RunType
 from app.models.entity import Entity, EntityType
 from app.models.entity_claim import ClaimStatus
 from app.models.entity_link import LinkResolvedBy
 from app.models.pending_question import QuestionTarget
+from app.services.agent import tracing
 from app.services.agent.knowledge import store
 
 logger = logging.getLogger(__name__)
@@ -157,7 +160,12 @@ def _make_submit_same_as_verdict_tool(verdict: Dict[str, Any]):
 
 
 async def negotiate_same_as(
-    db: AsyncSession, user_id: uuid.UUID, entity_a: Entity, entity_b: Entity,
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_a: Entity,
+    entity_b: Entity,
+    parent_run_id: Optional[uuid.UUID] = None,
+    trigger: RunTrigger = RunTrigger.MANUAL,
 ) -> Dict[str, Any]:
     """Scoped Swarm negotiation deciding whether two candidate entities are
     the same real-world entity. Returns {same_entity, confidence, reasoning}
@@ -206,7 +214,20 @@ async def negotiate_same_as(
             "tools": [view_claims, submit_same_as_verdict],
         },
     ]
-    await run_negotiation(node_specs, question, log_context="negotiate_same_as")
+    neg_run_id = await tracing.start_run(
+        user_id, agent_key="negotiation", run_type=RunType.NEGOTIATION, trigger=trigger,
+        parent_run_id=parent_run_id,
+    )
+    swarm_result = await run_negotiation(node_specs, question, log_context="negotiate_same_as")
+    if swarm_result is not None:
+        await tracing.record_swarm_negotiation(neg_run_id, swarm_result)
+    await tracing.record_verdict_event(neg_run_id, actor="negotiate_same_as", payload=dict(verdict))
+    await tracing.finish_run(
+        neg_run_id,
+        RunStatus.COMPLETED if swarm_result is not None else RunStatus.FAILED,
+        summary=verdict.get("reasoning"),
+        usage_source=swarm_result,
+    )
 
     return verdict
 
@@ -256,7 +277,10 @@ async def _find_open_reconciliation_question(
 
 
 async def run_reconciliation(
-    db: AsyncSession, user_id: uuid.UUID, entity_type: Optional[EntityType] = None,
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_type: Optional[EntityType] = None,
+    trigger: RunTrigger = RunTrigger.MANUAL,
 ) -> Dict[str, Any]:
     """One reconciliation pass: deterministic auto-link, then scoped-Swarm
     negotiation for embedding-similar candidates (skipping any pair that
@@ -267,6 +291,28 @@ async def run_reconciliation(
     Phase 8) — runs once per user at the end of every knowledge cycle, after all domain
     agents for that cycle finish. Also callable manually via scripts/run_reconciliation.py.
     """
+    run_id = await tracing.start_run(
+        user_id, agent_key="reconciliation", run_type=RunType.RECONCILIATION, trigger=trigger,
+    )
+    try:
+        result = await _run_reconciliation_pass(db, user_id, entity_type, run_id, trigger)
+    except asyncio.CancelledError:
+        await tracing.finish_run(run_id, RunStatus.FAILED, error="cancelled")
+        raise
+    except Exception as e:
+        await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
+        raise
+    await tracing.finish_run(run_id, RunStatus.COMPLETED, stats=result)
+    return result
+
+
+async def _run_reconciliation_pass(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_type: Optional[EntityType],
+    run_id: Optional[uuid.UUID],
+    trigger: RunTrigger,
+) -> Dict[str, Any]:
     # Email matching only ever applies to people — skip it when the caller
     # scoped this run to a different entity_type, matching the CLI's own
     # "limit to one entity type" promise.
@@ -290,7 +336,9 @@ async def run_reconciliation(
             continue
 
         touched.update({entity_a.id, entity_b.id})
-        verdict = await negotiate_same_as(db, user_id, entity_a, entity_b)
+        verdict = await negotiate_same_as(
+            db, user_id, entity_a, entity_b, parent_run_id=run_id, trigger=trigger,
+        )
 
         try:
             async with db.begin_nested():

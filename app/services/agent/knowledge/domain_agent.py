@@ -12,6 +12,7 @@ knowledge.md) replicates it to Outlook/Teams/Fathom purely by registering
 the source and adding its prompt guidance below — make_domain_agent itself
 has no source-specific branching.
 """
+import asyncio
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
@@ -19,10 +20,13 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_run import RunStatus, RunTrigger, RunType
 from app.models.entity import EntityType
 from app.models.entity_claim import ClaimStatus
 from app.models.integration import Platform
 from app.models.pending_question import QuestionTarget, ResolvedBy
+from app.services.agent import agent_config_service, tracing
+from app.services.agent.agent_config_service import EffectiveAgentConfig
 from app.services.agent.knowledge import resolution, store
 
 logger = logging.getLogger(__name__)
@@ -100,8 +104,58 @@ Priorizá la solidez del conocimiento por sobre la velocidad: mejor un claim con
 confianza baja y correctamente marcada como tal, que inventar certeza."""
 
 
+def _default_system_prompt(source: str) -> str:
+    return DOMAIN_AGENT_SYSTEM_PROMPT.format(
+        source=source, source_guidance=_SOURCE_GUIDANCE.get(source, ""),
+    )
+
+
+def make_watermark_tools(source: str, db: AsyncSession, user_id: uuid.UUID) -> List[Any]:
+    """Build the two tools a document-backed domain agent uses to track its
+    own read progress: get_unprocessed_documents, mark_document_processed.
+
+    Split out from make_domain_agent (mirroring make_resolution_ladder_tools)
+    so tool_registry.py's DOCUMENT_WATERMARK_TOOLS catalog has a real factory
+    to diff its names against in tests, instead of the names only existing as
+    inline closures nothing else could reference.
+    """
+    from strands import tool
+
+    @tool
+    async def get_unprocessed_documents(limit: int = 20) -> List[Dict[str, Any]]:
+        """Get up to `limit` documents from this source that haven't been processed yet."""
+        docs = await store.get_unprocessed_documents(db, user_id, source, limit=limit)
+        return [
+            {
+                "document_id": str(d.id),
+                "content": d.content,
+                "source_id": d.source_id,
+                "metadata": d.metadata_,
+            }
+            for d in docs
+        ]
+
+    @tool
+    async def mark_document_processed(document_id: str) -> Dict[str, Any]:
+        """Mark a document as processed so it isn't re-read on the next run."""
+        try:
+            async with db.begin_nested():
+                await store.mark_document_processed(db, user_id, uuid.UUID(document_id), source)
+        except (SQLAlchemyError, ValueError) as e:
+            logger.warning("mark_document_processed failed for document_id=%s: %s", document_id, e)
+            return {"error": str(e)}
+        return {"marked": True}
+
+    return [get_unprocessed_documents, mark_document_processed]
+
+
 def make_resolution_ladder_tools(
-    source: str, db: AsyncSession, user_id: uuid.UUID, embedder: Optional[Any] = None,
+    source: str,
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    embedder: Optional[Any] = None,
+    run_id: Optional[uuid.UUID] = None,
+    trigger: RunTrigger = RunTrigger.MANUAL,
 ) -> List[Any]:
     """Build the five tools every domain agent shares regardless of how it
     reads its own source's raw data: find_or_create_entity, add_claim,
@@ -117,6 +171,11 @@ def make_resolution_ladder_tools(
     (e.g. MCP tools) — the caller is responsible for sequential tool
     execution (SequentialToolExecutor) since AsyncSession is not safe for
     concurrent use.
+
+    run_id/trigger: the caller's own AgentRun id (see
+    app.services.agent.tracing), threaded through so a negotiation
+    ask_peer_agents triggers gets recorded as a sub-run of this one instead
+    of a disconnected trace.
     """
     from strands import tool
 
@@ -207,7 +266,10 @@ def make_resolution_ladder_tools(
         except ValueError as e:
             return {"error": f"invalid entity_id {entity_id!r}: {e}"}
         try:
-            return await _ask_peer_agents(db, user_id, source, parsed_entity_id, question)
+            return await _ask_peer_agents(
+                db, user_id, source, parsed_entity_id, question,
+                parent_run_id=run_id, trigger=trigger,
+            )
         except SQLAlchemyError as e:
             logger.warning("ask_peer_agents failed for entity_id=%s: %s", entity_id, e)
             return {"error": str(e)}
@@ -247,7 +309,13 @@ def make_resolution_ladder_tools(
 
 
 def make_domain_agent(
-    source: str, db: AsyncSession, user_id: uuid.UUID, embedder: Optional[Any] = None,
+    source: str,
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    embedder: Optional[Any] = None,
+    run_id: Optional[uuid.UUID] = None,
+    trigger: RunTrigger = RunTrigger.MANUAL,
+    config: Optional[EffectiveAgentConfig] = None,
 ) -> Any:
     """Build a Strands Agent scoped to one data source.
 
@@ -263,48 +331,35 @@ def make_domain_agent(
     embedder is optional (None in most tests) — when given, newly-created
     entities get embedded so Phase 4's reconciliation can find cross-source
     duplicates by similarity.
+
+    config is optional and deliberately kept out of this function's own
+    control flow — resolving it requires a DB read (async), and this function
+    stays synchronous on purpose (test_domain_agent.py's _build_agent and 27
+    other call sites call it without awaiting). run_domain_agent resolves the
+    EffectiveAgentConfig itself and passes it in; config=None (the default)
+    reproduces exactly today's hardcoded model/prompt/tools, same as before
+    this parameter existed.
     """
-    from strands import Agent, tool
+    from strands import Agent
     from strands.tools.executors import SequentialToolExecutor
 
     from app.services.agent.strands_model import build_openai_model
 
-    model = build_openai_model()
+    model = build_openai_model(model=config.model_id if config else None)
 
-    @tool
-    async def get_unprocessed_documents(limit: int = 20) -> List[Dict[str, Any]]:
-        """Get up to `limit` documents from this source that haven't been processed yet."""
-        docs = await store.get_unprocessed_documents(db, user_id, source, limit=limit)
-        return [
-            {
-                "document_id": str(d.id),
-                "content": d.content,
-                "source_id": d.source_id,
-                "metadata": d.metadata_,
-            }
-            for d in docs
-        ]
-
-    @tool
-    async def mark_document_processed(document_id: str) -> Dict[str, Any]:
-        """Mark a document as processed so it isn't re-read on the next run."""
-        try:
-            async with db.begin_nested():
-                await store.mark_document_processed(db, user_id, uuid.UUID(document_id), source)
-        except (SQLAlchemyError, ValueError) as e:
-            logger.warning("mark_document_processed failed for document_id=%s: %s", document_id, e)
-            return {"error": str(e)}
-        return {"marked": True}
-
-    tools = [
-        get_unprocessed_documents,
-        mark_document_processed,
-        *make_resolution_ladder_tools(source, db, user_id, embedder=embedder),
-    ]
-
-    system_prompt = DOMAIN_AGENT_SYSTEM_PROMPT.format(
-        source=source, source_guidance=_SOURCE_GUIDANCE.get(source, ""),
+    # get_unprocessed_documents/mark_document_processed are the agent's own
+    # watermarking, never subject to enabled_tools filtering — see
+    # tool_registry.py's module docstring for why. Only the resolution-ladder
+    # tools are configurable.
+    watermark_tools = make_watermark_tools(source, db, user_id)
+    ladder_tools = make_resolution_ladder_tools(
+        source, db, user_id, embedder=embedder, run_id=run_id, trigger=trigger,
     )
+    if config is not None:
+        ladder_tools = agent_config_service.filter_tools(ladder_tools, config.enabled_tools)
+    tools = [*watermark_tools, *ladder_tools]
+
+    system_prompt = config.system_prompt if config is not None else _default_system_prompt(source)
 
     return Agent(
         model=model, tools=tools, system_prompt=system_prompt, name=f"{source}_domain_agent",
@@ -318,15 +373,51 @@ async def run_domain_agent(
     user_id: uuid.UUID,
     batch_size: int = 20,
     embedder: Optional[Any] = None,
+    trigger: RunTrigger = RunTrigger.MANUAL,
 ) -> Dict[str, Any]:
     """Entry point for the sync scheduler (or a manual trigger, Phase 1): process
-    one batch of unprocessed documents for this source."""
-    agent = make_domain_agent(source, db, user_id, embedder=embedder)
+    one batch of unprocessed documents for this source.
+
+    Persists the run + its full conversation via app.services.agent.tracing —
+    a tracing failure never affects this function's own return value or
+    exceptions, so the return shape here is unchanged from before tracing
+    existed.
+    """
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    config = await agent_config_service.get_effective_config(
+        db, user_id, source, default_system_prompt=_default_system_prompt(source),
+    )
+    if not config.enabled:
+        logger.info("run_domain_agent: source=%s user=%s disabled via agent config, skipping", source, user_id)
+        return {"source": source, "summary": "skipped: disabled via agent config"}
+
+    run_id = await tracing.start_run(
+        user_id, agent_key=source, run_type=RunType.DOMAIN_AGENT, trigger=trigger,
+        model_id=config.model_id or settings.llm_model,
+    )
+    agent = make_domain_agent(
+        source, db, user_id, embedder=embedder, run_id=run_id, trigger=trigger, config=config,
+    )
     task = (
         f"Procesá hasta {batch_size} documentos no leídos de {source} siguiendo tu mandato. "
         "Si no hay documentos pendientes, no hagas nada."
     )
-    result = await agent.invoke_async(task)
+    try:
+        result = await agent.invoke_async(task)
+    except asyncio.CancelledError:
+        await tracing.record_agent_events(run_id, agent, actor=f"{source}_domain_agent")
+        await tracing.finish_run(run_id, RunStatus.FAILED, error="cancelled")
+        raise
+    except Exception as e:
+        await tracing.record_agent_events(run_id, agent, actor=f"{source}_domain_agent")
+        await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
+        raise
+    await tracing.record_agent_events(run_id, agent, actor=f"{source}_domain_agent")
+    await tracing.finish_run(
+        run_id, RunStatus.COMPLETED, summary=str(result), usage_source=agent,
+    )
     logger.info("run_domain_agent: source=%s user=%s done", source, user_id)
     return {"source": source, "summary": str(result)}
 
@@ -402,6 +493,8 @@ async def _ask_peer_agents(
     asking_source: str,
     entity_id: uuid.UUID,
     question: str,
+    parent_run_id: Optional[uuid.UUID] = None,
+    trigger: RunTrigger = RunTrigger.MANUAL,
 ) -> Dict[str, Any]:
     """Negotiate a doubt with the peer agents that actually have something to
     say about this entity — a scoped Swarm, never every registered source."""
@@ -485,7 +578,20 @@ async def _ask_peer_agents(
         }
         for src in [asking_source, *relevant_sources]
     ]
-    await run_negotiation(node_specs, question, log_context="ask_peer_agents")
+    neg_run_id = await tracing.start_run(
+        user_id, agent_key="negotiation", run_type=RunType.NEGOTIATION, trigger=trigger,
+        parent_run_id=parent_run_id,
+    )
+    swarm_result = await run_negotiation(node_specs, question, log_context="ask_peer_agents")
+    if swarm_result is not None:
+        await tracing.record_swarm_negotiation(neg_run_id, swarm_result)
+    await tracing.record_verdict_event(neg_run_id, actor="ask_peer_agents", payload=dict(verdict))
+    await tracing.finish_run(
+        neg_run_id,
+        RunStatus.COMPLETED if swarm_result is not None else RunStatus.FAILED,
+        summary=verdict.get("answer"),
+        usage_source=swarm_result,
+    )
 
     # Whatever the outcome, the question is resolved one way or another —
     # never left dangling on the hope that the caller's next turn follows up.

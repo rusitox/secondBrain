@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.agent.agent_config_service import EffectiveAgentConfig
 from app.services.agent.strands_orchestrator import (
     StrandsOrchestrator,
     _StreamingCallbackHandler,
@@ -193,6 +194,74 @@ class TestBuildAgentReasoningGuard:
         _, kwargs = mock_model_cls.call_args
         assert kwargs["params"] is None
         assert kwargs["model_id"] == "gpt-4o-mini"
+
+
+class TestBuildAgentWithConfig:
+    """Phase 2 — config overrides model/tools for the orchestrator, but never
+    system_prompt (see _build_agent's own docstring for why)."""
+
+    def _run_build(self, config: EffectiveAgentConfig, tools=None):
+        orch = StrandsOrchestrator(embedder=MagicMock())
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+
+        with patch("strands.Agent") as mock_agent_cls, \
+             patch("strands.models.openai.OpenAIModel") as mock_model_cls, \
+             patch("app.core.config.get_settings", return_value=settings), \
+             patch(
+                 "app.services.agent.strands_tools.make_agent_tools",
+                 return_value=tools if tools is not None else [],
+             ):
+            orch._build_agent(
+                db=MagicMock(), user_id=uuid.uuid4(), user_tz="UTC",
+                system_prompt="dynamic per-request prompt", history=[], stream_callback=None,
+                config=config,
+            )
+        return mock_model_cls, mock_agent_cls
+
+    def test_model_id_override_reaches_build_openai_model(self) -> None:
+        config = EffectiveAgentConfig(
+            enabled=True, model_id="openai/gpt-4o", system_prompt="ignored", enabled_tools=None,
+        )
+        mock_model_cls, _ = self._run_build(config)
+        assert mock_model_cls.call_args.kwargs["model_id"] == "gpt-4o"
+
+    def test_enabled_tools_filters_orchestrator_tools(self) -> None:
+        def _fake_tool(name: str):
+            t = MagicMock()
+            t.tool_name = name
+            return t
+
+        config = EffectiveAgentConfig(
+            enabled=True, model_id=None, system_prompt="ignored", enabled_tools=["search_memory"],
+        )
+        _, mock_agent_cls = self._run_build(
+            config, tools=[_fake_tool("search_memory"), _fake_tool("web_search")],
+        )
+        tool_names = {t.tool_name for t in mock_agent_cls.call_args.kwargs["tools"]}
+        assert tool_names == {"search_memory"}
+
+    def test_system_prompt_is_never_overridden_by_config(self) -> None:
+        """The dynamic per-request prompt (identity/style/date) always wins —
+        config.system_prompt is intentionally not wired for the orchestrator."""
+        config = EffectiveAgentConfig(
+            enabled=True, model_id=None, system_prompt="a config override", enabled_tools=None,
+        )
+        _, mock_agent_cls = self._run_build(config)
+        assert mock_agent_cls.call_args.kwargs["system_prompt"] == "dynamic per-request prompt"
+
+    def test_disabled_config_does_not_stop_the_orchestrator(self) -> None:
+        """Deliberate carve-out (see _build_agent's docstring): unlike
+        run_domain_agent/run_rd_domain_agent, the orchestrator ignores
+        config.enabled — disabling the whole chat interface via a stray
+        config row would be a worse failure mode than a no-op knowledge
+        agent. This test pins that choice down, not just the docstring."""
+        config = EffectiveAgentConfig(
+            enabled=False, model_id=None, system_prompt="ignored", enabled_tools=None,
+        )
+        _, mock_agent_cls = self._run_build(config)
+        mock_agent_cls.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ WORKDIR /app
 COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
+COPY static/ ./static/
 COPY infra/docker-entrypoint.sh /docker-entrypoint.sh
 
 RUN chmod +x /docker-entrypoint.sh

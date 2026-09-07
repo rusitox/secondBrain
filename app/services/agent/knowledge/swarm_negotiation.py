@@ -9,7 +9,7 @@ change (e.g. lowering max_handoffs after observing runaway swarms) applied
 to one copy wouldn't have applied to the other. Now there's one copy.
 """
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ MAX_HANDOFFS = 6
 MAX_ITERATIONS = 6
 
 
-async def run_negotiation(node_specs: List[Dict[str, Any]], task: str, log_context: str) -> None:
+async def run_negotiation(node_specs: List[Dict[str, Any]], task: str, log_context: str) -> Optional[Any]:
     """Build one Agent per spec and run them as a scoped Swarm.
 
     Args:
@@ -29,6 +29,12 @@ async def run_negotiation(node_specs: List[Dict[str, Any]], task: str, log_conte
         task: The question posed to the swarm's entry point (first spec).
         log_context: Short label for the exception log line (e.g. the
             calling function's name) so a failure is traceable to its trigger.
+
+    Returns the strands.multiagent.swarm.SwarmResult on success, or None if the
+    swarm itself crashed (as opposed to converging on "can't resolve", which is
+    a normal SwarmResult) — callers pass this straight to
+    app.services.agent.tracing.record_swarm_negotiation to persist the
+    handoff order and each node's conversation.
 
     The verdict itself is never returned by this function — callers capture
     it via a closure-based tool (e.g. submit_verdict) passed in `node_specs`,
@@ -57,6 +63,7 @@ async def run_negotiation(node_specs: List[Dict[str, Any]], task: str, log_conte
 
     swarm = Swarm(nodes, max_handoffs=MAX_HANDOFFS, max_iterations=MAX_ITERATIONS)
     try:
-        await swarm.invoke_async(task)
+        return await swarm.invoke_async(task)
     except Exception:
         logger.exception("%s: swarm negotiation failed", log_context)
+        return None
