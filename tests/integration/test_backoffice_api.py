@@ -593,6 +593,38 @@ class TestGraphQuestions:
         assert resp.status_code == 200
         assert len(resp.json()) == 1
 
+    async def test_resolves_entity_names_from_context(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ) -> None:
+        """A question whose context carries one entity_id resolves entity_name;
+        a reconciliation-style question carrying both entity_id and
+        candidate_entity_id resolves both — this is what lets the Preguntas
+        view show which entity a question is about instead of a raw uuid."""
+        user_id = await _make_persisted_user(db_session, email="q1b@example.com")
+        juan = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        juan_perez = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan Pérez")
+        await db_session.commit()
+        await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "¿trabaja en Atlas?",
+            context={"entity_id": str(juan.id)}, target=QuestionTarget.HUMAN,
+        )
+        await store.raise_question(
+            db_session, user_id, "reconciliation_engine", "¿son la misma entidad?",
+            context={"entity_id": str(juan.id), "candidate_entity_id": str(juan_perez.id)},
+            target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+
+        resp = await client.get(
+            "/backoffice/graph/questions", params={"status": "open"}, headers={"X-User-Id": str(user_id)},
+        )
+        assert resp.status_code == 200
+        data = {q["question_text"]: q for q in resp.json()}
+        assert data["¿trabaja en Atlas?"]["entity_name"] == "Juan"
+        assert data["¿trabaja en Atlas?"]["candidate_entity_name"] is None
+        assert data["¿son la misma entidad?"]["entity_name"] == "Juan"
+        assert data["¿son la misma entidad?"]["candidate_entity_name"] == "Juan Pérez"
+
     async def test_answer_closes_the_question(
         self, client: AsyncClient, db_session: AsyncSession,
     ) -> None:

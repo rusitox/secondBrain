@@ -428,6 +428,7 @@ tbody tr.selected { background: var(--accent-dim); }
   border-radius: var(--radius-md); padding: 16px 18px;
 }
 .question-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.question-entity { font-size: 12px; color: var(--accent); font-weight: 600; margin-bottom: 6px; }
 .question-text { font-size: 14px; margin-bottom: 10px; }
 .question-candidate {
   background: var(--bg-glass); border-left: 2px solid var(--accent);

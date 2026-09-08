@@ -247,6 +247,13 @@ class PendingQuestionRead(BaseModel):
     raised_by_agent: str
     question_text: str
     context: Dict[str, Any]
+    entity_name: Optional[str] = None
+    candidate_entity_name: Optional[str] = None
+    """Resolved from context.entity_id / context.candidate_entity_id — None
+    when the question carries no entity_id, or the entity was since deleted.
+    Not a column on PendingQuestion; the router fills these in from a batch
+    Entity lookup (store.list_entities_by_ids) so the UI doesn't have to
+    resolve raw UUIDs itself."""
     target: QuestionTarget
     candidate_answer: Optional[str]
     candidate_confidence: Optional[float]

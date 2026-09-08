@@ -1158,15 +1158,30 @@ async function refreshQuestionsBadge() {
   } catch { /* non-fatal */ }
 }
 
+/** Two entity names (entity_name + candidate_entity_name) means this is a
+ * reconciliation question ("¿son la misma entidad?"); one name means the
+ * question is about that single entity; neither means it isn't scoped to
+ * an entity at all (context carried no entity_id). */
+function questionEntityLabel(q) {
+  if (q.entity_name && q.candidate_entity_name) {
+    return `${escapeHtml(q.entity_name)} ↔ ${escapeHtml(q.candidate_entity_name)} <span class="mono">(¿son la misma entidad?)</span>`;
+  }
+  if (q.entity_name) return escapeHtml(q.entity_name);
+  return null;
+}
+
 function renderQuestions(questions) {
   const el = document.getElementById('questions-list');
   if (!questions.length) { el.innerHTML = '<div class="empty-hint">No hay preguntas.</div>'; return; }
-  el.innerHTML = questions.map((q) => `
+  el.innerHTML = questions.map((q) => {
+    const entityLabel = questionEntityLabel(q);
+    return `
     <div class="question-card" data-id="${q.id}">
       <div class="question-meta">
         <span class="badge badge-${escapeHtml(q.status)}">${escapeHtml(q.status)}</span>
         <span class="mono">${escapeHtml(q.raised_by_agent)} · ${fmtDate(q.created_at)}</span>
       </div>
+      ${entityLabel ? `<div class="question-entity">🏷 ${entityLabel}</div>` : ''}
       <div class="question-text">${escapeHtml(q.question_text)}</div>
       ${q.candidate_answer ? `<div class="question-candidate">Candidata: ${escapeHtml(q.candidate_answer)} ${q.candidate_confidence != null ? `(${(q.candidate_confidence * 100).toFixed(0)}%)` : ''}</div>` : ''}
       ${q.status === 'open' ? `
@@ -1177,7 +1192,8 @@ function renderQuestions(questions) {
         </div>
       ` : q.answer_text ? `<div class="mono">Respuesta: ${escapeHtml(q.answer_text)}</div>` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   el.querySelectorAll('.question-card').forEach((card) => {
     const id = card.dataset.id;

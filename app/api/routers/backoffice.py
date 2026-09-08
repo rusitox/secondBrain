@@ -31,7 +31,7 @@ pattern as commitments.py/integrations.py, since a knowledge-backoffice row leak
 across users would be a much worse mistake than a 403 would have been.
 """
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -459,7 +459,32 @@ async def list_questions(
     questions = await store.list_questions(
         db, current_user_id, status=question_status, target=target, limit=limit, offset=offset,
     )
-    return [PendingQuestionRead.model_validate(q) for q in questions]
+
+    # Resolve context.entity_id/candidate_entity_id to names in one batch query
+    # instead of the UI showing raw UUIDs or fetching per-row.
+    entity_ids = set()
+    for q in questions:
+        for key in ("entity_id", "candidate_entity_id"):
+            raw = q.context.get(key)
+            if raw:
+                try:
+                    entity_ids.add(uuid.UUID(raw))
+                except (ValueError, TypeError):
+                    continue
+    entities = await store.list_entities_by_ids(db, current_user_id, list(entity_ids))
+    name_by_id: Dict[str, str] = {str(e.id): e.canonical_name for e in entities}
+
+    def _name_for(q: Any, key: str) -> Optional[str]:
+        raw = q.context.get(key)
+        return name_by_id.get(raw) if isinstance(raw, str) else None
+
+    return [
+        PendingQuestionRead.model_validate(q).model_copy(update={
+            "entity_name": _name_for(q, "entity_id"),
+            "candidate_entity_name": _name_for(q, "candidate_entity_id"),
+        })
+        for q in questions
+    ]
 
 
 @router.post("/graph/questions/{question_id}/answer", response_model=PendingQuestionRead)

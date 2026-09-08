@@ -60,6 +60,19 @@ async def get_entity(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def list_entities_by_ids(
+    db: AsyncSession, user_id: uuid.UUID, entity_ids: List[uuid.UUID],
+) -> List[Entity]:
+    """Batch lookup for resolving a handful of entity_ids to names (e.g. the
+    backoffice's questions inbox resolving context.entity_id/candidate_entity_id
+    for every row on a page) — one query instead of one per id. Empty input
+    returns [] without a query, same short-circuit every list_* here uses."""
+    if not entity_ids:
+        return []
+    stmt = select(Entity).where(Entity.user_id == user_id, Entity.id.in_(entity_ids))
+    return list((await db.execute(stmt)).scalars().all())
+
+
 async def list_entities(
     db: AsyncSession,
     user_id: uuid.UUID,
