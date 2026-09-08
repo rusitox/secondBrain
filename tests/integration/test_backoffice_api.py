@@ -399,6 +399,52 @@ class TestListAndGetRuns:
         assert len(data) == 1
         assert data[0]["agent_key"] == "slack"
 
+    async def test_stats_round_trips_through_the_list_endpoint(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ) -> None:
+        """AgentRunSummary.stats is free to expose (already loaded on every row,
+        no extra query) — this is what lets the Conversations list show a
+        negotiation's question/participants without an N+1 fetch per row."""
+        user_id = await _make_persisted_user(db_session, email="runs1c@example.com")
+        db_session.add(AgentRun(
+            user_id=user_id, agent_key="negotiation", run_type=RunType.NEGOTIATION,
+            trigger=RunTrigger.MANUAL, status=RunStatus.COMPLETED,
+            stats={"question": "¿son la misma persona?", "participants": ["slack_negotiator", "outlook_negotiator"]},
+        ))
+        await db_session.commit()
+
+        resp = await client.get(
+            "/backoffice/runs", params={"run_type": "negotiation"}, headers={"X-User-Id": str(user_id)},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["stats"]["question"] == "¿son la misma persona?"
+        assert data[0]["stats"]["participants"] == ["slack_negotiator", "outlook_negotiator"]
+
+    async def test_top_level_excludes_negotiation_sub_runs(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ) -> None:
+        user_id = await _make_persisted_user(db_session, email="runs1b@example.com")
+        parent = AgentRun(
+            user_id=user_id, agent_key="slack", run_type=RunType.DOMAIN_AGENT,
+            trigger=RunTrigger.MANUAL, status=RunStatus.COMPLETED,
+        )
+        db_session.add(parent)
+        await db_session.flush()
+        db_session.add(AgentRun(
+            user_id=user_id, agent_key="negotiation", run_type=RunType.NEGOTIATION,
+            trigger=RunTrigger.MANUAL, status=RunStatus.COMPLETED, parent_run_id=parent.id,
+        ))
+        await db_session.commit()
+
+        resp = await client.get(
+            "/backoffice/runs", params={"top_level": "true"}, headers={"X-User-Id": str(user_id)},
+        )
+        assert resp.status_code == 200
+        keys = [r["agent_key"] for r in resp.json()]
+        assert keys == ["slack"]
+
     async def test_get_run_includes_events_and_sub_runs(
         self, client: AsyncClient, db_session: AsyncSession,
     ) -> None:

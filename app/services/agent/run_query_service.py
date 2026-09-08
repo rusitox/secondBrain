@@ -33,6 +33,7 @@ async def list_runs(
     agent_key: Optional[str] = None,
     status: Optional[RunStatus] = None,
     run_type: Optional[RunType] = None,
+    top_level: bool = False,
     limit: int = 50,
     offset: int = 0,
 ) -> List[AgentRun]:
@@ -43,6 +44,8 @@ async def list_runs(
         stmt = stmt.where(AgentRun.status == status)
     if run_type is not None:
         stmt = stmt.where(AgentRun.run_type == run_type)
+    if top_level:
+        stmt = stmt.where(AgentRun.parent_run_id.is_(None))
     stmt = stmt.order_by(AgentRun.started_at.desc()).offset(offset).limit(limit)
     return list((await db.execute(stmt)).scalars().all())
 

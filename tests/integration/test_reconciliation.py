@@ -10,8 +10,10 @@ import uuid
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_run import AgentRun, RunType
 from app.models.entity import EntityType
 from app.models.entity_claim import ClaimStatus
 from app.models.entity_link import LinkResolvedBy
@@ -259,6 +261,19 @@ class TestNegotiateSameAs:
         assert verdict == {"same_entity": True, "confidence": 0.9, "reasoning": "mismo email"}
         assert mock_agent_cls.call_count == 2
         mock_swarm_cls.assert_called_once()
+
+        # The backoffice's Conversations view reads these straight off
+        # AgentRun.stats — including "sources", since negotiate_same_as' node
+        # names are the fixed "entity_a/b_negotiator" (unlike ask_peer_agents'
+        # f"{source}_negotiator"), so the real source names have to be carried
+        # separately for "filter by participant" to find this run.
+        run = (await db_session.execute(
+            select(AgentRun).where(AgentRun.user_id == user_id, AgentRun.run_type == RunType.NEGOTIATION)
+        )).scalar_one()
+        assert run.stats["entity_a_name"] == "Juan"
+        assert run.stats["entity_b_name"] == "Juan Pérez"
+        assert run.stats["participants"] == ["entity_a_negotiator", "entity_b_negotiator"]
+        assert set(run.stats["sources"]) == {"slack", "outlook"}
 
     async def test_swarm_exception_returns_unresolved_default(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="n2@example.com")

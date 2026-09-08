@@ -227,6 +227,19 @@ async def negotiate_same_as(
         RunStatus.COMPLETED if swarm_result is not None else RunStatus.FAILED,
         summary=verdict.get("reasoning"),
         usage_source=swarm_result,
+        stats={
+            "question": question,
+            "entity_a_name": entity_a.canonical_name,
+            "entity_b_name": entity_b.canonical_name,
+            "entity_a_id": str(entity_a.id),
+            "entity_b_id": str(entity_b.id),
+            "participants": [spec["name"] for spec in node_specs],
+            # Unlike ask_peer_agents' node names (f"{source}_negotiator"), these
+            # are always the fixed "entity_a_negotiator"/"entity_b_negotiator" —
+            # the real source names have to be carried separately so the
+            # backoffice's Conversations "filter by participant" can find them.
+            "sources": sorted(set(sources_a) | set(sources_b)),
+        },
     )
 
     return verdict

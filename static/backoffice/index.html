@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
 
@@ -47,9 +48,11 @@
       <button class="nav-item active" data-view="dashboard"><span class="nav-icon">📊</span><span class="nav-label">Dashboard</span></button>
       <button class="nav-item" data-view="agents"><span class="nav-icon">🤖</span><span class="nav-label">Agentes</span></button>
       <button class="nav-item" data-view="runs"><span class="nav-icon">🗂</span><span class="nav-label">Runs</span></button>
+      <button class="nav-item" data-view="conversations"><span class="nav-icon">💬</span><span class="nav-label">Conversaciones</span></button>
       <button class="nav-item" data-view="graph"><span class="nav-icon">🕸</span><span class="nav-label">Grafo</span></button>
       <button class="nav-item" data-view="questions"><span class="nav-icon">❓</span><span class="nav-label">Preguntas</span><span id="questions-badge" class="nav-badge" hidden>0</span></button>
       <button class="nav-item" data-view="mcps"><span class="nav-icon">🔌</span><span class="nav-label">MCPs &amp; Tools</span></button>
+      <button class="nav-item" data-view="architecture"><span class="nav-icon">🧭</span><span class="nav-label">Arquitectura</span></button>
     </nav>
     <button id="logout-btn" class="logout-btn">Cerrar sesión</button>
   </aside>
@@ -92,6 +95,14 @@
       <h1>Runs &amp; Trazas</h1>
       <div class="filters" id="runs-filters">
         <select id="runs-agent-filter"><option value="">Todos los agentes</option></select>
+        <select id="runs-type-filter">
+          <option value="">Todos los tipos</option>
+          <option value="domain_agent">Agente de dominio</option>
+          <option value="rd_agent">I+D</option>
+          <option value="reconciliation">Reconciliación</option>
+          <option value="negotiation">Negociación</option>
+          <option value="chat">Chat</option>
+        </select>
         <select id="runs-status-filter">
           <option value="">Todos los estados</option>
           <option value="running">running</option>
@@ -100,10 +111,36 @@
         </select>
         <button id="runs-refresh" class="btn-secondary">Actualizar</button>
       </div>
+      <div class="empty-hint" style="margin-bottom:10px">Sólo corridas de primer nivel — las negociaciones entre agentes que disparan viven en <strong>Conversaciones</strong>, o colgando de la corrida que las disparó.</div>
       <div class="runs-layout">
         <div id="runs-table" class="table-wrap"></div>
         <div id="run-detail" class="run-detail">
           <div class="empty-hint">Elegí una corrida para ver su traza.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Conversations -->
+    <section id="view-conversations" class="view">
+      <h1>Conversaciones entre agentes</h1>
+      <div class="empty-hint" style="margin-bottom:10px">
+        Cada vez que un agente duda (<code>ask_peer_agents</code>) o el reconciliador sospecha un
+        duplicado (<code>negotiate_same_as</code>), se arma una negociación breve entre agentes pares.
+        Acá está esa conversación completa: quién participó, qué se preguntaron y en qué concluyeron.
+      </div>
+      <div class="filters">
+        <select id="conv-outcome-filter">
+          <option value="">Todos los resultados</option>
+          <option value="completed">Concluyeron</option>
+          <option value="failed">Fallaron</option>
+        </select>
+        <input id="conv-participant-filter" class="form-input" type="search" placeholder="Filtrar por participante (ej: slack)" />
+        <button id="conv-refresh" class="btn-secondary">Actualizar</button>
+      </div>
+      <div class="runs-layout">
+        <div id="conversations-list" class="table-wrap"></div>
+        <div id="conversation-detail" class="run-detail">
+          <div class="empty-hint">Elegí una conversación para ver la transcripción.</div>
         </div>
       </div>
     </section>
@@ -122,11 +159,24 @@
           <option value="organization">organization</option>
         </select>
         <button id="graph-refresh" class="btn-secondary">Buscar</button>
+        <span class="graph-mode-toggle">
+          <button id="graph-mode-focus" class="btn-secondary btn-small active">🔎 Vecindario</button>
+          <button id="graph-mode-map" class="btn-secondary btn-small">🗺 Mapa completo</button>
+        </span>
+        <select id="graph-hops">
+          <option value="1">1 salto</option>
+          <option value="2" selected>2 saltos</option>
+        </select>
       </div>
+      <div id="graph-stats" class="graph-stats mono"></div>
       <div class="graph-layout">
-        <div id="cy" class="cy-canvas"></div>
+        <div class="graph-canvas-col">
+          <div id="cy" class="cy-canvas"></div>
+          <div id="graph-legend" class="graph-legend"></div>
+          <div id="graph-isolated" class="graph-isolated"></div>
+        </div>
         <div id="graph-detail" class="graph-detail">
-          <div class="empty-hint">Hacé clic en un nodo para ver sus claims.</div>
+          <div class="empty-hint">Buscá o hacé clic en un nodo para ver su vecindario, claims y relaciones.</div>
         </div>
       </div>
     </section>
@@ -154,6 +204,22 @@
 
       <h1 style="margin-top:32px">Catálogo de tools</h1>
       <div id="tools-table" class="table-wrap"></div>
+    </section>
+
+    <!-- Architecture -->
+    <section id="view-architecture" class="view">
+      <h1>Arquitectura del sistema multi-agente</h1>
+      <div class="panel">
+        <h2>Cómo se comunican los agentes</h2>
+        <pre class="mermaid" id="arch-diagram"></pre>
+      </div>
+      <h1 style="margin-top:32px">Quién es quién</h1>
+      <div class="empty-hint" style="margin-bottom:14px">
+        Todo lo que aparece en <strong>Runs</strong> es uno de estos actores. Los dos primeros son
+        agentes configurables (modelo, prompt, tools); el resto son procesos del sistema — no tienen
+        ficha en <strong>Agentes</strong> porque no se configuran, se disparan solos.
+      </div>
+      <div id="arch-actor-cards" class="arch-actor-cards"></div>
     </section>
 
   </main>

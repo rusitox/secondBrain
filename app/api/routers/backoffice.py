@@ -15,7 +15,7 @@ PUT    /backoffice/mcp-servers/{server_id} — update it
 DELETE /backoffice/mcp-servers/{server_id} — remove it
 POST   /backoffice/mcp-servers/{server_id}/test — connect and list its tools
 
-GET /backoffice/runs — list agent runs (filter by agent_key/status/run_type)
+GET /backoffice/runs — list agent runs (filter by agent_key/status/run_type/top_level)
 GET /backoffice/runs/{run_id} — one run, its events, and any sub-runs
 
 GET  /backoffice/graph/entities — list/search entities (X-Total-Count response header)
@@ -339,6 +339,7 @@ async def list_runs(
     agent_key: Optional[str] = Query(None),
     run_status: Optional[RunStatus] = Query(None, alias="status"),
     run_type: Optional[RunType] = Query(None),
+    top_level: bool = Query(default=False, description="Exclude negotiation sub-runs (parent_run_id set)"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user_id: uuid.UUID = Depends(get_current_user_id),
@@ -346,7 +347,7 @@ async def list_runs(
 ) -> List[AgentRunSummary]:
     runs = await run_query_service.list_runs(
         db, current_user_id, agent_key=agent_key, status=run_status, run_type=run_type,
-        limit=limit, offset=offset,
+        top_level=top_level, limit=limit, offset=offset,
     )
     return [AgentRunSummary.model_validate(r) for r in runs]
 
@@ -364,7 +365,6 @@ async def get_run(
     sub_runs = await run_query_service.list_sub_runs(db, current_user_id, run_id)
     return AgentRunDetail(
         **AgentRunSummary.model_validate(run).model_dump(),
-        stats=run.stats,
         events=[AgentRunEventRead.model_validate(e) for e in events],
         sub_runs=[AgentRunSummary.model_validate(r) for r in sub_runs],
     )

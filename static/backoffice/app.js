@@ -14,9 +14,20 @@ let agentsCache = [];          // [{agent_key, enabled, model_id, ...}]
 let selectedAgentKey = null;
 const runningAgentKeys = new Set(); // agent_keys with a manual run in flight — survives re-render/navigation
 let selectedRunId = null;
+let selectedConversationId = null;
 let cy = null;                 // cytoscape instance
 let claimsChart = null;
 let confidenceChart = null;
+
+// Graph view state (Fase 1 — explorador enfocado)
+let graphEntitiesCache = [];   // last GET /graph/entities response
+let graphLinksCache = [];      // last GET /graph/links response
+let graphEntityById = new Map();  // id -> entity (from graphEntitiesCache)
+let graphAdjacency = new Map();   // id -> Set(neighbor ids)
+let graphEdgesByPair = new Map(); // "idA|idB" -> link, both orderings
+let graphMode = 'focus';       // 'focus' | 'map'
+let graphFocusEntityId = null;
+let graphZoom = 1;
 
 const AGENT_KEYS_META = {
   slack: { label: 'Slack', icon: '💬' },
@@ -26,6 +37,16 @@ const AGENT_KEYS_META = {
   notion: { label: 'Notion', icon: '📝' },
   rd: { label: 'I+D Platform', icon: '🔬' },
   orchestrator: { label: 'Orchestrator (chat)', icon: '🧠' },
+  reconciliation: { label: 'Reconciliación', icon: '🧬' },
+  negotiation: { label: 'Negociación', icon: '🤝' },
+};
+
+const RUN_TYPE_LABELS = {
+  domain_agent: 'Agente de dominio',
+  rd_agent: 'I+D',
+  reconciliation: 'Reconciliación',
+  negotiation: 'Negociación',
+  chat: 'Chat',
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -55,12 +76,20 @@ function init() {
 
   document.getElementById('runs-refresh').addEventListener('click', loadRuns);
   document.getElementById('runs-agent-filter').addEventListener('change', loadRuns);
+  document.getElementById('runs-type-filter').addEventListener('change', loadRuns);
   document.getElementById('runs-status-filter').addEventListener('change', loadRuns);
 
-  document.getElementById('graph-refresh').addEventListener('click', loadGraph);
+  document.getElementById('conv-refresh').addEventListener('click', loadConversations);
+  document.getElementById('conv-outcome-filter').addEventListener('change', loadConversations);
+  document.getElementById('conv-participant-filter').addEventListener('input', debounce(loadConversations, 250));
+
+  document.getElementById('graph-refresh').addEventListener('click', () => loadGraph({ resetFocus: true }));
   document.getElementById('graph-search').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') loadGraph();
+    if (e.key === 'Enter') loadGraph({ resetFocus: true });
   });
+  document.getElementById('graph-mode-focus').addEventListener('click', () => setGraphMode('focus'));
+  document.getElementById('graph-mode-map').addEventListener('click', () => setGraphMode('map'));
+  document.getElementById('graph-hops').addEventListener('change', renderCurrentGraphMode);
 
   document.getElementById('questions-refresh').addEventListener('click', loadQuestions);
   document.getElementById('questions-status-filter').addEventListener('change', loadQuestions);
@@ -188,9 +217,16 @@ function switchView(view) {
   if (view === 'dashboard') loadDashboard();
   if (view === 'agents' && agentsCache.length === 0) loadAgentsList();
   if (view === 'runs') loadRuns();
+  if (view === 'conversations') loadConversations();
   if (view === 'graph') loadGraph();
   if (view === 'questions') loadQuestions();
   if (view === 'mcps') { loadMcpServers(); loadToolsCatalog(); }
+  if (view === 'architecture') renderArchitectureView();
+}
+
+function debounce(fn, ms) {
+  let t = null;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
 function escapeHtml(s) {
@@ -484,13 +520,27 @@ function setAgentRunButtonState(agentKey) {
 }
 
 // ── Runs ──────────────────────────────────────────────────────────────────────
+// Only top-level runs (parent_run_id is null) — negotiation sub-runs live in
+// the Conversations view, or nested under the run that triggered them.
+
+function agentLabel(key) {
+  const meta = AGENT_KEYS_META[key] || { label: key, icon: '🤖' };
+  return `${meta.icon} ${escapeHtml(meta.label)}`;
+}
+
+function truncate(s, n) {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
 
 async function loadRuns() {
   const agentKey = document.getElementById('runs-agent-filter').value;
+  const runType = document.getElementById('runs-type-filter').value;
   const status = document.getElementById('runs-status-filter').value;
   const params = new URLSearchParams();
   if (agentKey) params.set('agent_key', agentKey);
+  if (runType) params.set('run_type', runType);
   if (status) params.set('status', status);
+  params.set('top_level', 'true');
   params.set('limit', '50');
 
   const tableEl = document.getElementById('runs-table');
@@ -506,53 +556,88 @@ async function loadRuns() {
 function renderRunsTable(runs) {
   const el = document.getElementById('runs-table');
   if (!runs.length) { el.innerHTML = '<div class="empty-hint">Sin corridas.</div>'; return; }
-  el.innerHTML = `<table><thead><tr><th>Agente</th><th>Estado</th><th>Trigger</th><th>Inicio</th></tr></thead><tbody>
+  el.innerHTML = `<table><thead><tr><th>Agente</th><th>Tipo</th><th>Estado</th><th>Trigger</th><th>Inicio</th></tr></thead><tbody>
     ${runs.map((r) => `<tr class="clickable ${r.id === selectedRunId ? 'selected' : ''}" data-id="${r.id}">
-      <td>${escapeHtml(r.agent_key)}</td>
+      <td>${agentLabel(r.agent_key)}</td>
+      <td class="mono">${escapeHtml(RUN_TYPE_LABELS[r.run_type] || r.run_type)}</td>
       <td><span class="badge badge-${escapeHtml(r.status)}">${escapeHtml(r.status)}</span></td>
       <td class="mono">${escapeHtml(r.trigger)}</td>
       <td class="mono">${fmtDate(r.started_at)}</td>
     </tr>`).join('')}
   </tbody></table>`;
   el.querySelectorAll('tr.clickable').forEach((row) => {
-    row.addEventListener('click', () => selectRun(row.dataset.id));
+    row.addEventListener('click', () => selectRun(row.dataset.id, 'run-detail'));
   });
 }
 
-async function selectRun(runId) {
-  selectedRunId = runId;
-  document.querySelectorAll('#runs-table tr').forEach((r) => r.classList.toggle('selected', r.dataset.id === runId));
-  const detail = document.getElementById('run-detail');
+/** Shared by the Runs detail pane and the Conversations detail pane —
+ * containerId picks which one gets re-rendered on drill-down/back nav. */
+async function selectRun(runId, containerId = 'run-detail') {
+  if (!runId) return;
+  if (containerId === 'run-detail') {
+    selectedRunId = runId;
+    document.querySelectorAll('#runs-table tr').forEach((r) => r.classList.toggle('selected', r.dataset.id === runId));
+  } else {
+    selectedConversationId = runId;
+    document.querySelectorAll('#conversations-list tr').forEach((r) => r.classList.toggle('selected', r.dataset.id === runId));
+  }
+  const detail = document.getElementById(containerId);
   detail.innerHTML = '<div class="empty-hint">Cargando…</div>';
   try {
     const run = await apiGet(`/backoffice/runs/${runId}`);
-    renderRunDetail(run);
+    detail.innerHTML = buildRunDetailHtml(run, containerId);
+    wireRunDetailEvents(detail, run, containerId);
   } catch (e) {
     detail.innerHTML = `<div class="empty-hint">Error: ${escapeHtml(e.message)}</div>`;
   }
 }
 
-function renderRunDetail(run) {
-  const detail = document.getElementById('run-detail');
-  detail.innerHTML = `
+function wireRunDetailEvents(detail, run, containerId) {
+  const backBtn = detail.querySelector('[data-action="back-to-parent"]');
+  if (backBtn) backBtn.addEventListener('click', () => selectRun(run.parent_run_id, containerId));
+  const jumpBtn = detail.querySelector('[data-action="jump-to-runs"]');
+  if (jumpBtn) {
+    jumpBtn.addEventListener('click', async () => {
+      switchView('runs');
+      await loadRuns();
+      selectRun(run.parent_run_id, 'run-detail');
+    });
+  }
+  detail.querySelectorAll('[data-action="open-sub-run"]').forEach((card) => {
+    card.addEventListener('click', () => selectRun(card.dataset.id, containerId));
+  });
+}
+
+function buildRunDetailHtml(run, containerId) {
+  const isConversation = run.run_type === 'negotiation';
+  const backAction = containerId === 'conversation-detail' && run.parent_run_id ? 'jump-to-runs' : 'back-to-parent';
+  const header = `
     <div class="detail-header">
-      <div class="detail-title">${escapeHtml(run.agent_key)} <span class="badge badge-${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></div>
+      <div class="detail-title">${agentLabel(run.agent_key)} <span class="badge badge-${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></div>
     </div>
     <div class="mono" style="margin-bottom:10px">
       ${fmtDate(run.started_at)} → ${fmtDate(run.finished_at)} (${fmtDuration(run.duration_ms)})
-      ${run.total_tokens ? ` · ${run.total_tokens} tokens` : ''}
+      ${run.total_tokens ? ` · ${run.total_tokens} tokens` : ''} · disparado por ${escapeHtml(run.trigger)}
     </div>
-    ${run.summary ? `<div style="margin-bottom:10px">${escapeHtml(run.summary)}</div>` : ''}
+    ${run.parent_run_id ? `<button type="button" class="btn-secondary btn-small" data-action="${backAction}" style="margin-bottom:12px">
+      ← ${backAction === 'jump-to-runs' ? 'Ver la corrida que la disparó' : 'Volver a la corrida padre'}
+    </button>` : ''}
     ${run.error ? `<div class="form-error visible" style="margin-bottom:10px">${escapeHtml(run.error)}</div>` : ''}
+  `;
+
+  if (isConversation) return header + buildConversationBodyHtml(run);
+
+  return header + `
+    ${run.summary ? `<div style="margin-bottom:10px">${escapeHtml(run.summary)}</div>` : ''}
     <h2>Traza</h2>
     <div class="timeline">
       ${run.events.length ? run.events.map(renderTimelineEvent).join('') : '<div class="empty-hint">Sin eventos registrados.</div>'}
     </div>
     ${run.sub_runs.length ? `<div class="sub-runs">
-      <h2>Sub-corridas (negociaciones)</h2>
-      ${run.sub_runs.map((s) => `<div class="timeline-event">
-        <div class="timeline-actor">${escapeHtml(s.agent_key)} · <span class="badge badge-${escapeHtml(s.status)}">${escapeHtml(s.status)}</span></div>
-        <div class="timeline-body">${escapeHtml(s.summary || '')}</div>
+      <h2>Conversaciones disparadas (${run.sub_runs.length})</h2>
+      ${run.sub_runs.map((s) => `<div class="timeline-event clickable" data-action="open-sub-run" data-id="${s.id}">
+        <div class="timeline-actor">🤝 ${escapeHtml(s.stats && s.stats.participants ? s.stats.participants.join(' + ') : 'negociación')} · <span class="badge badge-${escapeHtml(s.status)}">${escapeHtml(s.status)}</span></div>
+        <div class="timeline-body">${escapeHtml(s.summary || 'Sin conclusión.')} <span class="link-hint">Ver conversación →</span></div>
       </div>`).join('')}
     </div>` : ''}
   `;
@@ -573,9 +658,154 @@ function renderTimelineEvent(ev) {
   </div>`;
 }
 
-// ── Graph ─────────────────────────────────────────────────────────────────────
+// ── Conversations (negotiation runs — interaction + conclusion) ────────────────
 
-async function loadGraph() {
+async function loadConversations() {
+  const outcome = document.getElementById('conv-outcome-filter').value;
+  const participant = document.getElementById('conv-participant-filter').value.trim().toLowerCase();
+  const params = new URLSearchParams({ run_type: 'negotiation', limit: '100' });
+  if (outcome) params.set('status', outcome);
+
+  const el = document.getElementById('conversations-list');
+  el.innerHTML = '<div class="empty-hint">Cargando…</div>';
+  try {
+    let runs = await apiGet(`/backoffice/runs?${params}`);
+    if (participant) {
+      // negotiate_same_as' node names are the fixed "entity_a/b_negotiator" —
+      // the real source names live in stats.sources, not stats.participants.
+      runs = runs.filter((r) => {
+        const stats = r.stats || {};
+        const haystack = [...(stats.participants || []), ...(stats.sources || [])];
+        return haystack.some((p) => p.toLowerCase().includes(participant));
+      });
+    }
+    renderConversationsTable(runs);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-hint">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderConversationsTable(runs) {
+  const el = document.getElementById('conversations-list');
+  if (!runs.length) { el.innerHTML = '<div class="empty-hint">Sin conversaciones todavía.</div>'; return; }
+  el.innerHTML = `<table><thead><tr><th>Sobre qué</th><th>Participantes</th><th>Resultado</th><th>Inicio</th></tr></thead><tbody>
+    ${runs.map((r) => {
+      const stats = r.stats || {};
+      const participants = (stats.participants || []).map((p) => `<span class="chip">${escapeHtml(p)}</span>`).join(' ');
+      return `<tr class="clickable ${r.id === selectedConversationId ? 'selected' : ''}" data-id="${r.id}">
+        <td>${escapeHtml(truncate(stats.question || r.summary || '—', 80))}</td>
+        <td>${participants || '—'}</td>
+        <td><span class="badge badge-${escapeHtml(r.status)}">${escapeHtml(r.status)}</span></td>
+        <td class="mono">${fmtDate(r.started_at)}</td>
+      </tr>`;
+    }).join('')}
+  </tbody></table>`;
+  el.querySelectorAll('tr.clickable').forEach((row) => {
+    row.addEventListener('click', () => selectRun(row.dataset.id, 'conversation-detail'));
+  });
+}
+
+function buildConversationBodyHtml(run) {
+  const stats = run.stats || {};
+  const participants = stats.participants || [];
+  const contextLines = [];
+  if (stats.question) contextLines.push(`<div><strong>Pregunta:</strong> ${escapeHtml(stats.question)}</div>`);
+  const entityLabel = stats.entity_name
+    || (stats.entity_a_name && stats.entity_b_name ? `${stats.entity_a_name} ↔ ${stats.entity_b_name}` : null);
+  if (entityLabel) contextLines.push(`<div><strong>Entidad:</strong> ${escapeHtml(entityLabel)}</div>`);
+
+  const handoffEvents = run.events.filter((e) => e.event_type === 'handoff');
+  const handoffChips = handoffEvents.length
+    ? [handoffEvents[0].actor, ...handoffEvents.map((e) => e.payload.to)]
+    : participants;
+
+  const verdictEvent = run.events.find((e) => e.event_type === 'verdict') || null;
+  const turns = groupEventsIntoTurns(run.events.filter((e) => e.event_type !== 'handoff' && e.event_type !== 'verdict'));
+
+  return `
+    ${contextLines.length ? `<div class="conv-context">${contextLines.join('')}</div>` : ''}
+    ${participants.length ? `<div style="margin-bottom:10px"><strong>Participantes:</strong> ${participants.map((p) => `<span class="chip">${escapeHtml(p)}</span>`).join(' ')}</div>` : ''}
+    ${handoffChips.length ? `<div class="handoff-map">${handoffChips.map((c) => `<span class="chip chip-handoff">${escapeHtml(c)}</span>`).join('<span class="handoff-arrow">→</span>')}</div>` : ''}
+    <h2>Conversación</h2>
+    <div class="chat-thread">
+      ${turns.length ? turns.map(renderChatTurn).join('') : '<div class="empty-hint">Sin turnos registrados.</div>'}
+    </div>
+    ${renderVerdictCard(verdictEvent, run)}
+  `;
+}
+
+function groupEventsIntoTurns(events) {
+  const turns = [];
+  for (const ev of events) {
+    const last = turns[turns.length - 1];
+    if (last && last.actor === (ev.actor || null)) last.events.push(ev);
+    else turns.push({ actor: ev.actor || null, events: [ev] });
+  }
+  return turns;
+}
+
+function renderChatTurn(turn) {
+  return `<div class="chat-turn">
+    <div class="chat-turn-actor">${escapeHtml(turn.actor || 'sistema')}</div>
+    <div class="chat-turn-body">${turn.events.map(renderChatEvent).join('') || '<span class="empty-hint">—</span>'}</div>
+  </div>`;
+}
+
+function renderChatEvent(ev) {
+  if (ev.event_type === 'assistant_text') return ev.payload.text ? `<p>${escapeHtml(ev.payload.text)}</p>` : '';
+  if (ev.event_type === 'tool_call') return `<details><summary>🔧 ${escapeHtml(ev.tool_name || 'tool')}</summary><pre>${escapeHtml(JSON.stringify(ev.payload.input, null, 2))}</pre></details>`;
+  if (ev.event_type === 'tool_result') return `<details><summary>↩ resultado</summary><pre>${escapeHtml(JSON.stringify(ev.payload.content, null, 2))}</pre></details>`;
+  if (ev.event_type === 'error') return `<p class="chat-event-error">${escapeHtml(ev.payload.error || '')}</p>`;
+  return `<pre>${escapeHtml(JSON.stringify(ev.payload))}</pre>`;
+}
+
+function renderVerdictCard(verdictEvent, run) {
+  // Both negotiation tools init their verdict dict with default values *before*
+  // the swarm runs and always record it, even when the swarm itself crashed
+  // (run.status !== 'completed') — that default is not a real conclusion, so
+  // a crashed run must never reach the payload branches below.
+  const payload = run.status === 'completed' && verdictEvent ? verdictEvent.payload : null;
+  if (!payload) {
+    return `<div class="verdict-card ${run.status === 'failed' ? 'verdict-escalated' : ''}">
+      <div class="verdict-title">${run.status === 'failed' ? '⚠️ La negociación falló' : (run.status === 'completed' ? '✅ Conclusión' : '⏳ En curso')}</div>
+      ${run.summary ? `<div>${escapeHtml(run.summary)}</div>` : '<div class="empty-hint">Sin veredicto registrado.</div>'}
+    </div>`;
+  }
+  let title;
+  let body;
+  let resolved;
+  if ('resolved' in payload) {
+    resolved = !!payload.resolved;
+    title = resolved ? '✅ Conclusión entre pares' : '⚠️ Sin acuerdo — escalada al humano';
+    body = payload.answer;
+  } else {
+    resolved = true;
+    title = '🧬 Veredicto de duplicado';
+    body = `${payload.same_entity ? 'Son la misma entidad — se fusionan.' : 'Son entidades distintas.'} ${payload.reasoning || ''}`.trim();
+  }
+  const confidence = payload.confidence != null ? `${Math.round(payload.confidence * 100)}%` : null;
+  return `<div class="verdict-card ${resolved ? 'verdict-resolved' : 'verdict-escalated'}">
+    <div class="verdict-title">${title}</div>
+    ${body ? `<div>${escapeHtml(body)}</div>` : ''}
+    ${confidence ? `<div class="mono">confianza: ${confidence}</div>` : ''}
+  </div>`;
+}
+
+// ── Graph ─────────────────────────────────────────────────────────────────────
+// Fase 1 — explorador enfocado. Default: sólo el vecindario (1-2 saltos) de
+// una entidad, layout concentric — legible por construcción, sin nodos
+// sueltos compitiendo por espacio. "Mapa completo" es un modo aparte que
+// excluye nodos sin relaciones (van a una bandeja aparte) y atenúa
+// etiquetas para no superponerse.
+
+const TYPE_COLORS = {
+  person: '#6366f1', project: '#22c55e', initiative: '#f59e0b',
+  topic: '#38bdf8', organization: '#a78bfa',
+};
+const LABEL_ZOOM_THRESHOLD = 1.1;
+const LABEL_DEGREE_THRESHOLD = 6;
+
+async function loadGraph(opts = {}) {
   const search = document.getElementById('graph-search').value.trim();
   const entityType = document.getElementById('graph-type-filter').value;
   const params = new URLSearchParams();
@@ -588,45 +818,199 @@ async function loadGraph() {
       apiGet(`/backoffice/graph/entities?${params}`),
       apiGet('/backoffice/graph/links'),
     ]);
-    renderGraph(entities, links);
+    indexGraphData(entities, links);
+
+    if (opts.resetFocus || !graphFocusEntityId || !graphEntityById.has(graphFocusEntityId)) {
+      graphFocusEntityId = !entities.length ? null : (search ? entities[0].id : pickDefaultFocusEntity());
+    }
+    renderCurrentGraphMode();
   } catch (e) {
     showToast('Error cargando el grafo: ' + e.message, true);
   }
 }
 
-const TYPE_COLORS = {
-  person: '#6366f1', project: '#22c55e', initiative: '#f59e0b',
-  topic: '#38bdf8', organization: '#a78bfa',
-};
-
-// Obsidian-style graph: node size driven by how connected an entity is (not
-// just its confidence), thin low-opacity edges, and hover dims everything
-// outside the focused node's neighborhood.
-function renderGraph(entities, links) {
-  const container = document.getElementById('cy');
-  const nodeIds = new Set(entities.map((e) => e.id));
-  const degree = {};
-  const edgeElements = [];
+function indexGraphData(entities, links) {
+  graphEntitiesCache = entities;
+  graphLinksCache = links;
+  graphEntityById = new Map(entities.map((e) => [e.id, e]));
+  graphAdjacency = new Map(entities.map((e) => [e.id, new Set()]));
+  graphEdgesByPair = new Map();
   for (const link of links) {
-    if (!nodeIds.has(link.entity_id_a) || !nodeIds.has(link.entity_id_b)) continue;
-    degree[link.entity_id_a] = (degree[link.entity_id_a] || 0) + 1;
-    degree[link.entity_id_b] = (degree[link.entity_id_b] || 0) + 1;
-    edgeElements.push({
-      data: {
-        id: link.id, source: link.entity_id_a, target: link.entity_id_b,
-        relation: link.relation_type, confidence: link.confidence,
-      },
-    });
+    if (!graphEntityById.has(link.entity_id_a) || !graphEntityById.has(link.entity_id_b)) continue;
+    graphAdjacency.get(link.entity_id_a).add(link.entity_id_b);
+    graphAdjacency.get(link.entity_id_b).add(link.entity_id_a);
+    graphEdgesByPair.set(`${link.entity_id_a}|${link.entity_id_b}`, link);
+    graphEdgesByPair.set(`${link.entity_id_b}|${link.entity_id_a}`, link);
+  }
+}
+
+function graphDegree(id) {
+  const neighbors = graphAdjacency.get(id);
+  return neighbors ? neighbors.size : 0;
+}
+
+/** No search typed → land on the best-connected entity instead of an empty
+ * canvas, so the view is useful the moment you open it. */
+function pickDefaultFocusEntity() {
+  let best = null;
+  for (const e of graphEntitiesCache) {
+    if (!best || graphDegree(e.id) > graphDegree(best.id)) best = e;
+  }
+  return best ? best.id : null;
+}
+
+function setGraphMode(mode) {
+  graphMode = mode;
+  document.getElementById('graph-mode-focus').classList.toggle('active', mode === 'focus');
+  document.getElementById('graph-mode-map').classList.toggle('active', mode === 'map');
+  document.getElementById('graph-hops').style.visibility = mode === 'focus' ? 'visible' : 'hidden';
+  renderCurrentGraphMode();
+}
+
+function renderCurrentGraphMode() {
+  if (!graphEntitiesCache.length) {
+    if (cy) { cy.destroy(); cy = null; }
+    document.getElementById('cy').innerHTML = '';
+    document.getElementById('graph-stats').textContent = '';
+    document.getElementById('graph-isolated').innerHTML = '';
+    document.getElementById('graph-legend').innerHTML = '';
+    document.getElementById('graph-detail').innerHTML = '<div class="empty-hint">Sin resultados.</div>';
+    return;
+  }
+  renderGraphChrome();
+  if (graphMode === 'focus') renderFocusGraph();
+  else renderMapGraph();
+}
+
+function renderGraphChrome() {
+  const linkCount = graphLinksCache.filter((l) => graphEntityById.has(l.entity_id_a) && graphEntityById.has(l.entity_id_b)).length;
+  const isolated = graphEntitiesCache.filter((e) => graphDegree(e.id) === 0);
+  document.getElementById('graph-stats').textContent =
+    `${graphEntitiesCache.length} entidades · ${linkCount} relaciones · ${isolated.length} sin relaciones`;
+
+  document.getElementById('graph-legend').innerHTML = Object.entries(TYPE_COLORS)
+    .map(([type, color]) => `<span class="legend-item"><span class="legend-dot" style="background:${color}"></span>${escapeHtml(type)}</span>`)
+    .join('');
+
+  renderIsolatedTray(isolated);
+}
+
+/** Entities with no relations don't earn canvas space (that's what made the
+ * old graph unreadable) — they live here instead, still one click from their
+ * claims. */
+function renderIsolatedTray(isolated) {
+  const el = document.getElementById('graph-isolated');
+  if (!isolated.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<details>
+    <summary>Sin relaciones (${isolated.length})</summary>
+    <div class="graph-isolated-list">
+      ${isolated.map((e) => `<button type="button" class="chip chip-clickable" data-id="${e.id}">${escapeHtml(e.canonical_name)}</button>`).join('')}
+    </div>
+  </details>`;
+  el.querySelectorAll('[data-id]').forEach((btn) => {
+    btn.addEventListener('click', () => { selectGraphEntity(btn.dataset.id); });
+  });
+}
+
+function focusGraphEntity(entityId) {
+  graphFocusEntityId = entityId;
+  if (graphMode !== 'focus') setGraphMode('focus');
+  else renderCurrentGraphMode();
+}
+
+/** BFS from centerId → Map(id -> hop distance), bounded to `hops`. */
+function graphNeighborhood(centerId, hops) {
+  const visited = new Map([[centerId, 0]]);
+  let frontier = [centerId];
+  for (let hop = 1; hop <= hops; hop++) {
+    const next = [];
+    for (const id of frontier) {
+      for (const neighbor of graphAdjacency.get(id) || []) {
+        if (!visited.has(neighbor)) { visited.set(neighbor, hop); next.push(neighbor); }
+      }
+    }
+    frontier = next;
+  }
+  return visited;
+}
+
+function renderFocusGraph() {
+  const centerId = graphFocusEntityId;
+  const container = document.getElementById('cy');
+  if (!centerId || !graphEntityById.has(centerId)) {
+    if (cy) { cy.destroy(); cy = null; }
+    container.innerHTML = '';
+    document.getElementById('graph-detail').innerHTML = '<div class="empty-hint">Buscá o elegí una entidad para ver su vecindario.</div>';
+    return;
+  }
+  const hops = parseInt(document.getElementById('graph-hops').value, 10) || 1;
+  const visited = graphNeighborhood(centerId, hops);
+
+  const nodeElements = [...visited.entries()].map(([id, dist]) => {
+    const e = graphEntityById.get(id);
+    return { data: { id, label: e.canonical_name, type: e.entity_type, confidence: e.confidence, degree: graphDegree(id), dist } };
+  });
+  const edgeElements = [];
+  const seenEdges = new Set();
+  for (const id of visited.keys()) {
+    for (const neighbor of graphAdjacency.get(id) || []) {
+      if (!visited.has(neighbor)) continue;
+      const link = graphEdgesByPair.get(`${id}|${neighbor}`);
+      if (!link || seenEdges.has(link.id)) continue;
+      seenEdges.add(link.id);
+      edgeElements.push({ data: { id: link.id, source: link.entity_id_a, target: link.entity_id_b, relation: link.relation_type, confidence: link.confidence } });
+    }
   }
 
-  const nodeElements = entities.map((e) => ({
-    data: {
-      id: e.id, label: e.canonical_name, type: e.entity_type,
-      confidence: e.confidence, degree: degree[e.id] || 0,
+  buildCy(container, nodeElements, edgeElements, {
+    alwaysShowLabels: true,
+    layout: {
+      name: 'concentric', animate: true, fit: true, padding: 40,
+      concentric: (n) => -n.data('dist'), equidistant: true, minNodeSpacing: 45,
     },
-  }));
+  });
+  cy.getElementById(centerId).select();
+  selectGraphEntity(centerId);
+}
 
+function renderMapGraph() {
+  const container = document.getElementById('cy');
+  const connected = graphEntitiesCache.filter((e) => graphDegree(e.id) > 0);
+  if (!connected.length) {
+    if (cy) { cy.destroy(); cy = null; }
+    container.innerHTML = '';
+    document.getElementById('graph-detail').innerHTML = '<div class="empty-hint">Ninguna entidad tiene relaciones todavía — mirá la bandeja de abajo.</div>';
+    return;
+  }
+
+  const nodeElements = connected.map((e) => ({
+    data: { id: e.id, label: e.canonical_name, type: e.entity_type, confidence: e.confidence, degree: graphDegree(e.id) },
+  }));
+  const edgeElements = [];
+  const seenEdges = new Set();
+  for (const e of connected) {
+    for (const neighbor of graphAdjacency.get(e.id) || []) {
+      const link = graphEdgesByPair.get(`${e.id}|${neighbor}`);
+      if (!link || seenEdges.has(link.id)) continue;
+      seenEdges.add(link.id);
+      edgeElements.push({ data: { id: link.id, source: link.entity_id_a, target: link.entity_id_b, relation: link.relation_type, confidence: link.confidence } });
+    }
+  }
+
+  buildCy(container, nodeElements, edgeElements, {
+    alwaysShowLabels: false,
+    layout: {
+      name: 'cose', animate: true, randomize: true, fit: true, padding: 30,
+      nodeRepulsion: 9000, idealEdgeLength: 70, gravity: 40, numIter: 1500,
+      componentSpacing: 150, // keeps disconnected clusters from overlapping
+    },
+  });
+}
+
+function buildCy(container, nodeElements, edgeElements, { layout, alwaysShowLabels }) {
   if (cy) cy.destroy();
+  graphZoom = 1;
+
   cy = cytoscape({
     container,
     elements: [...nodeElements, ...edgeElements],
@@ -635,7 +1019,9 @@ function renderGraph(entities, links) {
         selector: 'node',
         style: {
           'background-color': (n) => TYPE_COLORS[n.data('type')] || '#94a3b8',
-          'label': 'data(label)',
+          // Map mode only shows a label once zoomed in, or for a well-connected
+          // node — otherwise 80+ labels stack on top of each other.
+          'label': (n) => (alwaysShowLabels || graphZoom >= LABEL_ZOOM_THRESHOLD || n.data('degree') >= LABEL_DEGREE_THRESHOLD) ? n.data('label') : '',
           'color': '#c9d1e0',
           'font-size': 10,
           'text-valign': 'bottom',
@@ -649,7 +1035,7 @@ function renderGraph(entities, links) {
           'transition-duration': 150,
         },
       },
-      { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#f1f5f9' } },
+      { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#f1f5f9', 'label': 'data(label)' } },
       { selector: 'node.faded', style: { 'opacity': 0.08 } },
       {
         selector: 'edge',
@@ -666,16 +1052,19 @@ function renderGraph(entities, links) {
       { selector: 'edge.faded', style: { 'opacity': 0.03 } },
       { selector: 'edge.highlighted', style: { 'line-color': 'rgba(255,255,255,0.5)' } },
     ],
-    layout: {
-      name: 'cose', animate: true, randomize: true, fit: true, padding: 30,
-      nodeRepulsion: 9000, idealEdgeLength: 70, gravity: 40, numIter: 1500,
-    },
+    layout,
     wheelSensitivity: 0.3,
     minZoom: 0.2,
     maxZoom: 3,
   });
 
-  cy.on('tap', 'node', (evt) => selectGraphEntity(evt.target.id()));
+  // Focus mode: clicking a node re-centers the neighborhood on it (Obsidian's
+  // "local graph" navigation). Map mode: clicking just opens its detail panel.
+  cy.on('tap', 'node', (evt) => {
+    const id = evt.target.id();
+    if (graphMode === 'focus') focusGraphEntity(id);
+    else selectGraphEntity(id);
+  });
 
   cy.on('mouseover', 'node', (evt) => {
     const node = evt.target;
@@ -687,8 +1076,8 @@ function renderGraph(entities, links) {
     cy.elements().removeClass('faded').removeClass('highlighted');
   });
 
-  if (!entities.length) {
-    document.getElementById('graph-detail').innerHTML = '<div class="empty-hint">Sin resultados.</div>';
+  if (!alwaysShowLabels) {
+    cy.on('zoom', () => { graphZoom = cy.zoom(); cy.style().update(); });
   }
 }
 
@@ -703,20 +1092,38 @@ async function selectGraphEntity(entityId) {
   }
 }
 
+function otherEntityLabel(link, entityId) {
+  const otherId = link.entity_id_a === entityId ? link.entity_id_b : link.entity_id_a;
+  const other = graphEntityById.get(otherId);
+  return other ? other.canonical_name : `#${otherId.slice(0, 8)}`;
+}
+
 function renderGraphDetail(entity) {
   const detail = document.getElementById('graph-detail');
+  const showFocusBtn = graphMode === 'map' || graphFocusEntityId !== entity.id;
   detail.innerHTML = `
     <div class="detail-title">${escapeHtml(entity.canonical_name)}</div>
     <div class="mono" style="margin:6px 0 14px">${escapeHtml(entity.entity_type)} · confianza ${(entity.confidence * 100).toFixed(0)}%</div>
     ${entity.aliases.length ? `<div style="margin-bottom:12px" class="mono">alias: ${entity.aliases.map(escapeHtml).join(', ')}</div>` : ''}
-    <h2>Claims (${entity.claims.length})</h2>
+    ${showFocusBtn ? '<button type="button" class="btn-secondary btn-small" id="graph-focus-here-btn" style="margin-bottom:14px">🔎 Ver vecindario</button>' : ''}
+    <h2>Relaciones (${entity.links.length})</h2>
+    ${entity.links.length ? `<table class="relations-table"><tbody>
+      ${entity.links.map((l) => `<tr>
+        <td>${escapeHtml(otherEntityLabel(l, entity.id))}</td>
+        <td class="mono">${escapeHtml(l.relation_type)}</td>
+        <td class="mono">${(l.confidence * 100).toFixed(0)}%</td>
+      </tr>`).join('')}
+    </tbody></table>` : '<div class="empty-hint">Sin relaciones.</div>'}
+    <h2 style="margin-top:16px">Claims (${entity.claims.length})</h2>
     ${entity.claims.map((c) => `<div class="claim-item">
       <span class="claim-source">${escapeHtml(c.source)}</span>
       <span class="claim-confidence">${(c.confidence * 100).toFixed(0)}%</span>
       <div>${escapeHtml(c.claim_text)}</div>
     </div>`).join('') || '<div class="empty-hint">Sin claims.</div>'}
-    ${entity.links.length ? `<h2 style="margin-top:16px">Vínculos</h2>${entity.links.map((l) => `<div class="claim-item">${escapeHtml(l.relation_type)} (${(l.confidence * 100).toFixed(0)}%)</div>`).join('')}` : ''}
   `;
+  if (showFocusBtn) {
+    document.getElementById('graph-focus-here-btn').addEventListener('click', () => focusGraphEntity(entity.id));
+  }
 }
 
 // ── Questions ─────────────────────────────────────────────────────────────────
@@ -938,6 +1345,139 @@ async function loadToolsCatalog() {
     </tbody></table>`;
   } catch (e) {
     el.innerHTML = `<div class="empty-hint">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ── Architecture ──────────────────────────────────────────────────────────────
+// Fase 3: documents the resolution ladder (specs/plan-multi-agent-knowledge.md)
+// and gives every synthetic agent_key that shows up in Runs/Conversations
+// (reconciliation, negotiation) a place to be explained — they're processes,
+// not configurable agents, so they have no card in the Agents view.
+
+const ARCH_DIAGRAM = `graph TD
+  subgraph Fuentes
+    SRC_SLACK[Slack]
+    SRC_OUTLOOK[Outlook]
+    SRC_TEAMS[Teams]
+    SRC_FATHOM[Fathom]
+    SRC_NOTION[Notion]
+    SRC_ID["Plataforma I+D (MCP)"]
+  end
+  subgraph "Agentes de dominio (configurables)"
+    A_SLACK(slack)
+    A_OUTLOOK(outlook)
+    A_TEAMS(teams)
+    A_FATHOM(fathom)
+    A_NOTION(notion)
+    A_RD(rd)
+  end
+  SRC_SLACK --> A_SLACK
+  SRC_OUTLOOK --> A_OUTLOOK
+  SRC_TEAMS --> A_TEAMS
+  SRC_FATHOM --> A_FATHOM
+  SRC_NOTION --> A_NOTION
+  SRC_ID --> A_RD
+
+  A_SLACK & A_OUTLOOK & A_TEAMS & A_FATHOM & A_NOTION & A_RD --> KB[("Grafo de conocimiento
+compartido")]
+
+  KB --> CONSULT{"¿Duda sobre
+una entidad?"}
+  CONSULT -->|"consult_knowledge_base
+responde"| KB
+  CONSULT -->|"sigue sin resolverse"| NEGO["🤝 negociación entre pares
+(ask_peer_agents, Swarm)"]
+  NEGO -->|"acuerdo"| KB
+  NEGO -->|"sin acuerdo"| HUMAN["❓ escalate_or_validate
+→ Preguntas pendientes"]
+  HUMAN -->|"humano responde"| KB
+
+  SCHED["⏱ Scheduler
+(por usuario, cada ciclo)"] --> A_SLACK & A_OUTLOOK & A_TEAMS & A_FATHOM & A_NOTION & A_RD
+  SCHED --> RECON["🧬 Reconciliación
+(duplicados por similitud)"]
+  RECON -->|"candidato dudoso"| NEGO2["🤝 negociación entre pares
+(negotiate_same_as, Swarm)"]
+  NEGO2 -->|"misma entidad"| MERGE["same_as → fusión"]
+  MERGE --> KB
+  RECON --> KB
+
+  CHAT["🧠 Orchestrator
+(chat CLI / voz)"] --> KB
+  CHAT -->|"duda puntual, antes
+de responder (ask_domain_agents)"| NEGO
+`;
+
+const ARCH_ACTORS = [
+  {
+    icon: '💬📧👥🎙📝', title: 'Agentes de dominio', runType: 'domain_agent', configurable: true,
+    body: 'Uno por fuente (Slack, Outlook, Teams, Fathom, Notion). En cada ciclo leen documentos nuevos de su fuente y proponen entidades/claims al grafo compartido.',
+  },
+  {
+    icon: '🔬', title: 'I+D Platform (rd)', runType: 'rd_agent', configurable: true,
+    body: 'De sólo lectura, sobre la plataforma de I+D vía servidor MCP. Mismo patrón que los agentes de dominio, pero su fuente es un MCP externo en vez de la tabla Document.',
+  },
+  {
+    icon: '🧬', title: 'Reconciliación', runType: 'reconciliation', configurable: false,
+    body: 'Corre sola al final de cada ciclo del scheduler. Busca entidades candidatas a duplicado cross-fuente por similitud de embeddings, y dispara una negociación por cada candidato dudoso.',
+  },
+  {
+    icon: '🤝', title: 'Negociación', runType: 'negotiation', configurable: false,
+    body: 'Swarm acotado de 2+ agentes pares, disparado por un agente que duda (ask_peer_agents), por reconciliación sospechando un duplicado (negotiate_same_as), o por el orchestrator validando una duda antes de responder (ask_domain_agents). Su conversación completa vive en Conversaciones.',
+  },
+  {
+    icon: '🧠', title: 'Orchestrator (chat)', runType: 'chat', configurable: true,
+    body: 'El agente que responde en el CLI y por voz. Antes de responder puede validar una duda con los agentes de dominio relevantes (ask_domain_agents) en vez de conformarse con lo ya consolidado. Su system prompt se compone dinámicamente por request (identidad, estilo, fecha) — por eso no es editable desde acá.',
+  },
+];
+
+let archDiagramRendered = false;
+
+async function renderArchitectureView() {
+  renderArchActorCards();
+  await renderArchDiagram();
+}
+
+function renderArchActorCards() {
+  const el = document.getElementById('arch-actor-cards');
+  el.innerHTML = ARCH_ACTORS.map((a) => `
+    <div class="arch-actor-card">
+      <div class="arch-actor-title">${a.icon} ${escapeHtml(a.title)}</div>
+      <div class="arch-actor-body">${escapeHtml(a.body)}</div>
+      <div class="arch-actor-meta">
+        <span class="badge ${a.configurable ? 'badge-completed' : 'badge-neutral'}">${a.configurable ? 'configurable' : 'proceso del sistema'}</span>
+        <button type="button" class="btn-secondary btn-small" data-run-type="${a.runType}">Ver corridas →</button>
+      </div>
+    </div>
+  `).join('');
+  el.querySelectorAll('[data-run-type]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const runType = btn.dataset.runType;
+      if (runType === 'negotiation') { switchView('conversations'); return; }
+      // Set the filter before switching — switchView('runs') already calls
+      // loadRuns() once; setting it after would mean a second, redundant fetch.
+      document.getElementById('runs-type-filter').value = runType;
+      switchView('runs');
+    });
+  });
+}
+
+/** Rendered once — mermaid.render() replaces the <pre> with a static SVG, so
+ * re-running it against the same content on every view switch is wasted work. */
+async function renderArchDiagram() {
+  const el = document.getElementById('arch-diagram');
+  if (archDiagramRendered) return;
+  if (typeof mermaid === 'undefined') {
+    el.textContent = ARCH_DIAGRAM;
+    return;
+  }
+  try {
+    mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
+    const { svg } = await mermaid.render('arch-diagram-svg', ARCH_DIAGRAM);
+    el.innerHTML = svg;
+    archDiagramRendered = true;
+  } catch {
+    el.textContent = ARCH_DIAGRAM;
   }
 }
 

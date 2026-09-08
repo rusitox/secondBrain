@@ -169,6 +169,12 @@ class AgentRunSummary(BaseModel):
     summary: Optional[str]
     error: Optional[str]
     parent_run_id: Optional[uuid.UUID]
+    stats: Dict[str, Any]
+    """Already loaded on every AgentRun row (JSONB, default {}) — free to expose on
+    the list endpoint too, no extra query. Negotiation runs carry {question,
+    participants, ...} here (see tracing.finish_run call sites in domain_agent.py /
+    reconciliation.py), which the backoffice UI's Conversations list reads without
+    an N+1 fetch per row."""
 
     model_config = {"from_attributes": True}
 
@@ -186,7 +192,6 @@ class AgentRunEventRead(BaseModel):
 
 
 class AgentRunDetail(AgentRunSummary):
-    stats: Dict[str, Any]
     events: List[AgentRunEventRead]
     sub_runs: List[AgentRunSummary]
 
