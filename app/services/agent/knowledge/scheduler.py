@@ -119,7 +119,8 @@ class KnowledgeAgentScheduler:
 
     async def _run_cycle(self, user_id: str) -> None:
         """One knowledge cycle for one user: every Document-backed domain
-        agent, then the I+D/MCP agent if configured, then reconciliation.
+        agent not in `knowledge_agent_excluded_sources`, then the I+D/MCP
+        agent if configured, then reconciliation.
 
         Each step gets its own fresh AsyncSession and commits independently
         — one source failing (or reconciliation failing) must not roll back
@@ -146,7 +147,14 @@ class KnowledgeAgentScheduler:
                 )
             return _call
 
-        document_backed_sources = [s for s in REGISTERED_SOURCES if s != "rd"]
+        excluded = {
+            s.strip().lower()
+            for s in settings.knowledge_agent_excluded_sources.split(",")
+            if s.strip()
+        }
+        document_backed_sources = [
+            s for s in REGISTERED_SOURCES if s != "rd" and s not in excluded
+        ]
         for source in document_backed_sources:
             await self._run_step(
                 session_factory, "domain_agent[{0}]".format(source), user_id,

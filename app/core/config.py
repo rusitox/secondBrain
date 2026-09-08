@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     enable_knowledge_agents: bool = False
     knowledge_agent_interval_minutes: int = 60
     knowledge_agent_batch_size: int = 20
+    # Comma-separated source names to skip in every cycle (e.g. "outlook") — lets a large
+    # backlog be drained manually (scripts/run_domain_agent.py) without the scheduler racing
+    # it for the same rows every interval. Empty = no exclusions, the normal case.
+    knowledge_agent_excluded_sources: str = ""
 
     @field_validator("fernet_key")
     @classmethod
