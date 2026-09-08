@@ -13,11 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app as fastapi_app
 
+from app.core.config import Settings, get_settings
 from app.models.entity import EntityType
 from app.models.entity_link import LinkResolvedBy
 from app.models.pending_question import QuestionTarget
 from app.services.agent.knowledge import store
-from tests.factories import make_user
+from tests.factories import make_document, make_user
 
 
 async def _make_persisted_user(db: AsyncSession, **kwargs) -> uuid.UUID:
@@ -113,6 +114,20 @@ class TestGetKnowledgeStatsStore:
         stats_b = await store.get_knowledge_stats(db_session, user_b)
         assert stats_b["total_entities"] == 0
 
+    async def test_counts_pending_documents_by_source(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ks7@example.com")
+        processed_doc = make_document(user_id=user_id, source="outlook", content="a")
+        pending_outlook_doc = make_document(user_id=user_id, source="outlook", content="b")
+        pending_slack_doc = make_document(user_id=user_id, source="slack", content="c")
+        db_session.add_all([processed_doc, pending_outlook_doc, pending_slack_doc])
+        await db_session.commit()
+        await store.mark_document_processed(db_session, user_id, processed_doc.id, "outlook")
+        await db_session.commit()
+
+        stats = await store.get_knowledge_stats(db_session, user_id)
+
+        assert stats["pending_documents_by_source"] == {"outlook": 1, "slack": 1}
+
 
 class TestGetKnowledgeStatusEndpoint:
     async def test_returns_stats_for_current_user(self, client: AsyncClient) -> None:
@@ -187,3 +202,37 @@ class TestGetKnowledgeStatusEndpoint:
         data = resp.json()
         assert data["scheduler_active"] is True
         assert data["next_scheduled_run"] is None
+
+    async def test_excluded_sources_reflects_settings(self, client: AsyncClient) -> None:
+        resp = await client.post("/users/", json={"email": "ksapi6@example.com", "full_name": "KS User 6"})
+        user_id = resp.json()["id"]
+
+        def _settings_with_exclusion() -> Settings:
+            return Settings(
+                database_url="sqlite+aiosqlite://", database_url_sync="sqlite://",
+                app_env="testing", debug=False,
+                fernet_key="UoVz65iZZwomYZKNPeWYK_sCieozQPLoezZuUlQwzis=",
+                knowledge_agent_excluded_sources="Outlook, teams ,",
+            )
+
+        original_override = fastapi_app.dependency_overrides.get(get_settings)
+        fastapi_app.dependency_overrides[get_settings] = _settings_with_exclusion
+        try:
+            resp = await client.get("/knowledge/status", headers={"X-User-Id": user_id})
+        finally:
+            if original_override is not None:
+                fastapi_app.dependency_overrides[get_settings] = original_override
+            else:
+                del fastapi_app.dependency_overrides[get_settings]
+
+        assert resp.status_code == 200
+        assert resp.json()["excluded_sources"] == ["outlook", "teams"]
+
+    async def test_excluded_sources_empty_by_default(self, client: AsyncClient) -> None:
+        resp = await client.post("/users/", json={"email": "ksapi7@example.com", "full_name": "KS User 7"})
+        user_id = resp.json()["id"]
+
+        resp = await client.get("/knowledge/status", headers={"X-User-Id": user_id})
+
+        assert resp.status_code == 200
+        assert resp.json()["excluded_sources"] == []

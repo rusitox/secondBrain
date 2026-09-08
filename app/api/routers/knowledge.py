@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_id, get_db
 from app.api.schemas.knowledge import KnowledgeStatsResponse
+from app.core.config import Settings, get_settings
 from app.services.agent.knowledge import store
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
@@ -22,6 +23,7 @@ async def get_knowledge_status(
     merged_window_hours: int = Query(default=24, ge=1, le=24 * 30),
     current_user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
     """Snapshot of the shared knowledge base's current solidity for this user."""
     stats = await store.get_knowledge_stats(db, current_user_id, merged_window_hours=merged_window_hours)
@@ -35,4 +37,13 @@ async def get_knowledge_status(
             (job["next_run"] for job in scheduler.get_job_info() if job["job_id"] == job_id), None,
         )
 
-    return {**stats, "scheduler_active": scheduler_active, "next_scheduled_run": next_run}
+    excluded_sources = [
+        s.strip().lower() for s in settings.knowledge_agent_excluded_sources.split(",") if s.strip()
+    ]
+
+    return {
+        **stats,
+        "scheduler_active": scheduler_active,
+        "next_scheduled_run": next_run,
+        "excluded_sources": excluded_sources,
+    }
