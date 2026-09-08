@@ -71,6 +71,11 @@ ORCHESTRATOR_TOOLS: List[ToolInfo] = [
     ToolInfo("get_sync_status", "Check the status of connector sync integrations.", "orchestrator"),
     ToolInfo("get_current_datetime", "Get the current date/time in the user's timezone.", "orchestrator"),
     ToolInfo("query_knowledge", "Query the multi-agent knowledge graph's consolidated view.", "orchestrator"),
+    ToolInfo(
+        "ask_domain_agents",
+        "Validate a doubt with the relevant domain agents (Swarm negotiation) before answering.",
+        "orchestrator",
+    ),
     ToolInfo("get_pending_questions", "List questions domain agents escalated to the human.", "orchestrator"),
     ToolInfo("confirm_pending_answer", "Answer/confirm a pending question, closing the resolution loop.", "orchestrator"),
     ToolInfo("web_search", "Brave web search (opt-in via brave_search_api_key).", "orchestrator"),

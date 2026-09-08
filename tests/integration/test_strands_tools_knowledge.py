@@ -1,20 +1,25 @@
-"""Integration tests for the Phase 5 knowledge tools in strands_tools.py.
+"""Integration tests for the Phase 5/9 knowledge tools in strands_tools.py.
 
-query_knowledge, get_pending_questions, and confirm_pending_answer are the
-live chat orchestrator's connection to the knowledge system built by the
-domain agents (specs/plan-multi-agent-knowledge.md, Phase 5). Run against
-the real SQLite test DB via make_agent_tools, same pattern as
+query_knowledge, ask_domain_agents, get_pending_questions, and
+confirm_pending_answer are the live chat orchestrator's connection to the
+knowledge system built by the domain agents (specs/plan-multi-agent-knowledge.md,
+Phase 5; ask_domain_agents is Phase 9 — the orchestrator validating a doubt
+with the relevant domain agents before answering). Run against the real
+SQLite test DB via make_agent_tools, same pattern as
 tests/integration/test_domain_agent.py.
 """
 import uuid
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_run import AgentRun, RunStatus, RunTrigger, RunType
 from app.models.entity import EntityType
 from app.models.entity_claim import ClaimStatus
 from app.models.pending_question import QuestionStatus, QuestionTarget
-from app.services.agent.knowledge import store
+from app.services.agent.knowledge import domain_agent, store
 from app.services.agent.strands_tools import make_agent_tools
 from tests.factories import make_user
 
@@ -26,8 +31,8 @@ async def _make_persisted_user(db: AsyncSession, **kwargs) -> uuid.UUID:
     return user.id
 
 
-def _build_tools(db: AsyncSession, user_id: uuid.UUID):
-    return make_agent_tools(db=db, user_id=user_id)
+def _build_tools(db: AsyncSession, user_id: uuid.UUID, parent_run_id=None):
+    return make_agent_tools(db=db, user_id=user_id, parent_run_id=parent_run_id)
 
 
 def _tool(tools: Any, name: str):
@@ -63,6 +68,71 @@ class TestQueryKnowledgeTool:
 
         result = await _tool(tools, "query_knowledge")(query="x", entity_type="bogus")
         assert result == []
+
+
+class TestAskDomainAgentsTool:
+    async def test_invalid_entity_id_returns_error_without_negotiating(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ada1@example.com")
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "ask_domain_agents")(entity_id="not-a-uuid", question="¿duda?")
+        assert "error" in result
+
+    async def test_delegates_to_consult_domain_agents_with_the_chat_runs_parent_id(
+        self, db_session: AsyncSession,
+    ) -> None:
+        """Confirms the tool wrapper actually threads make_agent_tools'
+        parent_run_id through — the wiring that makes a negotiation the
+        orchestrator triggers mid-chat show up as a sub-run of that chat in
+        the backoffice, not a disconnected row."""
+        user_id = await _make_persisted_user(db_session, email="ada2@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+        await store.add_claim(db_session, entity.id, user_id, "slack", "c1", "slack_domain_agent")
+        await store.add_claim(db_session, entity.id, user_id, "outlook", "c2", "outlook_domain_agent")
+        await db_session.commit()
+
+        chat_run = AgentRun(
+            user_id=user_id, agent_key="orchestrator", run_type=RunType.CHAT,
+            trigger=RunTrigger.API, status=RunStatus.RUNNING,
+        )
+        db_session.add(chat_run)
+        await db_session.commit()
+
+        captured_tools: dict = {}
+
+        def fake_agent_ctor(*args: Any, **kwargs: Any) -> MagicMock:
+            for t in kwargs.get("tools", []):
+                captured_tools[t.tool_name] = t
+            return MagicMock(name=kwargs.get("name"))
+
+        async def fake_invoke_async(*args: Any, **kwargs: Any) -> MagicMock:
+            captured_tools["submit_verdict"].__wrapped__(
+                resolved=True, answer="sí", confidence=0.8,
+            )
+            return MagicMock()
+
+        mock_swarm_instance = MagicMock()
+        mock_swarm_instance.invoke_async = AsyncMock(side_effect=fake_invoke_async)
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+
+        tools = _build_tools(db_session, user_id, parent_run_id=chat_run.id)
+
+        with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
+             patch("strands.Agent", side_effect=fake_agent_ctor), \
+             patch("strands.multiagent.Swarm", return_value=mock_swarm_instance), \
+             patch("app.core.config.get_settings", return_value=settings):
+            result = await _tool(tools, "ask_domain_agents")(
+                entity_id=str(entity.id), question="¿duda?",
+            )
+
+        assert result["resolved"] is True
+        run = (await db_session.execute(
+            select(AgentRun).where(AgentRun.user_id == user_id, AgentRun.run_type == RunType.NEGOTIATION)
+        )).scalar_one()
+        assert run.parent_run_id == chat_run.id
 
 
 class TestGetPendingQuestionsTool:

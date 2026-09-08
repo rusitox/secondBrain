@@ -167,20 +167,35 @@ class StrandsOrchestrator:
         config = await agent_config_service.get_effective_config(
             db, user_id, "orchestrator", default_system_prompt=system_prompt,
         )
-        agent = self._build_agent(
-            db=db,
-            user_id=user_id,
-            user_tz=user_tz,
-            system_prompt=system_prompt,
-            history=history,
-            stream_callback=stream_callback,
-            config=config,
-        )
 
+        # Started before _build_agent (not after, like every other tracing.start_run
+        # call site) so the run_id exists in time to hand to make_agent_tools as
+        # parent_run_id — the ask_domain_agents tool's own negotiation sub-run needs
+        # it to show up nested under this chat run in the backoffice, not floating.
         run_id = await tracing.start_run(
             user_id, agent_key="orchestrator", run_type=RunType.CHAT, trigger=RunTrigger.API,
             model_id=config.model_id or settings.llm_model,
         )
+
+        try:
+            agent = self._build_agent(
+                db=db,
+                user_id=user_id,
+                user_tz=user_tz,
+                system_prompt=system_prompt,
+                history=history,
+                stream_callback=stream_callback,
+                config=config,
+                run_id=run_id,
+            )
+        except Exception as e:
+            # Before the run_id-before-_build_agent reorder above, a failure here
+            # happened before any AgentRun row existed — nothing to clean up. Now
+            # that start_run has already run, skipping this would leave the row
+            # RUNNING forever (no agent, so no agent.messages to persist either).
+            logger.exception("StrandsOrchestrator: _build_agent failed for user=%s", user_id)
+            await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
+            raise
 
         # 5. Run agent
         handler: _StreamingCallbackHandler = agent.callback_handler  # type: ignore[assignment]
@@ -252,6 +267,7 @@ class StrandsOrchestrator:
         history: List[Dict[str, Any]],
         stream_callback: Optional[Callable[[str], Awaitable[None]]],
         config: Optional[EffectiveAgentConfig] = None,
+        run_id: Optional[uuid.UUID] = None,
     ) -> Any:
         """Instantiate a Strands Agent for a single request.
 
@@ -277,6 +293,12 @@ class StrandsOrchestrator:
         cycle — a stray `enabled=False` row (or a backoffice UI bug) silently
         breaking the entire assistant is a worse failure mode than a knowledge
         agent no-op, so this carve-out is deliberate, not an oversight.
+
+        run_id is this request's own AgentRun (already started by the caller
+        before calling this method) — passed through to make_agent_tools as
+        parent_run_id so a negotiation the ask_domain_agents tool triggers
+        mid-conversation is traced as a sub-run of this chat, not a
+        disconnected row.
         """
         from strands import Agent
         from strands.tools.executors import SequentialToolExecutor
@@ -291,6 +313,7 @@ class StrandsOrchestrator:
             user_id=user_id,
             user_timezone=user_tz,
             embedder=self._embedder,
+            parent_run_id=run_id,
         )
         if config is not None:
             tools = agent_config_service.filter_tools(tools, config.enabled_tools)
@@ -458,14 +481,22 @@ Workflow obligatorio:
 query_knowledge — es la vista consolidada y con proveniencia que arman los agentes \
 de dominio, y trae su propio nivel de confianza. Si no encontrás nada ahí, o \
 necesitás más contexto crudo, usá search_memory y search_learnings.
-3. Al empezar la conversación (o cuando sea natural), llamá get_pending_questions — \
+3. Si lo que trae query_knowledge no te alcanza para responder con confianza — \
+fuentes que se contradicen entre sí, o una duda puntual sobre una entidad — \
+llamá a ask_domain_agents antes de responder. Dispara una negociación real entre \
+los agentes de dominio que tienen algo que decir sobre esa entidad (puede tardar \
+unos segundos), así que usalo con criterio: para una duda real, no para cada \
+pregunta trivial que el grafo ya responde. Si tampoco así se resuelve, decile al \
+usuario honestamente que no estás seguro en vez de presentar una conjetura como \
+si fuera un hecho confirmado.
+4. Al empezar la conversación (o cuando sea natural), llamá get_pending_questions — \
 son dudas que los agentes de dominio no pudieron resolver solos y te piden que se \
 las confirmes al humano. Si hay alguna relevante, planteala con naturalidad, no la \
 fuerces en cada respuesta. Si el usuario confirma o corrige, llamá \
 confirm_pending_answer para cerrar el loop — esa respuesta pasa a ser conocimiento \
 de alta confianza.
-4. Llamá otras tools según lo requiera la pregunta
-5. Sintetizá una respuesta clara y accionable
+5. Llamá otras tools según lo requiera la pregunta
+6. Sintetizá una respuesta clara y accionable
 
 Respondé siempre en el idioma del usuario."""
 

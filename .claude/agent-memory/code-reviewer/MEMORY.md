@@ -21,3 +21,6 @@
 - [Agent Memory Upgrade Review](project_agent_memory_review.md) -- flush-no-commit, prompt injection (5th!), ORM/server_default mismatch, ConversationTurn never written, SDK objects in dict messages
 - [Voice Interface Review](project_voice_interface_review.md) -- No content-type check, bare except (14th+), str(e) to SSE client, get_event_loop deprecated, TTS resource leak, XSS in marked.js
 - [User Profile - Mariano](user_mariano.md) -- Building secondBrain/Digital Twin with FastAPI+SQLAlchemy+pgvector on Python 3.8
+- [Backoffice UI Phase 5 Review](project_backoffice_ui_phase5_review.md) -- No criticals; CSS selector/markup mismatch, unguarded loadGraph render, inconsistent double-submit guards
+- [Backoffice UI Phase 6 Review](project_backoffice_ui_phase6_review.md) -- Graph focus/map + Conversations + Architecture views; no criticals; verdict-card misleads on crashed negotiations, participant filter blind spot, missing stats test coverage; Phase 5 findings fixed
+- [Orchestrator ask_domain_agents Review](project_orchestrator_ask_domain_agents_review.md) -- CRITICAL: double-format() crash in negotiator prompt (curly braces in question/entity_name); orphaned RUNNING run on start_run reorder; prompt injection doubly exposed

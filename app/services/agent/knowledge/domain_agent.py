@@ -487,32 +487,35 @@ async def _find_open_question_for_entity(
     return None
 
 
-async def _ask_peer_agents(
+async def _consult_peer_agents(
     db: AsyncSession,
     user_id: uuid.UUID,
-    asking_source: str,
     entity_id: uuid.UUID,
     question: str,
+    peer_candidates: List[str],
+    asking_source: Optional[str],
+    raised_by_agent: str,
     parent_run_id: Optional[uuid.UUID] = None,
     trigger: RunTrigger = RunTrigger.MANUAL,
 ) -> Dict[str, Any]:
-    """Negotiate a doubt with the peer agents that actually have something to
-    say about this entity — a scoped Swarm, never every registered source."""
+    """Shared negotiation core behind ask_peer_agents (a domain agent doubting
+    something about its own source) and consult_domain_agents_for_orchestrator
+    (the chat agent validating something mid-conversation, before answering).
+
+    peer_candidates is the pool filtered down to sources that actually hold an
+    ACTIVE claim about this entity — no point negotiating with someone with
+    nothing to contribute, and a DISPUTED/SUPERSEDED claim must not be treated
+    as settled fact during negotiation. asking_source, when given, also joins
+    the swarm as a negotiator representing its own claims (a domain agent's
+    own perspective is relevant to the doubt); the orchestrator has no claims
+    of its own, so it passes None and only the relevant peers negotiate."""
     no_peers_result: Dict[str, Any] = {
         "resolved": False, "answer": None, "confidence": None,
         "peers_consulted": [], "question_id": None,
     }
 
-    peer_sources = [s for s in REGISTERED_SOURCES if s != asking_source]
-    if not peer_sources:
-        return no_peers_result
-
-    # Only consult agents whose source already holds an ACTIVE claim about
-    # this entity — no point negotiating with someone with nothing to
-    # contribute, and a DISPUTED/SUPERSEDED claim must not be treated as
-    # settled fact during negotiation.
     claims = await store.list_claims(db, user_id, entity_id, status=ClaimStatus.ACTIVE)
-    relevant_sources = [s for s in peer_sources if any(c.source == s for c in claims)]
+    relevant_sources = [s for s in peer_candidates if any(c.source == s for c in claims)]
     if not relevant_sources:
         return no_peers_result
 
@@ -534,7 +537,7 @@ async def _ask_peer_agents(
     try:
         async with db.begin_nested():
             pending = await store.raise_question(
-                db, user_id, f"{asking_source}_domain_agent", question,
+                db, user_id, raised_by_agent, question,
                 context={"entity_id": str(entity_id)}, target=QuestionTarget.PEER_AGENTS,
             )
     except SQLAlchemyError:
@@ -542,7 +545,7 @@ async def _ask_peer_agents(
         # the "nobody relevant" case (peers_consulted=[] / question_id=None)
         # rather than the undocumented peers_consulted-set/question_id=None
         # combination — the docstring's contract only covers those two shapes.
-        logger.exception("ask_peer_agents: failed to raise question for entity=%s", entity_id)
+        logger.exception("_consult_peer_agents: failed to raise question for entity=%s", entity_id)
         return no_peers_result
 
     from strands import tool
@@ -561,36 +564,51 @@ async def _ask_peer_agents(
             for c in all_claims if c.source == claim_source
         ]
 
-    negotiator_prompt_template = (
-        "Sos un negociador que representa a la fuente '{src}' en una duda sobre la "
-        f"entidad '{entity_name}'. Otro agente pregunta: {question}\n\n"
-        "Usá view_claims para ver qué sabe tu fuente sobre esta entidad. Si podés "
-        "aportar algo relevante, hacelo. Coordiná con el otro agente presente — si "
-        "entre los dos llegan a una conclusión, o si determinás que no hay forma de "
-        "resolverlo entre agentes, llamá a submit_verdict. No dejes la negociación "
-        "sin una llamada a submit_verdict."
-    )
+    def _negotiator_prompt(src: str) -> str:
+        # Built with f-strings only, never a two-stage template.format(src=src) —
+        # entity_name/question can contain literal '{'/'}' (e.g. an attribute
+        # dict rendered as text, or free-form text the orchestrator's LLM
+        # composed for ask_domain_agents), and a second .format() pass would
+        # re-parse those as format fields and raise KeyError/ValueError. An
+        # f-string substitutes values directly, never re-scanning them.
+        return (
+            f"Sos un negociador que representa a la fuente '{src}' en una duda sobre la "
+            f"entidad '{entity_name}'. Otro agente pregunta: {question}\n\n"
+            "Usá view_claims para ver qué sabe tu fuente sobre esta entidad. Si podés "
+            "aportar algo relevante, hacelo. Coordiná con el otro agente presente — si "
+            "entre los dos llegan a una conclusión, o si determinás que no hay forma de "
+            "resolverlo entre agentes, llamá a submit_verdict. No dejes la negociación "
+            "sin una llamada a submit_verdict."
+        )
+
+    sources_in_swarm = ([asking_source] if asking_source else []) + relevant_sources
     node_specs = [
         {
             "name": f"{src}_negotiator",
-            "system_prompt": negotiator_prompt_template.format(src=src),
+            "system_prompt": _negotiator_prompt(src),
             "tools": [view_claims, submit_verdict],
         }
-        for src in [asking_source, *relevant_sources]
+        for src in sources_in_swarm
     ]
     neg_run_id = await tracing.start_run(
         user_id, agent_key="negotiation", run_type=RunType.NEGOTIATION, trigger=trigger,
         parent_run_id=parent_run_id,
     )
-    swarm_result = await run_negotiation(node_specs, question, log_context="ask_peer_agents")
+    swarm_result = await run_negotiation(node_specs, question, log_context=raised_by_agent)
     if swarm_result is not None:
         await tracing.record_swarm_negotiation(neg_run_id, swarm_result)
-    await tracing.record_verdict_event(neg_run_id, actor="ask_peer_agents", payload=dict(verdict))
+    await tracing.record_verdict_event(neg_run_id, actor=raised_by_agent, payload=dict(verdict))
     await tracing.finish_run(
         neg_run_id,
         RunStatus.COMPLETED if swarm_result is not None else RunStatus.FAILED,
         summary=verdict.get("answer"),
         usage_source=swarm_result,
+        stats={
+            "question": question,
+            "entity_name": entity_name,
+            "entity_id": str(entity_id),
+            "participants": [spec["name"] for spec in node_specs],
+        },
     )
 
     # Whatever the outcome, the question is resolved one way or another —
@@ -607,6 +625,52 @@ async def _ask_peer_agents(
                     candidate_answer=verdict["answer"], candidate_confidence=verdict["confidence"],
                 )
     except SQLAlchemyError:
-        logger.exception("ask_peer_agents: failed to record verdict for entity=%s", entity_id)
+        logger.exception("_consult_peer_agents: failed to record verdict for entity=%s", entity_id)
 
     return {**verdict, "peers_consulted": relevant_sources, "question_id": str(pending.id)}
+
+
+async def _ask_peer_agents(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    asking_source: str,
+    entity_id: uuid.UUID,
+    question: str,
+    parent_run_id: Optional[uuid.UUID] = None,
+    trigger: RunTrigger = RunTrigger.MANUAL,
+) -> Dict[str, Any]:
+    """Negotiate a doubt with the peer agents that actually have something to
+    say about this entity — a scoped Swarm, never every registered source."""
+    peer_sources = [s for s in REGISTERED_SOURCES if s != asking_source]
+    if not peer_sources:
+        return {
+            "resolved": False, "answer": None, "confidence": None,
+            "peers_consulted": [], "question_id": None,
+        }
+    return await _consult_peer_agents(
+        db, user_id, entity_id, question,
+        peer_candidates=peer_sources, asking_source=asking_source,
+        raised_by_agent=f"{asking_source}_domain_agent",
+        parent_run_id=parent_run_id, trigger=trigger,
+    )
+
+
+async def consult_domain_agents_for_orchestrator(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_id: uuid.UUID,
+    question: str,
+    parent_run_id: Optional[uuid.UUID] = None,
+    trigger: RunTrigger = RunTrigger.API,
+) -> Dict[str, Any]:
+    """The orchestrator's validate-before-answering step — rung 2 of the same
+    resolution ladder domain agents use (ask_peer_agents), but the
+    orchestrator isn't itself a source: it has no claims to contribute, so it
+    never joins the swarm as a negotiator, only asks. See ask_domain_agents in
+    strands_tools.py for the tool wrapper the chat agent actually calls."""
+    return await _consult_peer_agents(
+        db, user_id, entity_id, question,
+        peer_candidates=list(REGISTERED_SOURCES), asking_source=None,
+        raised_by_agent="orchestrator",
+        parent_run_id=parent_run_id, trigger=trigger,
+    )

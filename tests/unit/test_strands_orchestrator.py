@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.models.agent_run import RunStatus
 from app.services.agent.agent_config_service import EffectiveAgentConfig
 from app.services.agent.strands_orchestrator import (
     StrandsOrchestrator,
@@ -150,6 +151,47 @@ class TestPersistTurns:
         assert roles["user"].tool_calls is None
         assert roles["assistant"].tool_calls is None
         db.flush.assert_awaited_once()
+
+
+class TestQueryBuildAgentFailure:
+    """tracing.start_run now runs before _build_agent (so run_id can thread
+    into make_agent_tools as parent_run_id) — a regression this reorder could
+    introduce is a _build_agent failure leaving that AgentRun row permanently
+    RUNNING, since before the reorder no row existed yet at that point."""
+
+    @pytest.mark.asyncio
+    async def test_build_agent_failure_finishes_the_run_as_failed(self) -> None:
+        orch = StrandsOrchestrator()
+        db = _make_empty_db()
+        user_id = uuid.uuid4()
+        run_id = uuid.uuid4()
+        config = EffectiveAgentConfig(
+            enabled=True, model_id=None, system_prompt="x", enabled_tools=None,
+        )
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+
+        with patch(
+            "app.services.agent.strands_orchestrator.agent_config_service.get_effective_config",
+            AsyncMock(return_value=config),
+        ), patch(
+            "app.services.agent.strands_orchestrator.tracing.start_run",
+            AsyncMock(return_value=run_id),
+        ) as mock_start_run, patch(
+            "app.services.agent.strands_orchestrator.tracing.finish_run", AsyncMock(),
+        ) as mock_finish_run, patch(
+            "app.core.config.get_settings", return_value=settings,
+        ), patch.object(
+            StrandsOrchestrator, "_build_agent", side_effect=RuntimeError("boom"),
+        ) as mock_build_agent:
+            with pytest.raises(RuntimeError, match="boom"):
+                await orch.query(db, user_id, "hola")
+
+        mock_start_run.assert_awaited_once()
+        # The run_id start_run returned is the one _build_agent (and therefore
+        # make_agent_tools' parent_run_id) actually received.
+        assert mock_build_agent.call_args.kwargs["run_id"] == run_id
+        mock_finish_run.assert_awaited_once_with(run_id, RunStatus.FAILED, error="boom")
 
 
 # ---------------------------------------------------------------------------

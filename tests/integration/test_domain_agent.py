@@ -9,11 +9,12 @@ from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_config import AgentConfig
-from app.models.agent_run import RunTrigger
+from app.models.agent_run import AgentRun, RunStatus, RunTrigger, RunType
 from app.models.entity import EntityType
 from app.models.pending_question import QuestionTarget
 from app.services.agent import tool_registry
@@ -519,6 +520,98 @@ class TestAskPeerAgentsNegotiation:
         open_questions = await store.list_open_questions(db_session, user_id)
         assert result["question_id"] not in {str(q.id) for q in open_questions}
 
+    async def test_question_with_literal_braces_does_not_crash_prompt_building(
+        self, db_session: AsyncSession,
+    ) -> None:
+        """A question containing '{'/'}' (e.g. an attribute dict rendered as
+        text, or free-form text an LLM composed for ask_domain_agents) must
+        not reach a second str.format() pass that re-parses it as a format
+        field — regression test for a KeyError/ValueError that would have
+        failed the whole chat turn or domain-agent batch run."""
+        user_id = await _make_persisted_user(db_session, email="neg-braces@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan {admin}")
+        await db_session.commit()
+        await store.add_claim(db_session, entity.id, user_id, "slack", "c1", "slack_domain_agent")
+        await store.add_claim(db_session, entity.id, user_id, "outlook", "c2", "outlook_domain_agent")
+        await db_session.commit()
+
+        captured_tools: Dict[str, Any] = {}
+
+        def fake_agent_ctor(*args: Any, **kwargs: Any) -> MagicMock:
+            for t in kwargs.get("tools", []):
+                captured_tools[t.tool_name] = t
+            return MagicMock(name=kwargs.get("name"))
+
+        async def fake_invoke_async(*args: Any, **kwargs: Any) -> MagicMock:
+            captured_tools["submit_verdict"].__wrapped__(resolved=True, answer="ok", confidence=0.5)
+            return MagicMock()
+
+        mock_swarm_instance = MagicMock()
+        mock_swarm_instance.invoke_async = AsyncMock(side_effect=fake_invoke_async)
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+
+        with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
+             patch("strands.Agent", side_effect=fake_agent_ctor), \
+             patch("strands.multiagent.Swarm", return_value=mock_swarm_instance), \
+             patch("app.core.config.get_settings", return_value=settings):
+            result = await domain_agent._ask_peer_agents(
+                db_session, user_id, "slack", entity.id,
+                "¿el atributo {role: admin} es correcto?",
+            )
+
+        assert result["resolved"] is True
+
+    async def test_negotiation_run_persists_question_and_participants_in_stats(
+        self, db_session: AsyncSession,
+    ) -> None:
+        """The backoffice's Conversations view reads question/entity_name/
+        participants straight off AgentRun.stats (no extra fetch per row) —
+        these keys are its contract, not incidental logging."""
+        user_id = await _make_persisted_user(db_session, email="neg2b@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+        await store.add_claim(db_session, entity.id, user_id, "slack", "trabaja en Atlas", "slack_domain_agent")
+        await store.add_claim(db_session, entity.id, user_id, "outlook", "email juan@x.com", "outlook_domain_agent")
+        await db_session.commit()
+
+        captured_tools: Dict[str, Any] = {}
+
+        def fake_agent_ctor(*args: Any, **kwargs: Any) -> MagicMock:
+            for t in kwargs.get("tools", []):
+                captured_tools[t.tool_name] = t
+            return MagicMock(name=kwargs.get("name"))
+
+        async def fake_invoke_async(*args: Any, **kwargs: Any) -> MagicMock:
+            captured_tools["submit_verdict"].__wrapped__(
+                resolved=True, answer="Sí, es la misma persona", confidence=0.9,
+            )
+            return MagicMock()
+
+        mock_swarm_instance = MagicMock()
+        mock_swarm_instance.invoke_async = AsyncMock(side_effect=fake_invoke_async)
+
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+
+        with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
+             patch("strands.Agent", side_effect=fake_agent_ctor), \
+             patch("strands.multiagent.Swarm", return_value=mock_swarm_instance), \
+             patch("app.core.config.get_settings", return_value=settings):
+            await domain_agent._ask_peer_agents(
+                db_session, user_id, "slack", entity.id, "¿Es la misma persona que en Outlook?",
+            )
+
+        run = (await db_session.execute(
+            select(AgentRun).where(AgentRun.user_id == user_id, AgentRun.run_type == RunType.NEGOTIATION)
+        )).scalar_one()
+        assert run.stats["question"] == "¿Es la misma persona que en Outlook?"
+        assert run.stats["entity_name"] == "Juan"
+        assert run.stats["entity_id"] == str(entity.id)
+        assert run.stats["participants"] == ["slack_negotiator", "outlook_negotiator"]
+
     async def test_swarm_exception_falls_back_to_unresolved(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="neg3@example.com")
         entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Z")
@@ -628,6 +721,114 @@ class TestAskPeerAgentsNegotiation:
         assert str(recon_question.id) in open_ids
         assert result["question_id"] in open_ids
         assert len(open_ids) == 2
+
+
+class TestConsultDomainAgentsForOrchestrator:
+    """consult_domain_agents_for_orchestrator is the chat agent's "validate
+    before answering" step — it shares _consult_peer_agents' core with
+    _ask_peer_agents (TestAskPeerAgentsNegotiation above), but the
+    orchestrator isn't a source: no self-representing negotiator node, and
+    every registered source is a candidate (no exclusion)."""
+
+    async def test_no_relevant_peers_returns_unresolved_shape(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="orch-neg1@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Nadie")
+        await db_session.commit()
+
+        result = await domain_agent.consult_domain_agents_for_orchestrator(
+            db_session, user_id, entity.id, "¿quién es?",
+        )
+
+        assert result == {
+            "resolved": False, "answer": None, "confidence": None,
+            "peers_consulted": [], "question_id": None,
+        }
+
+    async def test_relevant_peers_negotiate_without_a_self_node(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="orch-neg2@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+        await store.add_claim(db_session, entity.id, user_id, "slack", "trabaja en Atlas", "slack_domain_agent")
+        await store.add_claim(db_session, entity.id, user_id, "outlook", "email juan@x.com", "outlook_domain_agent")
+        await db_session.commit()
+
+        captured_tools: Dict[str, Any] = {}
+
+        def fake_agent_ctor(*args: Any, **kwargs: Any) -> MagicMock:
+            for t in kwargs.get("tools", []):
+                captured_tools[t.tool_name] = t
+            return MagicMock(name=kwargs.get("name"))
+
+        async def fake_invoke_async(*args: Any, **kwargs: Any) -> MagicMock:
+            captured_tools["submit_verdict"].__wrapped__(
+                resolved=True, answer="Trabaja en Atlas desde 2023", confidence=0.85,
+            )
+            return MagicMock()
+
+        mock_swarm_instance = MagicMock()
+        mock_swarm_instance.invoke_async = AsyncMock(side_effect=fake_invoke_async)
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+
+        # parent_run_id must reference a real AgentRun row (FK) — stand in for
+        # the chat run that would have started before this tool is called.
+        chat_run = AgentRun(
+            user_id=user_id, agent_key="orchestrator", run_type=RunType.CHAT,
+            trigger=RunTrigger.API, status=RunStatus.RUNNING,
+        )
+        db_session.add(chat_run)
+        await db_session.commit()
+        parent_run_id = chat_run.id
+
+        with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
+             patch("strands.Agent", side_effect=fake_agent_ctor) as mock_agent_cls, \
+             patch("strands.multiagent.Swarm", return_value=mock_swarm_instance), \
+             patch("app.core.config.get_settings", return_value=settings):
+            result = await domain_agent.consult_domain_agents_for_orchestrator(
+                db_session, user_id, entity.id, "¿desde cuándo trabaja en Atlas?",
+                parent_run_id=parent_run_id,
+            )
+
+        assert result["resolved"] is True
+        assert result["answer"] == "Trabaja en Atlas desde 2023"
+        assert result["peers_consulted"] == ["slack", "outlook"]
+        # Exactly one negotiator per relevant source — no extra node for the
+        # orchestrator itself, unlike a domain agent's own ask_peer_agents.
+        assert mock_agent_cls.call_count == 2
+
+        run = (await db_session.execute(
+            select(AgentRun).where(AgentRun.user_id == user_id, AgentRun.run_type == RunType.NEGOTIATION)
+        )).scalar_one()
+        assert run.stats["participants"] == ["slack_negotiator", "outlook_negotiator"]
+        assert run.parent_run_id == parent_run_id
+
+    async def test_unresolved_negotiation_escalates_to_human(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="orch-neg3@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Z")
+        await db_session.commit()
+        await store.add_claim(db_session, entity.id, user_id, "slack", "c1", "slack_domain_agent")
+        await store.add_claim(db_session, entity.id, user_id, "outlook", "c2", "outlook_domain_agent")
+        await db_session.commit()
+
+        mock_swarm_instance = MagicMock()
+        mock_swarm_instance.invoke_async = AsyncMock(side_effect=RuntimeError("boom"))
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+
+        with patch.object(domain_agent, "REGISTERED_SOURCES", ["slack", "outlook"]), \
+             patch("strands.Agent", return_value=MagicMock()), \
+             patch("strands.multiagent.Swarm", return_value=mock_swarm_instance), \
+             patch("app.core.config.get_settings", return_value=settings):
+            result = await domain_agent.consult_domain_agents_for_orchestrator(
+                db_session, user_id, entity.id, "¿duda?",
+            )
+
+        assert result["resolved"] is False
+        human_questions = await store.list_open_questions(db_session, user_id, target=QuestionTarget.HUMAN)
+        assert len(human_questions) == 1
+        assert human_questions[0].raised_by_agent == "orchestrator"
 
 
 class TestSubmitVerdictTool:

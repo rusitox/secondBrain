@@ -28,6 +28,7 @@ def make_agent_tools(
     user_id: uuid.UUID,
     user_timezone: str = "UTC",
     embedder: Optional[Any] = None,
+    parent_run_id: Optional[uuid.UUID] = None,
 ) -> List[Any]:
     """Factory that creates all agent tools with db/user_id injected via closure.
 
@@ -36,6 +37,9 @@ def make_agent_tools(
         user_id: UUID of the authenticated user.
         user_timezone: IANA timezone name used for calendar localisation.
         embedder: Optional Embedder instance required by memory tools.
+        parent_run_id: This chat's own AgentRun id (see StrandsOrchestrator._build_agent),
+            passed through so ask_domain_agents' negotiation traces as a sub-run of this
+            chat rather than a disconnected row.
 
     Returns:
         List of Strands tool objects ready to pass to an Agent.
@@ -288,6 +292,45 @@ def make_agent_tools(
 
         return {"resolved": True, "entities_updated": touched_entity_ids}
 
+    @tool
+    async def ask_domain_agents(entity_id: str, question: str) -> Dict[str, Any]:
+        """Validate a doubt with the relevant domain agents before answering,
+        instead of guessing or answering with stale/conflicting knowledge.
+
+        Use this when query_knowledge doesn't give you a confident answer, or
+        when different sources' claims about an entity conflict — never for
+        routine questions the knowledge base already answers cleanly. This
+        triggers a real negotiation between the domain agents that actually
+        know something about the entity (a scoped Swarm, like a domain agent's
+        own ask_peer_agents) and can take several seconds — worth it for a
+        doubt that matters, not for every message.
+
+        Args:
+            entity_id: The entity_id from query_knowledge you have a doubt about.
+            question: The specific doubt, framed so a domain agent can answer it.
+
+        Returns {resolved, answer, confidence, peers_consulted, question_id}.
+        resolved=False with an answer means the agents converged on a
+        low-confidence or partial answer, still worth weighing; resolved=False
+        with answer=None and peers_consulted=[] means nobody relevant was
+        available — fall back to what query_knowledge already gave you, or
+        tell the user honestly that you're not sure. Either way, if it isn't
+        resolved, don't present the guess as settled fact.
+        """
+        import uuid as _uuid
+
+        from app.services.agent.knowledge import domain_agent
+
+        try:
+            parsed_entity_id = _uuid.UUID(entity_id)
+        except ValueError as e:
+            return {"error": f"invalid entity_id {entity_id!r}: {e}"}
+        # trigger defaults to RunTrigger.API on consult_domain_agents_for_orchestrator —
+        # every orchestrator call is API-triggered, same as the chat run itself.
+        return await domain_agent.consult_domain_agents_for_orchestrator(
+            db, user_id, parsed_entity_id, question, parent_run_id=parent_run_id,
+        )
+
     tools = [
         search_memory,
         list_tasks,
@@ -298,6 +341,7 @@ def make_agent_tools(
         get_sync_status,
         get_current_datetime,
         query_knowledge,
+        ask_domain_agents,
         get_pending_questions,
         confirm_pending_answer,
     ]
