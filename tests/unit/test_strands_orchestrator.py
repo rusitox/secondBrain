@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.models.agent_run import RunStatus
+from app.services.agent.agent_config_service import EffectiveAgentConfig
 from app.services.agent.strands_orchestrator import (
     StrandsOrchestrator,
     _StreamingCallbackHandler,
@@ -151,6 +153,47 @@ class TestPersistTurns:
         db.flush.assert_awaited_once()
 
 
+class TestQueryBuildAgentFailure:
+    """tracing.start_run now runs before _build_agent (so run_id can thread
+    into make_agent_tools as parent_run_id) — a regression this reorder could
+    introduce is a _build_agent failure leaving that AgentRun row permanently
+    RUNNING, since before the reorder no row existed yet at that point."""
+
+    @pytest.mark.asyncio
+    async def test_build_agent_failure_finishes_the_run_as_failed(self) -> None:
+        orch = StrandsOrchestrator()
+        db = _make_empty_db()
+        user_id = uuid.uuid4()
+        run_id = uuid.uuid4()
+        config = EffectiveAgentConfig(
+            enabled=True, model_id=None, system_prompt="x", enabled_tools=None,
+        )
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+
+        with patch(
+            "app.services.agent.strands_orchestrator.agent_config_service.get_effective_config",
+            AsyncMock(return_value=config),
+        ), patch(
+            "app.services.agent.strands_orchestrator.tracing.start_run",
+            AsyncMock(return_value=run_id),
+        ) as mock_start_run, patch(
+            "app.services.agent.strands_orchestrator.tracing.finish_run", AsyncMock(),
+        ) as mock_finish_run, patch(
+            "app.core.config.get_settings", return_value=settings,
+        ), patch.object(
+            StrandsOrchestrator, "_build_agent", side_effect=RuntimeError("boom"),
+        ) as mock_build_agent:
+            with pytest.raises(RuntimeError, match="boom"):
+                await orch.query(db, user_id, "hola")
+
+        mock_start_run.assert_awaited_once()
+        # The run_id start_run returned is the one _build_agent (and therefore
+        # make_agent_tools' parent_run_id) actually received.
+        assert mock_build_agent.call_args.kwargs["run_id"] == run_id
+        mock_finish_run.assert_awaited_once_with(run_id, RunStatus.FAILED, error="boom")
+
+
 # ---------------------------------------------------------------------------
 # _build_agent — reasoning_effort guard
 # ---------------------------------------------------------------------------
@@ -193,6 +236,74 @@ class TestBuildAgentReasoningGuard:
         _, kwargs = mock_model_cls.call_args
         assert kwargs["params"] is None
         assert kwargs["model_id"] == "gpt-4o-mini"
+
+
+class TestBuildAgentWithConfig:
+    """Phase 2 — config overrides model/tools for the orchestrator, but never
+    system_prompt (see _build_agent's own docstring for why)."""
+
+    def _run_build(self, config: EffectiveAgentConfig, tools=None):
+        orch = StrandsOrchestrator(embedder=MagicMock())
+        settings = MagicMock()
+        settings.llm_model = "openai/gpt-4o-mini"
+        settings.llm_api_key = "sk-test"
+
+        with patch("strands.Agent") as mock_agent_cls, \
+             patch("strands.models.openai.OpenAIModel") as mock_model_cls, \
+             patch("app.core.config.get_settings", return_value=settings), \
+             patch(
+                 "app.services.agent.strands_tools.make_agent_tools",
+                 return_value=tools if tools is not None else [],
+             ):
+            orch._build_agent(
+                db=MagicMock(), user_id=uuid.uuid4(), user_tz="UTC",
+                system_prompt="dynamic per-request prompt", history=[], stream_callback=None,
+                config=config,
+            )
+        return mock_model_cls, mock_agent_cls
+
+    def test_model_id_override_reaches_build_openai_model(self) -> None:
+        config = EffectiveAgentConfig(
+            enabled=True, model_id="openai/gpt-4o", system_prompt="ignored", enabled_tools=None,
+        )
+        mock_model_cls, _ = self._run_build(config)
+        assert mock_model_cls.call_args.kwargs["model_id"] == "gpt-4o"
+
+    def test_enabled_tools_filters_orchestrator_tools(self) -> None:
+        def _fake_tool(name: str):
+            t = MagicMock()
+            t.tool_name = name
+            return t
+
+        config = EffectiveAgentConfig(
+            enabled=True, model_id=None, system_prompt="ignored", enabled_tools=["search_memory"],
+        )
+        _, mock_agent_cls = self._run_build(
+            config, tools=[_fake_tool("search_memory"), _fake_tool("web_search")],
+        )
+        tool_names = {t.tool_name for t in mock_agent_cls.call_args.kwargs["tools"]}
+        assert tool_names == {"search_memory"}
+
+    def test_system_prompt_is_never_overridden_by_config(self) -> None:
+        """The dynamic per-request prompt (identity/style/date) always wins —
+        config.system_prompt is intentionally not wired for the orchestrator."""
+        config = EffectiveAgentConfig(
+            enabled=True, model_id=None, system_prompt="a config override", enabled_tools=None,
+        )
+        _, mock_agent_cls = self._run_build(config)
+        assert mock_agent_cls.call_args.kwargs["system_prompt"] == "dynamic per-request prompt"
+
+    def test_disabled_config_does_not_stop_the_orchestrator(self) -> None:
+        """Deliberate carve-out (see _build_agent's docstring): unlike
+        run_domain_agent/run_rd_domain_agent, the orchestrator ignores
+        config.enabled — disabling the whole chat interface via a stray
+        config row would be a worse failure mode than a no-op knowledge
+        agent. This test pins that choice down, not just the docstring."""
+        config = EffectiveAgentConfig(
+            enabled=False, model_id=None, system_prompt="ignored", enabled_tools=None,
+        )
+        _, mock_agent_cls = self._run_build(config)
+        mock_agent_cls.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

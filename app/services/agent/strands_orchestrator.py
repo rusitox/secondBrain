@@ -15,7 +15,10 @@ from typing import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_run import RunStatus, RunTrigger, RunType
 from app.models.conversation_turn import ConversationTurn
+from app.services.agent import agent_config_service, tracing
+from app.services.agent.agent_config_service import EffectiveAgentConfig
 
 if TYPE_CHECKING:
     from strands.types.content import Message
@@ -158,14 +161,41 @@ class StrandsOrchestrator:
         )
 
         # 4. Build Strands Agent
-        agent = self._build_agent(
-            db=db,
-            user_id=user_id,
-            user_tz=user_tz,
-            system_prompt=system_prompt,
-            history=history,
-            stream_callback=stream_callback,
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        config = await agent_config_service.get_effective_config(
+            db, user_id, "orchestrator", default_system_prompt=system_prompt,
         )
+
+        # Started before _build_agent (not after, like every other tracing.start_run
+        # call site) so the run_id exists in time to hand to make_agent_tools as
+        # parent_run_id — the ask_domain_agents tool's own negotiation sub-run needs
+        # it to show up nested under this chat run in the backoffice, not floating.
+        run_id = await tracing.start_run(
+            user_id, agent_key="orchestrator", run_type=RunType.CHAT, trigger=RunTrigger.API,
+            model_id=config.model_id or settings.llm_model,
+        )
+
+        try:
+            agent = self._build_agent(
+                db=db,
+                user_id=user_id,
+                user_tz=user_tz,
+                system_prompt=system_prompt,
+                history=history,
+                stream_callback=stream_callback,
+                config=config,
+                run_id=run_id,
+            )
+        except Exception as e:
+            # Before the run_id-before-_build_agent reorder above, a failure here
+            # happened before any AgentRun row existed — nothing to clean up. Now
+            # that start_run has already run, skipping this would leave the row
+            # RUNNING forever (no agent, so no agent.messages to persist either).
+            logger.exception("StrandsOrchestrator: _build_agent failed for user=%s", user_id)
+            await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
+            raise
 
         # 5. Run agent
         handler: _StreamingCallbackHandler = agent.callback_handler  # type: ignore[assignment]
@@ -180,13 +210,27 @@ class StrandsOrchestrator:
             else:
                 await agent.invoke_async(augmented_question)
                 answer = _extract_last_assistant_text(agent.messages)
-        except Exception:
+        except asyncio.CancelledError:
+            logger.info(
+                "StrandsOrchestrator: cancelled for user=%s session=%s", user_id, resolved_session_id,
+            )
+            await tracing.record_agent_events(run_id, agent, actor="orchestrator")
+            await tracing.finish_run(run_id, RunStatus.FAILED, error="cancelled")
+            raise
+        except Exception as e:
             logger.exception(
                 "StrandsOrchestrator: agent failed for user=%s question=%r",
                 user_id,
                 question[:80],
             )
+            await tracing.record_agent_events(run_id, agent, actor="orchestrator")
+            await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
             raise
+
+        await tracing.record_agent_events(run_id, agent, actor="orchestrator")
+        await tracing.finish_run(
+            run_id, RunStatus.COMPLETED, summary=answer, usage_source=agent,
+        )
 
         tools_used = handler.tools_used
         iterations = handler.iterations + 1  # +1 for the LLM synthesis turn
@@ -222,6 +266,8 @@ class StrandsOrchestrator:
         system_prompt: str,
         history: List[Dict[str, Any]],
         stream_callback: Optional[Callable[[str], Awaitable[None]]],
+        config: Optional[EffectiveAgentConfig] = None,
+        run_id: Optional[uuid.UUID] = None,
     ) -> Any:
         """Instantiate a Strands Agent for a single request.
 
@@ -233,6 +279,26 @@ class StrandsOrchestrator:
         closes over this same AsyncSession, which is not safe for concurrent
         use from more than one task at a time (same reasoning as
         app/services/agent/knowledge/domain_agent.py's make_domain_agent).
+
+        config only overrides model_id and enabled_tools — never
+        system_prompt, unlike the domain agents. `system_prompt` here is
+        already dynamically composed per-request (identity, style, today's
+        date via _build_system_prompt) before this method is called; a config
+        row replacing it wholesale would silently drop that personalization,
+        so Phase 2 deliberately doesn't offer it for the orchestrator.
+
+        config.enabled is likewise never checked here, unlike run_domain_agent
+        / run_rd_domain_agent, which skip the run entirely when disabled. The
+        orchestrator is the user's whole chat interface, not a background
+        cycle — a stray `enabled=False` row (or a backoffice UI bug) silently
+        breaking the entire assistant is a worse failure mode than a knowledge
+        agent no-op, so this carve-out is deliberate, not an oversight.
+
+        run_id is this request's own AgentRun (already started by the caller
+        before calling this method) — passed through to make_agent_tools as
+        parent_run_id so a negotiation the ask_domain_agents tool triggers
+        mid-conversation is traced as a sub-run of this chat, not a
+        disconnected row.
         """
         from strands import Agent
         from strands.tools.executors import SequentialToolExecutor
@@ -240,14 +306,17 @@ class StrandsOrchestrator:
         from app.services.agent.strands_model import build_openai_model
         from app.services.agent.strands_tools import make_agent_tools
 
-        model = build_openai_model()
+        model = build_openai_model(model=config.model_id if config else None)
 
         tools = make_agent_tools(
             db=db,
             user_id=user_id,
             user_timezone=user_tz,
             embedder=self._embedder,
+            parent_run_id=run_id,
         )
+        if config is not None:
+            tools = agent_config_service.filter_tools(tools, config.enabled_tools)
 
         callback_handler = _StreamingCallbackHandler(stream_callback)
 
@@ -412,14 +481,28 @@ Workflow obligatorio:
 query_knowledge — es la vista consolidada y con proveniencia que arman los agentes \
 de dominio, y trae su propio nivel de confianza. Si no encontrás nada ahí, o \
 necesitás más contexto crudo, usá search_memory y search_learnings.
-3. Al empezar la conversación (o cuando sea natural), llamá get_pending_questions — \
+3. Si lo que trae query_knowledge no te alcanza para responder con confianza — \
+fuentes que se contradicen entre sí, o una duda puntual sobre una entidad — \
+llamá a ask_domain_agents antes de responder. Dispara una negociación real entre \
+los agentes de dominio que tienen algo que decir sobre esa entidad (puede tardar \
+unos segundos), así que usalo con criterio: para una duda real, no para cada \
+pregunta trivial que el grafo ya responde. Si tampoco así se resuelve, decile al \
+usuario honestamente que no estás seguro en vez de presentar una conjetura como \
+si fuera un hecho confirmado.
+4. Al empezar la conversación (o cuando sea natural), llamá get_pending_questions — \
 son dudas que los agentes de dominio no pudieron resolver solos y te piden que se \
 las confirmes al humano. Si hay alguna relevante, planteala con naturalidad, no la \
 fuerces en cada respuesta. Si el usuario confirma o corrige, llamá \
 confirm_pending_answer para cerrar el loop — esa respuesta pasa a ser conocimiento \
 de alta confianza.
-4. Llamá otras tools según lo requiera la pregunta
-5. Sintetizá una respuesta clara y accionable
+5. Si en cualquier momento de la charla el usuario te señala que algo del \
+conocimiento está mal — un dato equivocado, dos cosas que se fusionaron como si \
+fueran la misma sin serlo, o dos que en realidad sí son la misma — confirmá en voz \
+alta qué entendiste y llamá a correct_knowledge para corregirlo ahí mismo. Así la \
+base de conocimiento queda viva: se corrige con la conversación, no sólo con lo que \
+ingieren los agentes de dominio.
+6. Llamá otras tools según lo requiera la pregunta
+7. Sintetizá una respuesta clara y accionable
 
 Respondé siempre en el idioma del usuario."""
 

@@ -92,9 +92,35 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
 - [x] `GET /knowledge/status` observability endpoint, incl. `scheduler_active`/`next_scheduled_run` (`test_knowledge_stats.py`)
 - [x] `scheduler.py`: `KnowledgeAgentScheduler` — lifecycle, minimum-interval enforcement, one job
   per user with an active integration, each step on its own fresh session (not a shared one),
-  per-step failure isolation within a cycle (one source failing doesn't block the rest or
-  reconciliation, and a rollback that itself raises doesn't abort the cycle either)
-  (`test_knowledge_scheduler.py`)
+  per-step failure isolation within a cycle (one source failing doesn't block the rest,
+  reconciliation, or trace pruning, and a rollback that itself raises doesn't abort the cycle
+  either) (`test_knowledge_scheduler.py`)
+
+#### Services — Knowledge Backoffice (see `specs/plan-knowledge-backoffice.md`)
+- [x] `tracing.py`: run/event persistence for every trigger point (domain agent, rd agent,
+  reconciliation, swarm negotiation, chat orchestrator) — message serialization, payload
+  truncation, seq ordering across repeated calls, `usage` extraction that never raises even from a
+  malformed source object, `CancelledError` handling, `prune_traces` retention cleanup with
+  FK-cascade to events (`test_tracing.py`)
+- [x] `agent_config_service.py`: effective-config merge (no override row ⇒ byte-identical to
+  pre-backoffice behavior), the `UNSET` sentinel distinguishing "field not mentioned" from
+  "field cleared to null", `filter_tools` unmatched-name warning (`test_agent_config_service.py`)
+- [x] `tool_registry.py`: catalog names cross-checked against the real tools built by
+  `make_resolution_ladder_tools`/`make_watermark_tools`/`make_agent_tools`, not a second hardcoded
+  copy (`test_tool_registry.py`)
+- [x] `mcp_server_service.py`: CRUD, Fernet encryption round-trip, `build_tool_filters` (server's
+  own filters merged with a caller's `extra_rejected`, e.g. `rd_agent.EXCLUDED_MCP_TOOLS`),
+  `test_connection` never raises (including on `MCPClient` construction failure, not just
+  `.start()`) (`test_mcp_server_service.py`)
+- [x] `app/api/routers/backoffice.py`: all 18 endpoints — row isolation (404 for another user's
+  `mcp_server_id`/`run_id`/`entity_id`/`question_id`), `PUT /agents/{key}`'s partial-update
+  semantics, `POST /agents/{key}/run`'s before/after run-count guard against returning a stale run
+  when the agent is disabled, `McpServerCreate`/`Update` SSRF URL validation, `X-Total-Count`
+  pagination header (`test_backoffice_api.py`)
+- [x] `static/backoffice/`: manually audited (no browser available in this environment) for
+  `escapeHtml()` coverage on every user/agent-controlled interpolation, DOM-id cross-references
+  between `index.html` and `app.js`, event-listener re-binding after every re-render, and the
+  `authedFetch` 401-to-login-overlay flow — confirmed by an independent code-review pass
 
 #### Services — Notion
 - [x] NotionConnector: page reading, database reading, token validation
@@ -272,6 +298,10 @@ tests/
 │   ├── test_reconciliation.py         # Reconciliation engine (unit-level helpers)
 │   ├── test_swarm_negotiation.py      # Shared scoped-Swarm negotiation core
 │   ├── test_knowledge_scheduler.py    # KnowledgeAgentScheduler (periodic knowledge cycles)
+│   ├── test_tracing.py                # Backoffice: run/event tracing + trace retention
+│   ├── test_agent_config_service.py   # Backoffice: effective-config merge, UNSET sentinel
+│   ├── test_mcp_server_service.py     # Backoffice: MCP server CRUD, encryption, connection test
+│   ├── test_tool_registry.py          # Backoffice: tool catalog vs. real tool names
 │   ├── test_encryption.py             # Fernet encryption
 │   ├── test_security.py               # API key auth
 │   ├── test_voice_transcriber.py      # Voice transcription (local + API mode)
@@ -310,10 +340,11 @@ tests/
 │   ├── test_briefing_generation.py    # Briefing generation
 │   ├── test_identity_crud.py          # Identity CRUD
 │   ├── test_agent_endpoint.py         # POST /agent/query — full HTTP stack, StrandsOrchestrator
-│   ├── test_knowledge_store.py        # Entity/claim/link/pending_question CRUD
+│   ├── test_knowledge_store.py        # Entity/claim/link/pending_question CRUD, backoffice pagination/search
 │   ├── test_knowledge_stats.py        # get_knowledge_stats() + GET /knowledge/status
-│   ├── test_domain_agent.py           # Per-source domain agents + resolution ladder
-│   ├── test_rd_agent.py               # I+D platform agent via MCP
+│   ├── test_domain_agent.py           # Per-source domain agents + resolution ladder + agent config
+│   ├── test_rd_agent.py               # I+D platform agent via MCP + registered MCP servers + agent config
+│   ├── test_backoffice_api.py         # Full /backoffice/* HTTP stack — agents, tools, MCPs, runs, graph
 │   ├── test_reconciliation.py         # Cross-source duplicate detection + same_as merging
 │   ├── test_strands_tools_knowledge.py # query_knowledge/get_pending_questions/confirm_pending_answer
 │   ├── test_msgraph_connector.py      # Outlook/Calendar connector

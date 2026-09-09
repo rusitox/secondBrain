@@ -28,6 +28,7 @@ def make_agent_tools(
     user_id: uuid.UUID,
     user_timezone: str = "UTC",
     embedder: Optional[Any] = None,
+    parent_run_id: Optional[uuid.UUID] = None,
 ) -> List[Any]:
     """Factory that creates all agent tools with db/user_id injected via closure.
 
@@ -36,6 +37,9 @@ def make_agent_tools(
         user_id: UUID of the authenticated user.
         user_timezone: IANA timezone name used for calendar localisation.
         embedder: Optional Embedder instance required by memory tools.
+        parent_run_id: This chat's own AgentRun id (see StrandsOrchestrator._build_agent),
+            passed through so ask_domain_agents' negotiation traces as a sub-run of this
+            chat rather than a disconnected row.
 
     Returns:
         List of Strands tool objects ready to pass to an Agent.
@@ -236,57 +240,183 @@ def make_agent_tools(
         """
         import uuid as _uuid
 
+        from app.services.agent.knowledge import reconciliation
+
+        try:
+            parsed_question_id = _uuid.UUID(question_id)
+        except ValueError as e:
+            return {"error": f"invalid question_id {question_id!r}: {e}"}
+        return await reconciliation.apply_question_answer(
+            db, user_id, parsed_question_id, answer_text, confirmed,
+        )
+
+    @tool
+    async def correct_knowledge(
+        entity_id: str,
+        correction: Optional[str] = None,
+        claim_id: Optional[str] = None,
+        other_entity_id: Optional[str] = None,
+        same_entity: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Fix the knowledge graph right when the user tells you something in
+        it is wrong — don't just note it for this reply, correct it so it
+        stays fixed. This is what keeps the knowledge base alive: it updates
+        from conversation, not only from ingestion. Always confirm out loud
+        what you understood before calling this — it writes with full
+        confidence (source="user"), no further review queue, unlike a domain
+        agent's own claims.
+
+        Pass whatever applies — combine them in one call if the user gave you
+        both a fact correction and an identity correction:
+
+        - Wrong fact: entity_id + correction (the corrected fact, in the
+          user's own words) — becomes a new high-confidence claim. If the
+          user pointed at a specific wrong claim from query_knowledge's
+          claims list, also pass its claim_id — that claim gets marked
+          disputed (kept for history, no longer treated as current fact).
+        - Identity correction ("these are/aren't the same X"): entity_id +
+          other_entity_id + same_entity (True to merge them as the same
+          entity, False to undo a merge between them — including one the
+          system made automatically and got wrong).
+
+        Args:
+            entity_id: The entity being corrected (from query_knowledge).
+            correction: The corrected fact, in the user's own words.
+            claim_id: A specific existing claim (from query_knowledge) the
+                user says is wrong — gets marked disputed.
+            other_entity_id: For an identity correction, the other entity_id.
+            same_entity: Required together with other_entity_id — True to
+                merge, False to unmerge.
+        """
+        import uuid as _uuid
+
         from sqlalchemy.exc import SQLAlchemyError
 
         from app.models.entity_claim import ClaimStatus
         from app.models.entity_link import LinkResolvedBy
-        from app.models.pending_question import QuestionStatus, ResolvedBy
         from app.services.agent.knowledge import reconciliation
         from app.services.agent.knowledge import store as knowledge_store
 
-        question = await knowledge_store.get_question(db, user_id, _uuid.UUID(question_id))
-        if question is None:
-            return {"error": f"question {question_id} not found"}
-        if question.status != QuestionStatus.OPEN:
-            # Already resolved — re-running this would double-write the claim/
-            # link and double-count it in recompute_confidence. A retried tool
-            # call or the LLM re-confirming the same question must be a no-op.
-            return {"error": f"question {question_id} is already {question.status.value}"}
+        try:
+            parsed_entity_id = _uuid.UUID(entity_id)
+        except ValueError as e:
+            return {"error": f"invalid entity_id {entity_id!r}: {e}"}
 
-        entity_id = question.context.get("entity_id")
-        candidate_entity_id = question.context.get("candidate_entity_id")
-        touched_entity_ids: List[str] = []
+        parsed_other_id = None
+        if other_entity_id is not None:
+            if same_entity is None:
+                return {"error": "same_entity is required when other_entity_id is given"}
+            try:
+                parsed_other_id = _uuid.UUID(other_entity_id)
+            except ValueError as e:
+                return {"error": f"invalid other_entity_id {other_entity_id!r}: {e}"}
+
+        parsed_claim_id = None
+        if claim_id is not None:
+            try:
+                parsed_claim_id = _uuid.UUID(claim_id)
+            except ValueError as e:
+                return {"error": f"invalid claim_id {claim_id!r}: {e}"}
+
+        result: Dict[str, Any] = {}
+        touched_entity_ids = {parsed_entity_id}
 
         try:
             async with db.begin_nested():
-                if confirmed and entity_id and candidate_entity_id:
-                    await knowledge_store.link_entities(
-                        db, user_id, _uuid.UUID(entity_id), _uuid.UUID(candidate_entity_id),
-                        relation_type="same_as", resolved_by=LinkResolvedBy.USER, confidence=1.0,
+                if parsed_claim_id is not None:
+                    disputed = await knowledge_store.dispute_claim(
+                        db, user_id, parsed_claim_id, entity_id=parsed_entity_id,
                     )
-                    touched_entity_ids = [entity_id, candidate_entity_id]
-                elif confirmed and entity_id:
-                    await knowledge_store.add_claim(
-                        db, _uuid.UUID(entity_id), user_id, source="user", claim_text=answer_text,
+                    if disputed is None:
+                        return {"error": f"claim {claim_id} not found on entity {entity_id}"}
+                    result["disputed_claim_id"] = claim_id
+
+                if correction:
+                    claim = await knowledge_store.add_claim(
+                        db, parsed_entity_id, user_id, source="user", claim_text=correction,
                         asserted_by_agent="user", status=ClaimStatus.CONFIRMED_BY_USER, confidence=1.0,
                     )
-                    touched_entity_ids = [entity_id]
+                    result["new_claim_id"] = str(claim.id)
 
-                await knowledge_store.resolve_question(
-                    db, user_id, question.id, ResolvedBy.HUMAN, answer_text=answer_text,
-                    status=QuestionStatus.ANSWERED if confirmed else QuestionStatus.DISMISSED,
-                )
+                if parsed_other_id is not None:
+                    touched_entity_ids.add(parsed_other_id)
+                    if same_entity:
+                        # link_entities has no uniqueness constraint of its own —
+                        # skip creating a duplicate if the user is just re-confirming
+                        # a merge that's already there.
+                        if not await knowledge_store.links_exist(
+                            db, user_id, parsed_entity_id, parsed_other_id, relation_type="same_as",
+                        ):
+                            await knowledge_store.link_entities(
+                                db, user_id, parsed_entity_id, parsed_other_id,
+                                relation_type="same_as", resolved_by=LinkResolvedBy.USER, confidence=1.0,
+                            )
+                        # The user may be overriding a reconciliation pass that
+                        # already decided (wrongly) these were distinct — clear
+                        # that stale not_same_as link so it doesn't contradict
+                        # the merge just made, or keep suppressing this pair.
+                        await knowledge_store.unlink_entities(
+                            db, user_id, parsed_entity_id, parsed_other_id, relation_type="not_same_as",
+                        )
+                        result["linked"] = True
+                    else:
+                        removed = await knowledge_store.unlink_entities(
+                            db, user_id, parsed_entity_id, parsed_other_id, relation_type="same_as",
+                        )
+                        result["unlinked"] = removed > 0
+
+                if not result:
+                    return {
+                        "error": "nothing to do — pass correction, claim_id, or other_entity_id+same_entity",
+                    }
 
                 for eid in touched_entity_ids:
-                    new_confidence = await reconciliation.recompute_confidence(
-                        db, user_id, _uuid.UUID(eid),
-                    )
-                    await knowledge_store.update_entity_confidence(db, user_id, _uuid.UUID(eid), new_confidence)
+                    new_confidence = await reconciliation.recompute_confidence(db, user_id, eid)
+                    await knowledge_store.update_entity_confidence(db, user_id, eid, new_confidence)
         except (SQLAlchemyError, ValueError) as e:
-            logger.warning("confirm_pending_answer failed for question_id=%s: %s", question_id, e)
+            logger.warning("correct_knowledge failed for entity_id=%s: %s", entity_id, e)
             return {"error": str(e)}
 
-        return {"resolved": True, "entities_updated": touched_entity_ids}
+        return {"resolved": True, **result}
+
+    @tool
+    async def ask_domain_agents(entity_id: str, question: str) -> Dict[str, Any]:
+        """Validate a doubt with the relevant domain agents before answering,
+        instead of guessing or answering with stale/conflicting knowledge.
+
+        Use this when query_knowledge doesn't give you a confident answer, or
+        when different sources' claims about an entity conflict — never for
+        routine questions the knowledge base already answers cleanly. This
+        triggers a real negotiation between the domain agents that actually
+        know something about the entity (a scoped Swarm, like a domain agent's
+        own ask_peer_agents) and can take several seconds — worth it for a
+        doubt that matters, not for every message.
+
+        Args:
+            entity_id: The entity_id from query_knowledge you have a doubt about.
+            question: The specific doubt, framed so a domain agent can answer it.
+
+        Returns {resolved, answer, confidence, peers_consulted, question_id}.
+        resolved=False with an answer means the agents converged on a
+        low-confidence or partial answer, still worth weighing; resolved=False
+        with answer=None and peers_consulted=[] means nobody relevant was
+        available — fall back to what query_knowledge already gave you, or
+        tell the user honestly that you're not sure. Either way, if it isn't
+        resolved, don't present the guess as settled fact.
+        """
+        import uuid as _uuid
+
+        from app.services.agent.knowledge import domain_agent
+
+        try:
+            parsed_entity_id = _uuid.UUID(entity_id)
+        except ValueError as e:
+            return {"error": f"invalid entity_id {entity_id!r}: {e}"}
+        # trigger defaults to RunTrigger.API on consult_domain_agents_for_orchestrator —
+        # every orchestrator call is API-triggered, same as the chat run itself.
+        return await domain_agent.consult_domain_agents_for_orchestrator(
+            db, user_id, parsed_entity_id, question, parent_run_id=parent_run_id,
+        )
 
     tools = [
         search_memory,
@@ -298,8 +428,10 @@ def make_agent_tools(
         get_sync_status,
         get_current_datetime,
         query_knowledge,
+        ask_domain_agents,
         get_pending_questions,
         confirm_pending_answer,
+        correct_knowledge,
     ]
 
     from app.core.config import get_settings

@@ -30,6 +30,7 @@ partial verdict the swarm reached, never a blind question. A pair with an
 already-open question is skipped rather than re-negotiated every cycle —
 the same cost-threshold requirement the plan's risk section calls for.
 """
+import asyncio
 import logging
 import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -37,16 +38,23 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_run import RunStatus, RunTrigger, RunType
 from app.models.entity import Entity, EntityType
 from app.models.entity_claim import ClaimStatus
 from app.models.entity_link import LinkResolvedBy
-from app.models.pending_question import QuestionTarget
+from app.models.pending_question import QuestionStatus, QuestionTarget, ResolvedBy
+from app.services.agent import tracing
 from app.services.agent.knowledge import store
 
 logger = logging.getLogger(__name__)
 
 SIMILARITY_MAX_DISTANCE = 0.15  # cosine distance <= this ~ cosine similarity >= 0.85
-SAME_AS_CONFIDENCE_THRESHOLD = 0.7
+# Applies symmetrically: at or above this, the swarm's verdict is trusted either
+# way (same_entity=True auto-links, same_entity=False needs no human review either)
+# — only a genuinely uncertain verdict below this reaches a human. Before this was
+# symmetric, "confidently distinct" (the overwhelming majority of verdicts) always
+# escalated regardless of confidence, which is what flooded Preguntas.
+SAME_AS_CONFIDENCE_THRESHOLD = 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +133,14 @@ async def find_candidate_duplicates(
                 seen_pairs.add(pair)
                 if await _already_linked(db, user_id, entity.id, other.id):
                     continue
+                if await store.links_exist(db, user_id, entity.id, other.id, relation_type="not_same_as"):
+                    # Already negotiated to a confident "distinct" verdict (see
+                    # _run_reconciliation_pass) — without this, a pair the swarm
+                    # already decided about would get rediscovered by embedding
+                    # similarity and re-negotiated (a real LLM call) every single
+                    # cycle forever, since a confident "distinct" writes nothing
+                    # a same_as-only check would ever see.
+                    continue
                 candidates.append((entity, other))
     return candidates
 
@@ -157,7 +173,12 @@ def _make_submit_same_as_verdict_tool(verdict: Dict[str, Any]):
 
 
 async def negotiate_same_as(
-    db: AsyncSession, user_id: uuid.UUID, entity_a: Entity, entity_b: Entity,
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_a: Entity,
+    entity_b: Entity,
+    parent_run_id: Optional[uuid.UUID] = None,
+    trigger: RunTrigger = RunTrigger.MANUAL,
 ) -> Dict[str, Any]:
     """Scoped Swarm negotiation deciding whether two candidate entities are
     the same real-world entity. Returns {same_entity, confidence, reasoning}
@@ -206,7 +227,33 @@ async def negotiate_same_as(
             "tools": [view_claims, submit_same_as_verdict],
         },
     ]
-    await run_negotiation(node_specs, question, log_context="negotiate_same_as")
+    neg_run_id = await tracing.start_run(
+        user_id, agent_key="negotiation", run_type=RunType.NEGOTIATION, trigger=trigger,
+        parent_run_id=parent_run_id,
+    )
+    swarm_result = await run_negotiation(node_specs, question, log_context="negotiate_same_as")
+    if swarm_result is not None:
+        await tracing.record_swarm_negotiation(neg_run_id, swarm_result)
+    await tracing.record_verdict_event(neg_run_id, actor="negotiate_same_as", payload=dict(verdict))
+    await tracing.finish_run(
+        neg_run_id,
+        RunStatus.COMPLETED if swarm_result is not None else RunStatus.FAILED,
+        summary=verdict.get("reasoning"),
+        usage_source=swarm_result,
+        stats={
+            "question": question,
+            "entity_a_name": entity_a.canonical_name,
+            "entity_b_name": entity_b.canonical_name,
+            "entity_a_id": str(entity_a.id),
+            "entity_b_id": str(entity_b.id),
+            "participants": [spec["name"] for spec in node_specs],
+            # Unlike ask_peer_agents' node names (f"{source}_negotiator"), these
+            # are always the fixed "entity_a_negotiator"/"entity_b_negotiator" —
+            # the real source names have to be carried separately so the
+            # backoffice's Conversations "filter by participant" can find them.
+            "sources": sorted(set(sources_a) | set(sources_b)),
+        },
+    )
 
     return verdict
 
@@ -242,6 +289,76 @@ async def recompute_confidence(db: AsyncSession, user_id: uuid.UUID, entity_id: 
 
 
 # ---------------------------------------------------------------------------
+# Human answers — shared by the orchestrator's confirm_pending_answer tool
+# (strands_tools.py) and the backoffice's answer endpoint
+# (app/api/routers/backoffice.py), so "responder" means the same thing in
+# both places: before this existed, the backoffice's answer endpoint only
+# recorded answer_text as a note on the question and never touched the
+# graph — closing a same_as question there looked done but never merged
+# anything, unlike confirming the same question in chat.
+# ---------------------------------------------------------------------------
+
+async def apply_question_answer(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    question_id: uuid.UUID,
+    answer_text: str,
+    confirmed: bool = True,
+) -> Dict[str, Any]:
+    """Close a PendingQuestion the way a human confirming/correcting it
+    should actually affect the graph: a same_as-shaped question (context
+    carries both entity_id and candidate_entity_id) links the two entities
+    when confirmed; a single-entity question adds a CONFIRMED_BY_USER claim.
+    Either way the question is closed — answered if confirmed, dismissed if
+    not — but only a confirmation writes anything.
+
+    Returns {"error": ...} for an unknown/not-open question_id, or
+    {"resolved": True, "entities_updated": [...]}.
+    """
+    question = await store.get_question(db, user_id, question_id)
+    if question is None:
+        return {"error": f"question {question_id} not found"}
+    if question.status != QuestionStatus.OPEN:
+        # Already resolved — re-running this would double-write the claim/
+        # link and double-count it in recompute_confidence. A retried call
+        # (or the LLM re-confirming the same question) must be a no-op.
+        return {"error": f"question {question_id} is already {question.status.value}"}
+
+    entity_id = question.context.get("entity_id")
+    candidate_entity_id = question.context.get("candidate_entity_id")
+    touched_entity_ids: List[str] = []
+
+    try:
+        async with db.begin_nested():
+            if confirmed and entity_id and candidate_entity_id:
+                await store.link_entities(
+                    db, user_id, uuid.UUID(entity_id), uuid.UUID(candidate_entity_id),
+                    relation_type="same_as", resolved_by=LinkResolvedBy.USER, confidence=1.0,
+                )
+                touched_entity_ids = [entity_id, candidate_entity_id]
+            elif confirmed and entity_id:
+                await store.add_claim(
+                    db, uuid.UUID(entity_id), user_id, source="user", claim_text=answer_text,
+                    asserted_by_agent="user", status=ClaimStatus.CONFIRMED_BY_USER, confidence=1.0,
+                )
+                touched_entity_ids = [entity_id]
+
+            await store.resolve_question(
+                db, user_id, question.id, ResolvedBy.HUMAN, answer_text=answer_text,
+                status=QuestionStatus.ANSWERED if confirmed else QuestionStatus.DISMISSED,
+            )
+
+            for eid in touched_entity_ids:
+                new_confidence = await recompute_confidence(db, user_id, uuid.UUID(eid))
+                await store.update_entity_confidence(db, user_id, uuid.UUID(eid), new_confidence)
+    except (SQLAlchemyError, ValueError) as e:
+        logger.warning("apply_question_answer failed for question_id=%s: %s", question_id, e)
+        return {"error": str(e)}
+
+    return {"resolved": True, "entities_updated": touched_entity_ids}
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -256,7 +373,10 @@ async def _find_open_reconciliation_question(
 
 
 async def run_reconciliation(
-    db: AsyncSession, user_id: uuid.UUID, entity_type: Optional[EntityType] = None,
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_type: Optional[EntityType] = None,
+    trigger: RunTrigger = RunTrigger.MANUAL,
 ) -> Dict[str, Any]:
     """One reconciliation pass: deterministic auto-link, then scoped-Swarm
     negotiation for embedding-similar candidates (skipping any pair that
@@ -267,6 +387,28 @@ async def run_reconciliation(
     Phase 8) — runs once per user at the end of every knowledge cycle, after all domain
     agents for that cycle finish. Also callable manually via scripts/run_reconciliation.py.
     """
+    run_id = await tracing.start_run(
+        user_id, agent_key="reconciliation", run_type=RunType.RECONCILIATION, trigger=trigger,
+    )
+    try:
+        result = await _run_reconciliation_pass(db, user_id, entity_type, run_id, trigger)
+    except asyncio.CancelledError:
+        await tracing.finish_run(run_id, RunStatus.FAILED, error="cancelled")
+        raise
+    except Exception as e:
+        await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
+        raise
+    await tracing.finish_run(run_id, RunStatus.COMPLETED, stats=result)
+    return result
+
+
+async def _run_reconciliation_pass(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_type: Optional[EntityType],
+    run_id: Optional[uuid.UUID],
+    trigger: RunTrigger,
+) -> Dict[str, Any]:
     # Email matching only ever applies to people — skip it when the caller
     # scoped this run to a different entity_type, matching the CLI's own
     # "limit to one entity type" promise.
@@ -276,6 +418,7 @@ async def run_reconciliation(
     candidates = await find_candidate_duplicates(db, user_id, entity_type=entity_type)
 
     negotiated: List[Dict[str, Any]] = []
+    auto_resolved_distinct: List[Dict[str, Any]] = []
     escalated: List[Dict[str, Any]] = []
     skipped_pending = 0
     touched: Set[uuid.UUID] = set()
@@ -290,17 +433,34 @@ async def run_reconciliation(
             continue
 
         touched.update({entity_a.id, entity_b.id})
-        verdict = await negotiate_same_as(db, user_id, entity_a, entity_b)
+        verdict = await negotiate_same_as(
+            db, user_id, entity_a, entity_b, parent_run_id=run_id, trigger=trigger,
+        )
 
         try:
             async with db.begin_nested():
-                if verdict["same_entity"] and (verdict["confidence"] or 0) >= SAME_AS_CONFIDENCE_THRESHOLD:
+                confident = (verdict["confidence"] or 0) >= SAME_AS_CONFIDENCE_THRESHOLD
+                if confident and verdict["same_entity"]:
                     await store.link_entities(
                         db, user_id, entity_a.id, entity_b.id,
                         relation_type="same_as", resolved_by=LinkResolvedBy.SWARM,
                         confidence=verdict["confidence"],
                     )
                     negotiated.append({"entity_a": str(entity_a.id), "entity_b": str(entity_b.id)})
+                elif confident:
+                    # Swarm is confident they're distinct — trusted the same way a
+                    # confident "same" is trusted above, so this doesn't also need
+                    # a human to confirm "yes, these two unrelated things are
+                    # unrelated." Recorded as a not_same_as link (not just skipped)
+                    # so find_candidate_duplicates' own not_same_as check stops this
+                    # exact pair from being rediscovered by embedding similarity and
+                    # re-negotiated — a real LLM call — every single future cycle.
+                    await store.link_entities(
+                        db, user_id, entity_a.id, entity_b.id,
+                        relation_type="not_same_as", resolved_by=LinkResolvedBy.SWARM,
+                        confidence=verdict["confidence"],
+                    )
+                    auto_resolved_distinct.append({"entity_a": str(entity_a.id), "entity_b": str(entity_b.id)})
                 else:
                     question = await store.raise_question(
                         db, user_id, "reconciliation_engine",
@@ -329,6 +489,7 @@ async def run_reconciliation(
     return {
         "auto_linked": len(auto_linked),
         "negotiated": len(negotiated),
+        "auto_resolved_distinct": len(auto_resolved_distinct),
         "escalated": len(escalated),
         "skipped_pending": skipped_pending,
         "entities_recomputed": len(touched),

@@ -10,8 +10,10 @@ import uuid
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_run import AgentRun, RunType
 from app.models.entity import EntityType
 from app.models.entity_claim import ClaimStatus
 from app.models.entity_link import LinkResolvedBy
@@ -222,6 +224,39 @@ class TestRecomputeConfidence:
         assert confidence == 1.0
 
 
+class TestApplyQuestionAnswer:
+    """Shared by confirm_pending_answer (strands_tools.py) and the
+    backoffice's answer endpoint — the write-branches (same_as link /
+    CONFIRMED_BY_USER claim) are covered via those two callers'
+    own tests; this covers the error paths that belong to the shared
+    function itself."""
+
+    async def test_unknown_question_id_returns_error(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="aqa1@example.com")
+
+        result = await reconciliation.apply_question_answer(
+            db_session, user_id, uuid.uuid4(), "respuesta",
+        )
+        assert "error" in result
+
+    async def test_already_resolved_question_returns_error(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="aqa2@example.com")
+        question = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "¿duda?", target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+        first = await reconciliation.apply_question_answer(
+            db_session, user_id, question.id, "primera respuesta",
+        )
+        await db_session.commit()
+        assert first["resolved"] is True
+
+        second = await reconciliation.apply_question_answer(
+            db_session, user_id, question.id, "segunda respuesta",
+        )
+        assert "error" in second
+
+
 class TestNegotiateSameAs:
     async def test_resolves_via_swarm(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="n1@example.com")
@@ -259,6 +294,19 @@ class TestNegotiateSameAs:
         assert verdict == {"same_entity": True, "confidence": 0.9, "reasoning": "mismo email"}
         assert mock_agent_cls.call_count == 2
         mock_swarm_cls.assert_called_once()
+
+        # The backoffice's Conversations view reads these straight off
+        # AgentRun.stats — including "sources", since negotiate_same_as' node
+        # names are the fixed "entity_a/b_negotiator" (unlike ask_peer_agents'
+        # f"{source}_negotiator"), so the real source names have to be carried
+        # separately for "filter by participant" to find this run.
+        run = (await db_session.execute(
+            select(AgentRun).where(AgentRun.user_id == user_id, AgentRun.run_type == RunType.NEGOTIATION)
+        )).scalar_one()
+        assert run.stats["entity_a_name"] == "Juan"
+        assert run.stats["entity_b_name"] == "Juan Pérez"
+        assert run.stats["participants"] == ["entity_a_negotiator", "entity_b_negotiator"]
+        assert set(run.stats["sources"]) == {"slack", "outlook"}
 
     async def test_swarm_exception_returns_unresolved_default(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="n2@example.com")
@@ -344,6 +392,37 @@ class TestRunReconciliation:
         assert len(open_questions) == 1
         assert open_questions[0].context["entity_id"] == str(a.id)
         assert open_questions[0].context["candidate_entity_id"] == str(b.id)
+
+    async def test_confidently_distinct_does_not_escalate(self, db_session: AsyncSession) -> None:
+        """Confidence >= threshold trusts the swarm's verdict symmetrically —
+        "confidently distinct" (same_entity=False, high confidence) no longer
+        always escalates, only a genuinely uncertain verdict does. This is
+        the fix for the flood: before, every "distinct" verdict escalated
+        regardless of confidence."""
+        user_id = await _make_persisted_user(db_session, email="r2b@example.com")
+        a = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        b = await store.create_entity(db_session, user_id, EntityType.PERSON, "Y")
+        await db_session.commit()
+
+        with patch.object(
+            reconciliation, "find_candidate_duplicates", AsyncMock(return_value=[(a, b)]),
+        ), patch.object(
+            reconciliation, "negotiate_same_as",
+            AsyncMock(return_value={"same_entity": False, "confidence": 0.95, "reasoning": "distintas"}),
+        ):
+            result = await reconciliation.run_reconciliation(db_session, user_id)
+        await db_session.commit()
+
+        assert result["negotiated"] == 0
+        assert result["auto_resolved_distinct"] == 1
+        assert result["escalated"] == 0
+        open_questions = await store.list_open_questions(db_session, user_id, target=QuestionTarget.HUMAN)
+        assert open_questions == []
+        # Recorded as not_same_as (not just skipped) so future cycles don't
+        # re-negotiate this exact pair forever — see the next test.
+        links = await store.list_links_for_entity(db_session, user_id, a.id)
+        assert len(links) == 1
+        assert links[0].relation_type == "not_same_as"
 
     async def test_skips_pair_with_already_open_question(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="r3@example.com")

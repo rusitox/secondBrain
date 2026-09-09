@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.main import app
 from app.models.base import Base
+from app.services.agent import tracing as _tracing
 from app.utils.encryption import init_fernet, reset_fernet
 
 TEST_DB_URL = "sqlite+aiosqlite://"  # in-memory
@@ -254,10 +255,107 @@ def _create_sqlite_tables(connection) -> None:
         CREATE INDEX IF NOT EXISTS ix_knowledge_processed_documents_user_source
         ON knowledge_processed_documents(user_id, source)
     """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            agent_key TEXT NOT NULL,
+            run_type TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            status TEXT DEFAULT 'running',
+            model_id TEXT,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP,
+            duration_ms INTEGER,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            total_tokens INTEGER,
+            summary TEXT,
+            error TEXT,
+            stats TEXT DEFAULT '{}',
+            parent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_agent_runs_user_id ON agent_runs(user_id)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_agent_runs_user_agent ON agent_runs(user_id, agent_key)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_agent_runs_user_started ON agent_runs(user_id, started_at)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_agent_runs_parent_run_id ON agent_runs(parent_run_id)
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS agent_run_events (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            actor TEXT,
+            tool_name TEXT,
+            payload TEXT DEFAULT '{}',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_agent_run_events_run_id ON agent_run_events(run_id)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_agent_run_events_run_seq ON agent_run_events(run_id, seq)
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS agent_configs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            agent_key TEXT NOT NULL,
+            enabled INTEGER DEFAULT 1,
+            model_id TEXT,
+            system_prompt TEXT,
+            enabled_tools TEXT,
+            mcp_server_ids TEXT DEFAULT '[]',
+            params TEXT DEFAULT '{}',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_agent_configs_user_id ON agent_configs(user_id)
+    """))
+    connection.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_agent_configs_user_agent
+        ON agent_configs(user_id, agent_key)
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS mcp_servers (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            auth_header TEXT DEFAULT 'Authorization',
+            api_key_encrypted TEXT,
+            enabled INTEGER DEFAULT 1,
+            allowed_tools TEXT,
+            rejected_tools TEXT,
+            last_checked_at TIMESTAMP,
+            last_status TEXT,
+            discovered_tools TEXT DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_mcp_servers_user_id ON mcp_servers(user_id)
+    """))
 
 
 def _drop_sqlite_tables(connection) -> None:
     for table in [
+        "mcp_servers", "agent_configs", "agent_run_events", "agent_runs",
         "knowledge_processed_documents",
         "pending_questions", "entity_links", "entity_claims", "entities",
         "conversation_turns", "api_keys", "commitments", "documents", "integrations", "identities", "users",
@@ -293,6 +391,14 @@ async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
 
 app.dependency_overrides[get_db] = override_get_db
 app.dependency_overrides[get_settings] = get_test_settings
+
+# app.services.agent.tracing opens its own AsyncSession (deliberately, so a run's
+# trace survives a rolled-back request session) rather than going through
+# get_db/Depends, so it isn't covered by the dependency_overrides above. Point it
+# at the same in-memory SQLite engine as everything else, or it would lazily
+# build a real engine from the *actual* .env DATABASE_URL on first use and start
+# writing test data into a real database.
+_tracing.get_session_factory = lambda: test_session_factory
 
 
 @pytest.fixture

@@ -14,6 +14,10 @@ from app.models.pending_question import (
     PendingQuestion, QuestionTarget, QuestionStatus, ResolvedBy,
 )
 from app.models.processed_document import ProcessedDocument
+from app.models.agent_run import AgentRun, RunType, RunTrigger, RunStatus
+from app.models.agent_run_event import AgentRunEvent, RunEventType
+from app.models.agent_config import AgentConfig
+from app.models.mcp_server import McpServer
 
 __all__ = [
     "Base",
@@ -41,4 +45,12 @@ __all__ = [
     "QuestionStatus",
     "ResolvedBy",
     "ProcessedDocument",
+    "AgentRun",
+    "RunType",
+    "RunTrigger",
+    "RunStatus",
+    "AgentRunEvent",
+    "RunEventType",
+    "AgentConfig",
+    "McpServer",
 ]

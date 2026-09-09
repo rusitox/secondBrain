@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>secondBrain · Backoffice</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+
+<!-- ── Auth overlay ──────────────────────────────────────────────────────── -->
+<div id="auth-overlay" style="display:none">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <div class="auth-logo-icon">⬡</div>
+      <div class="auth-logo-text">secondBrain</div>
+    </div>
+    <div class="auth-title">Backoffice</div>
+    <div class="auth-subtitle">Ingresá tus credenciales para administrar el sistema multi-agente.</div>
+    <form id="auth-form">
+      <div class="form-group">
+        <label class="form-label" for="email-input">Email</label>
+        <input id="email-input" class="form-input" type="email" placeholder="tu@email.com" autocomplete="email" spellcheck="false" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password-input">Contraseña</label>
+        <input id="password-input" class="form-input" type="password" placeholder="••••••••" autocomplete="current-password" required />
+        <div id="auth-error" class="form-error"></div>
+      </div>
+      <button type="submit" class="auth-btn" id="auth-submit-btn">Entrar</button>
+    </form>
+  </div>
+</div>
+
+<!-- ── Main app ───────────────────────────────────────────────────────────── -->
+<div id="app">
+
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="logo-icon">⬡</div>
+      <span>Backoffice</span>
+    </div>
+    <nav id="nav">
+      <button class="nav-item active" data-view="dashboard"><span class="nav-icon">📊</span><span class="nav-label">Dashboard</span></button>
+      <button class="nav-item" data-view="agents"><span class="nav-icon">🤖</span><span class="nav-label">Agentes</span></button>
+      <button class="nav-item" data-view="runs"><span class="nav-icon">🗂</span><span class="nav-label">Runs</span></button>
+      <button class="nav-item" data-view="conversations"><span class="nav-icon">💬</span><span class="nav-label">Conversaciones</span></button>
+      <button class="nav-item" data-view="graph"><span class="nav-icon">🕸</span><span class="nav-label">Grafo</span></button>
+      <button class="nav-item" data-view="questions"><span class="nav-icon">❓</span><span class="nav-label">Preguntas</span><span id="questions-badge" class="nav-badge" hidden>0</span></button>
+      <button class="nav-item" data-view="mcps"><span class="nav-icon">🔌</span><span class="nav-label">MCPs &amp; Tools</span></button>
+      <button class="nav-item" data-view="architecture"><span class="nav-icon">🧭</span><span class="nav-label">Arquitectura</span></button>
+    </nav>
+    <button id="logout-btn" class="logout-btn">Cerrar sesión</button>
+  </aside>
+
+  <main id="content">
+
+    <!-- Dashboard -->
+    <section id="view-dashboard" class="view active">
+      <h1>Dashboard</h1>
+      <div class="stat-grid" id="stat-grid"></div>
+      <div class="panel-row">
+        <div class="panel">
+          <h2>Claims por fuente</h2>
+          <canvas id="claims-chart" height="180"></canvas>
+        </div>
+        <div class="panel">
+          <h2>Entidades por confianza</h2>
+          <canvas id="confidence-chart" height="180"></canvas>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Corridas recientes</h2>
+        <div id="recent-runs" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <!-- Agents -->
+    <section id="view-agents" class="view">
+      <h1>Agentes</h1>
+      <div class="agents-layout">
+        <div id="agent-list" class="agent-list"></div>
+        <div id="agent-detail" class="agent-detail">
+          <div class="empty-hint">Elegí un agente de la izquierda.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Runs -->
+    <section id="view-runs" class="view">
+      <h1>Runs &amp; Trazas</h1>
+      <div class="filters" id="runs-filters">
+        <select id="runs-agent-filter"><option value="">Todos los agentes</option></select>
+        <select id="runs-type-filter">
+          <option value="">Todos los tipos</option>
+          <option value="domain_agent">Agente de dominio</option>
+          <option value="rd_agent">I+D</option>
+          <option value="reconciliation">Reconciliación</option>
+          <option value="negotiation">Negociación</option>
+          <option value="chat">Chat</option>
+        </select>
+        <select id="runs-status-filter">
+          <option value="">Todos los estados</option>
+          <option value="running">running</option>
+          <option value="completed">completed</option>
+          <option value="failed">failed</option>
+        </select>
+        <button id="runs-refresh" class="btn-secondary">Actualizar</button>
+      </div>
+      <div class="empty-hint" style="margin-bottom:10px">Sólo corridas de primer nivel — las negociaciones entre agentes que disparan viven en <strong>Conversaciones</strong>, o colgando de la corrida que las disparó.</div>
+      <div class="runs-layout">
+        <div id="runs-table" class="table-wrap"></div>
+        <div id="run-detail" class="run-detail">
+          <div class="empty-hint">Elegí una corrida para ver su traza.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Conversations -->
+    <section id="view-conversations" class="view">
+      <h1>Conversaciones entre agentes</h1>
+      <div class="empty-hint" style="margin-bottom:10px">
+        Cada vez que un agente duda (<code>ask_peer_agents</code>) o el reconciliador sospecha un
+        duplicado (<code>negotiate_same_as</code>), se arma una negociación breve entre agentes pares.
+        Acá está esa conversación completa: quién participó, qué se preguntaron y en qué concluyeron.
+      </div>
+      <div class="filters">
+        <select id="conv-outcome-filter">
+          <option value="">Todos los resultados</option>
+          <option value="completed">Concluyeron</option>
+          <option value="failed">Fallaron</option>
+        </select>
+        <input id="conv-participant-filter" class="form-input" type="search" placeholder="Filtrar por participante (ej: slack)" />
+        <button id="conv-refresh" class="btn-secondary">Actualizar</button>
+      </div>
+      <div class="runs-layout">
+        <div id="conversations-list" class="table-wrap"></div>
+        <div id="conversation-detail" class="run-detail">
+          <div class="empty-hint">Elegí una conversación para ver la transcripción.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Graph -->
+    <section id="view-graph" class="view">
+      <h1>Grafo de conocimiento</h1>
+      <div class="filters">
+        <input id="graph-search" class="form-input" type="search" placeholder="Buscar entidad…" />
+        <select id="graph-type-filter">
+          <option value="">Todos los tipos</option>
+          <option value="person">person</option>
+          <option value="project">project</option>
+          <option value="initiative">initiative</option>
+          <option value="topic">topic</option>
+          <option value="organization">organization</option>
+        </select>
+        <button id="graph-refresh" class="btn-secondary">Buscar</button>
+        <span class="graph-mode-toggle">
+          <button id="graph-mode-focus" class="btn-secondary btn-small active">🔎 Vecindario</button>
+          <button id="graph-mode-map" class="btn-secondary btn-small">🗺 Mapa completo</button>
+        </span>
+        <select id="graph-hops">
+          <option value="1">1 salto</option>
+          <option value="2" selected>2 saltos</option>
+        </select>
+      </div>
+      <div id="graph-stats" class="graph-stats mono"></div>
+      <div class="graph-layout">
+        <div class="graph-canvas-col">
+          <div id="cy" class="cy-canvas"></div>
+          <div id="graph-legend" class="graph-legend"></div>
+          <div id="graph-isolated" class="graph-isolated"></div>
+        </div>
+        <div id="graph-detail" class="graph-detail">
+          <div class="empty-hint">Buscá o hacé clic en un nodo para ver su vecindario, claims y relaciones.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Questions -->
+    <section id="view-questions" class="view">
+      <h1>Preguntas pendientes</h1>
+      <div class="filters">
+        <select id="questions-status-filter">
+          <option value="open">Abiertas</option>
+          <option value="answered">Respondidas</option>
+          <option value="dismissed">Descartadas</option>
+          <option value="">Todas</option>
+        </select>
+        <button id="questions-refresh" class="btn-secondary">Actualizar</button>
+      </div>
+      <div id="questions-list" class="questions-list"></div>
+      <div id="questions-pagination" class="pagination"></div>
+    </section>
+
+    <!-- MCPs & Tools -->
+    <section id="view-mcps" class="view">
+      <h1>Servidores MCP</h1>
+      <button id="mcp-new-btn" class="btn-primary">+ Nuevo servidor</button>
+      <div id="mcp-list" class="mcp-list"></div>
+
+      <h1 style="margin-top:32px">Catálogo de tools</h1>
+      <div id="tools-table" class="table-wrap"></div>
+    </section>
+
+    <!-- Architecture -->
+    <section id="view-architecture" class="view">
+      <h1>Arquitectura del sistema multi-agente</h1>
+      <div class="panel">
+        <h2>Cómo se comunican los agentes</h2>
+        <pre class="mermaid" id="arch-diagram"></pre>
+      </div>
+      <h1 style="margin-top:32px">Quién es quién</h1>
+      <div class="empty-hint" style="margin-bottom:14px">
+        Todo lo que aparece en <strong>Runs</strong> es uno de estos actores. Los dos primeros son
+        agentes configurables (modelo, prompt, tools); el resto son procesos del sistema — no tienen
+        ficha en <strong>Agentes</strong> porque no se configuran, se disparan solos.
+      </div>
+      <div id="arch-actor-cards" class="arch-actor-cards"></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- MCP server modal -->
+<div id="mcp-modal-overlay" class="modal-overlay" hidden>
+  <div class="modal">
+    <h2 id="mcp-modal-title">Nuevo servidor MCP</h2>
+    <form id="mcp-form">
+      <input type="hidden" id="mcp-form-id" />
+      <div class="form-group">
+        <label class="form-label">Nombre</label>
+        <input id="mcp-form-name" class="form-input" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">URL</label>
+        <input id="mcp-form-url" class="form-input" type="url" placeholder="https://mcp.example.com" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Header de auth</label>
+        <input id="mcp-form-auth-header" class="form-input" value="Authorization" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">API key <span class="form-hint">(vacío = no cambiar)</span></label>
+        <input id="mcp-form-api-key" class="form-input" type="password" autocomplete="new-password" />
+      </div>
+      <div class="form-group form-row">
+        <label class="form-checkbox"><input id="mcp-form-enabled" type="checkbox" checked /> Habilitado</label>
+      </div>
+      <div id="mcp-form-error" class="form-error"></div>
+      <div class="modal-actions">
+        <button type="button" id="mcp-modal-cancel" class="btn-secondary">Cancelar</button>
+        <button type="submit" class="btn-primary">Guardar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
@@ -60,15 +60,83 @@ async def get_entity(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def delete_entity(db: AsyncSession, user_id: uuid.UUID, entity_id: uuid.UUID) -> bool:
+    """Delete an entity and everything that hangs off it — EntityClaim.entity_id
+    and EntityLink.entity_id_a/b both carry ON DELETE CASCADE to entities.id
+    (see their models), so this one DELETE is enough; no manual claim/link
+    cleanup needed. Returns False (no-op) if the entity doesn't exist or
+    belongs to another user — never raises for a not-found id.
+
+    Any PendingQuestion whose context still references this entity_id is the
+    caller's responsibility to resolve — context is a JSONB blob, not a real
+    FK, so it doesn't cascade and won't error, but it'll go stale."""
+    entity = await get_entity(db, user_id, entity_id)
+    if entity is None:
+        return False
+    await db.delete(entity)
+    await db.flush()
+    return True
+
+
+async def list_entities_by_ids(
+    db: AsyncSession, user_id: uuid.UUID, entity_ids: List[uuid.UUID],
+) -> List[Entity]:
+    """Batch lookup for resolving a handful of entity_ids to names (e.g. the
+    backoffice's questions inbox resolving context.entity_id/candidate_entity_id
+    for every row on a page) — one query instead of one per id. Empty input
+    returns [] without a query, same short-circuit every list_* here uses."""
+    if not entity_ids:
+        return []
+    stmt = select(Entity).where(Entity.user_id == user_id, Entity.id.in_(entity_ids))
+    return list((await db.execute(stmt)).scalars().all())
+
+
 async def list_entities(
     db: AsyncSession,
     user_id: uuid.UUID,
     entity_type: Optional[EntityType] = None,
+    search: Optional[str] = None,
+    min_confidence: Optional[float] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
 ) -> List[Entity]:
+    """search does a case-insensitive substring match against canonical_name
+    only (not aliases — aliases is a JSONB array, and a cross-database
+    "does this JSON array contain a substring" query isn't worth the
+    complexity for the backoffice's search box; exact alias lookups already
+    go through resolution.find_or_create_entity, not this listing path).
+    limit=None (the default) returns everything — the backoffice API layer
+    is what applies a required limit; store.py itself imposes none, matching
+    every other list_* function in this module.
+    """
     stmt = select(Entity).where(Entity.user_id == user_id)
     if entity_type is not None:
         stmt = stmt.where(Entity.entity_type == entity_type)
+    if search:
+        stmt = stmt.where(Entity.canonical_name.ilike(f"%{search}%"))
+    if min_confidence is not None:
+        stmt = stmt.where(Entity.confidence >= min_confidence)
+    stmt = stmt.order_by(Entity.canonical_name).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     return list((await db.execute(stmt)).scalars().all())
+
+
+async def count_entities(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_type: Optional[EntityType] = None,
+    search: Optional[str] = None,
+    min_confidence: Optional[float] = None,
+) -> int:
+    stmt = select(func.count()).select_from(Entity).where(Entity.user_id == user_id)
+    if entity_type is not None:
+        stmt = stmt.where(Entity.entity_type == entity_type)
+    if search:
+        stmt = stmt.where(Entity.canonical_name.ilike(f"%{search}%"))
+    if min_confidence is not None:
+        stmt = stmt.where(Entity.confidence >= min_confidence)
+    return (await db.execute(stmt)).scalar_one()
 
 
 async def update_entity_confidence(
@@ -163,6 +231,60 @@ async def list_claims(
     return list((await db.execute(stmt)).scalars().all())
 
 
+async def dispute_claim(
+    db: AsyncSession, user_id: uuid.UUID, claim_id: uuid.UUID,
+    entity_id: Optional[uuid.UUID] = None,
+) -> Optional[EntityClaim]:
+    """Mark a claim ClaimStatus.DISPUTED — the human (via the orchestrator's
+    correct_knowledge tool) is telling the system a specific claim is wrong.
+    Claims are never overwritten in place (see the model's own docstring):
+    the claim stays, just no longer trusted as current — recompute_confidence
+    already treats DISPUTED as a negative signal, and _consult_peer_agents'
+    view_claims tools already filter to ACTIVE only, so a disputed claim
+    stops influencing new negotiations without needing to be deleted.
+
+    entity_id, when given, additionally requires the claim to belong to that
+    entity — correct_knowledge always has both (its own required entity_id
+    plus a claim_id from that same entity's query_knowledge listing), and
+    without this check a mismatched pair (stale conversation context, LLM
+    mistake) would silently dispute a claim on a different entity than the
+    one actually being corrected, with no error to catch it.
+
+    Returns None (no-op) if claim_id doesn't exist, belongs to another user,
+    or (when entity_id is given) belongs to a different entity."""
+    stmt = select(EntityClaim).where(EntityClaim.id == claim_id, EntityClaim.user_id == user_id)
+    claim = (await db.execute(stmt)).scalar_one_or_none()
+    if claim is None:
+        return None
+    if entity_id is not None and claim.entity_id != entity_id:
+        return None
+    claim.status = ClaimStatus.DISPUTED
+    await db.flush()
+    return claim
+
+
+async def list_claims_for_user(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    source: Optional[str] = None,
+    status: Optional[ClaimStatus] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> List[EntityClaim]:
+    """Every claim for a user, optionally scoped to one source/status — unlike
+    list_claims, not scoped to a single entity. Backs the backoffice's
+    per-agent claim listing (source == agent_key for every domain agent)."""
+    stmt = select(EntityClaim).where(EntityClaim.user_id == user_id)
+    if source is not None:
+        stmt = stmt.where(EntityClaim.source == source)
+    if status is not None:
+        stmt = stmt.where(EntityClaim.status == status)
+    stmt = stmt.order_by(EntityClaim.created_at.desc()).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list((await db.execute(stmt)).scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------
@@ -195,12 +317,74 @@ async def link_entities(
     return link
 
 
+async def unlink_entities(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_id_a: uuid.UUID,
+    entity_id_b: uuid.UUID,
+    relation_type: str = "same_as",
+) -> int:
+    """Undo a link_entities call — e.g. the orchestrator's correct_knowledge
+    tool reversing a wrong same_as merge (reconciliation's own, or one the
+    user made earlier). Matches either a/b ordering, since link_entities'
+    caller-supplied order isn't guaranteed to match how the user names them
+    back. Returns the number of rows removed (0 or 1 in practice, since
+    link_entities itself has no uniqueness constraint stopping a duplicate —
+    this removes all matches either way)."""
+    stmt = delete(EntityLink).where(
+        EntityLink.user_id == user_id,
+        EntityLink.relation_type == relation_type,
+        or_(
+            and_(EntityLink.entity_id_a == entity_id_a, EntityLink.entity_id_b == entity_id_b),
+            and_(EntityLink.entity_id_a == entity_id_b, EntityLink.entity_id_b == entity_id_a),
+        ),
+    )
+    result = await db.execute(stmt)
+    await db.flush()
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def links_exist(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_id_a: uuid.UUID,
+    entity_id_b: uuid.UUID,
+    relation_type: str = "same_as",
+) -> bool:
+    """Whether entity_id_a/b already have a relation_type link (either
+    ordering) — lets a caller (correct_knowledge) skip link_entities when the
+    user confirms a merge that's already there, instead of creating a
+    duplicate link_entities has no constraint against."""
+    stmt = select(func.count()).select_from(EntityLink).where(
+        EntityLink.user_id == user_id,
+        EntityLink.relation_type == relation_type,
+        or_(
+            and_(EntityLink.entity_id_a == entity_id_a, EntityLink.entity_id_b == entity_id_b),
+            and_(EntityLink.entity_id_a == entity_id_b, EntityLink.entity_id_b == entity_id_a),
+        ),
+    )
+    return (await db.execute(stmt)).scalar_one() > 0
+
+
 async def list_links_for_entity(
     db: AsyncSession, user_id: uuid.UUID, entity_id: uuid.UUID
 ) -> List[EntityLink]:
     stmt = select(EntityLink).where(
         EntityLink.user_id == user_id,
         (EntityLink.entity_id_a == entity_id) | (EntityLink.entity_id_b == entity_id),
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def list_links_for_user(
+    db: AsyncSession, user_id: uuid.UUID, limit: int = 2000
+) -> List[EntityLink]:
+    """Every link for the user, for graph-wide rendering (not scoped to one entity)."""
+    stmt = (
+        select(EntityLink)
+        .where(EntityLink.user_id == user_id)
+        .order_by(EntityLink.created_at.desc())
+        .limit(limit)
     )
     return list((await db.execute(stmt)).scalars().all())
 
@@ -299,6 +483,47 @@ async def list_open_questions(
     if target is not None:
         stmt = stmt.where(PendingQuestion.target == target)
     return list((await db.execute(stmt)).scalars().all())
+
+
+async def list_questions(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    status: Optional[QuestionStatus] = None,
+    target: Optional[QuestionTarget] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> List[PendingQuestion]:
+    """Unlike list_open_questions (hardcoded to status=OPEN, no pagination —
+    every existing caller is an agent tool checking "is there already an open
+    question about this"), this is the general listing the backoffice's
+    questions inbox needs: any status, paginated."""
+    stmt = select(PendingQuestion).where(PendingQuestion.user_id == user_id)
+    if status is not None:
+        stmt = stmt.where(PendingQuestion.status == status)
+    if target is not None:
+        stmt = stmt.where(PendingQuestion.target == target)
+    stmt = stmt.order_by(PendingQuestion.created_at.desc()).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def count_questions(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    status: Optional[QuestionStatus] = None,
+    target: Optional[QuestionTarget] = None,
+) -> int:
+    """Real total behind list_questions' page — same filters, no limit/offset.
+    Backs the backoffice's X-Total-Count header (see list_entities/count_entities
+    for the established pattern) so the UI can show "página X de Y" instead of
+    silently truncating at whatever `limit` the page fetch used."""
+    stmt = select(func.count()).select_from(PendingQuestion).where(PendingQuestion.user_id == user_id)
+    if status is not None:
+        stmt = stmt.where(PendingQuestion.status == status)
+    if target is not None:
+        stmt = stmt.where(PendingQuestion.target == target)
+    return (await db.execute(stmt)).scalar_one()
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +648,21 @@ async def get_knowledge_stats(
     ).all()
     pending_questions_by_target = {target.value: count for target, count in target_rows}
 
+    pending_rows = (
+        await db.execute(
+            select(Document.source, func.count())
+            .outerjoin(
+                ProcessedDocument,
+                (ProcessedDocument.document_id == Document.id)
+                & (ProcessedDocument.source == Document.source)
+                & (ProcessedDocument.user_id == Document.user_id),
+            )
+            .where(Document.user_id == user_id, ProcessedDocument.id.is_(None))
+            .group_by(Document.source)
+        )
+    ).all()
+    pending_documents_by_source = {source: count for source, count in pending_rows}
+
     since = datetime.now(timezone.utc) - timedelta(hours=merged_window_hours)
     entities_merged_recent = (
         await db.execute(
@@ -447,4 +687,5 @@ async def get_knowledge_stats(
         "pending_questions_by_target": pending_questions_by_target,
         "entities_merged_recent": entities_merged_recent,
         "merged_window_hours": merged_window_hours,
+        "pending_documents_by_source": pending_documents_by_source,
     }
