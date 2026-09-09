@@ -118,7 +118,10 @@ async def consult_knowledge_base(
             "entity_type": entity.entity_type.value,
             "confidence": entity.confidence,
             "claims": [
-                {"source": c.source, "claim_text": c.claim_text, "confidence": c.confidence}
+                {
+                    "claim_id": str(c.id), "source": c.source,
+                    "claim_text": c.claim_text, "confidence": c.confidence,
+                }
                 for c in claims
             ],
         })

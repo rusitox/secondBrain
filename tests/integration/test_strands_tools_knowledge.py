@@ -310,3 +310,194 @@ class TestConfirmPendingAnswerTool:
         # proving the session survived the first call cleanly.
         second = await _tool(tools, "query_knowledge")(query="X")
         assert len(second) == 1
+
+
+class TestCorrectKnowledgeTool:
+    """The orchestrator's mid-conversation graph correction — keeps the
+    knowledge base "alive" instead of only updating from ingestion."""
+
+    async def test_invalid_entity_id_returns_error(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ck1@example.com")
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "correct_knowledge")(entity_id="not-a-uuid", correction="x")
+        assert "error" in result
+
+    async def test_nothing_to_do_returns_error(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ck2@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        await db_session.commit()
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "correct_knowledge")(entity_id=str(entity.id))
+        assert "error" in result
+
+    async def test_fact_correction_adds_high_confidence_claim(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ck3@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "correct_knowledge")(
+            entity_id=str(entity.id), correction="En realidad trabaja en Finanzas, no en I+D",
+        )
+        await db_session.commit()
+
+        assert result["resolved"] is True
+        assert "new_claim_id" in result
+        claims = await store.list_claims(db_session, user_id, entity.id, status=ClaimStatus.CONFIRMED_BY_USER)
+        assert len(claims) == 1
+        assert claims[0].claim_text == "En realidad trabaja en Finanzas, no en I+D"
+        assert claims[0].confidence == 1.0
+        assert claims[0].source == "user"
+
+    async def test_dispute_claim_marks_it_disputed(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ck4@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+        claim = await store.add_claim(
+            db_session, entity.id, user_id, "outlook", "trabaja en I+D", "outlook_domain_agent",
+        )
+        await db_session.commit()
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "correct_knowledge")(
+            entity_id=str(entity.id), claim_id=str(claim.id),
+            correction="En realidad trabaja en Finanzas",
+        )
+        await db_session.commit()
+
+        assert result["resolved"] is True
+        assert result["disputed_claim_id"] == str(claim.id)
+        active = await store.list_claims(db_session, user_id, entity.id, status=ClaimStatus.ACTIVE)
+        assert active == []
+        confirmed = await store.list_claims(db_session, user_id, entity.id, status=ClaimStatus.CONFIRMED_BY_USER)
+        assert len(confirmed) == 1
+
+    async def test_dispute_unknown_claim_id_returns_error(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ck5@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        await db_session.commit()
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "correct_knowledge")(
+            entity_id=str(entity.id), claim_id=str(uuid.uuid4()),
+        )
+        assert "error" in result
+
+    async def test_dispute_claim_from_a_different_entity_returns_error(
+        self, db_session: AsyncSession,
+    ) -> None:
+        """A claim_id belonging to another entity than the one named must be
+        rejected, not silently disputed — guards against a stale
+        conversation reference or an LLM mistake corrupting the wrong
+        entity's claims."""
+        user_id = await _make_persisted_user(db_session, email="ck5b@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        other_entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Y")
+        await db_session.commit()
+        claim = await store.add_claim(
+            db_session, other_entity.id, user_id, "slack", "claim de Y", "slack_domain_agent",
+        )
+        await db_session.commit()
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "correct_knowledge")(
+            entity_id=str(entity.id), claim_id=str(claim.id),
+        )
+
+        assert "error" in result
+        active = await store.list_claims(db_session, user_id, other_entity.id, status=ClaimStatus.ACTIVE)
+        assert len(active) == 1  # untouched
+
+    async def test_identity_correction_requires_same_entity(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="ck6@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "A")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.PERSON, "B")
+        await db_session.commit()
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "correct_knowledge")(
+            entity_id=str(entity_a.id), other_entity_id=str(entity_b.id),
+        )
+        assert "error" in result
+
+    async def test_same_entity_true_merges_without_duplicating(self, db_session: AsyncSession) -> None:
+        """Calling it twice (the user re-confirming, or a retried tool call)
+        must not create a second same_as link — link_entities itself has no
+        uniqueness constraint against that."""
+        user_id = await _make_persisted_user(db_session, email="ck7@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan (Slack)")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan Pérez (Outlook)")
+        await db_session.commit()
+        tools = _build_tools(db_session, user_id)
+
+        first = await _tool(tools, "correct_knowledge")(
+            entity_id=str(entity_a.id), other_entity_id=str(entity_b.id), same_entity=True,
+        )
+        await db_session.commit()
+        second = await _tool(tools, "correct_knowledge")(
+            entity_id=str(entity_a.id), other_entity_id=str(entity_b.id), same_entity=True,
+        )
+        await db_session.commit()
+
+        assert first["linked"] is True
+        assert second["linked"] is True
+        links = await store.list_links_for_entity(db_session, user_id, entity_a.id)
+        assert len(links) == 1
+
+    async def test_same_entity_false_undoes_an_existing_merge(self, db_session: AsyncSession) -> None:
+        """The safety valve for the reconciliation auto-accept threshold: if
+        the swarm confidently (and wrongly) merged two entities, the user can
+        say so in chat and this undoes it — regardless of who/what created
+        the link (SWARM here, not USER)."""
+        user_id = await _make_persisted_user(db_session, email="ck8@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "A")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.PERSON, "B")
+        await db_session.commit()
+        from app.models.entity_link import LinkResolvedBy
+        await store.link_entities(
+            db_session, user_id, entity_a.id, entity_b.id,
+            relation_type="same_as", resolved_by=LinkResolvedBy.SWARM, confidence=0.95,
+        )
+        await db_session.commit()
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "correct_knowledge")(
+            entity_id=str(entity_a.id), other_entity_id=str(entity_b.id), same_entity=False,
+        )
+        await db_session.commit()
+
+        assert result["unlinked"] is True
+        assert await store.list_links_for_entity(db_session, user_id, entity_a.id) == []
+
+    async def test_same_entity_true_clears_a_stale_not_same_as_link(
+        self, db_session: AsyncSession,
+    ) -> None:
+        """The mirror case of the previous test: reconciliation may have
+        already decided (wrongly) that two entities are distinct — recorded
+        as not_same_as (see reconciliation.py's SAME_AS_CONFIDENCE_THRESHOLD
+        auto-resolve path). If the user then says they ARE the same, the
+        stale not_same_as link must not survive alongside the new merge —
+        otherwise find_candidate_duplicates' own not_same_as check would
+        keep suppressing a pair that's actually merged."""
+        from app.models.entity_link import LinkResolvedBy
+        user_id = await _make_persisted_user(db_session, email="ck9@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "A")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.PERSON, "B")
+        await db_session.commit()
+        await store.link_entities(
+            db_session, user_id, entity_a.id, entity_b.id,
+            relation_type="not_same_as", resolved_by=LinkResolvedBy.SWARM, confidence=0.95,
+        )
+        await db_session.commit()
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "correct_knowledge")(
+            entity_id=str(entity_a.id), other_entity_id=str(entity_b.id), same_entity=True,
+        )
+        await db_session.commit()
+
+        assert result["linked"] is True
+        links = await store.list_links_for_entity(db_session, user_id, entity_a.id)
+        assert [link.relation_type for link in links] == ["same_as"]

@@ -495,8 +495,14 @@ las confirmes al humano. Si hay alguna relevante, planteala con naturalidad, no 
 fuerces en cada respuesta. Si el usuario confirma o corrige, llamá \
 confirm_pending_answer para cerrar el loop — esa respuesta pasa a ser conocimiento \
 de alta confianza.
-5. Llamá otras tools según lo requiera la pregunta
-6. Sintetizá una respuesta clara y accionable
+5. Si en cualquier momento de la charla el usuario te señala que algo del \
+conocimiento está mal — un dato equivocado, dos cosas que se fusionaron como si \
+fueran la misma sin serlo, o dos que en realidad sí son la misma — confirmá en voz \
+alta qué entendiste y llamá a correct_knowledge para corregirlo ahí mismo. Así la \
+base de conocimiento queda viva: se corrige con la conversación, no sólo con lo que \
+ingieren los agentes de dominio.
+6. Llamá otras tools según lo requiera la pregunta
+7. Sintetizá una respuesta clara y accionable
 
 Respondé siempre en el idioma del usuario."""
 

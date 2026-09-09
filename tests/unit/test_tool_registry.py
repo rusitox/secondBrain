@@ -42,12 +42,13 @@ class TestToolsForAgent:
         }
         assert "get_unprocessed_documents" not in names
 
-    def test_orchestrator_has_fourteen_tools(self) -> None:
+    def test_orchestrator_has_fifteen_tools(self) -> None:
         names = {t.name for t in tool_registry.tools_for_agent("orchestrator")}
-        assert len(names) == 14
+        assert len(names) == 15
         assert "search_memory" in names
         assert "web_search" in names
         assert "ask_domain_agents" in names
+        assert "correct_knowledge" in names
 
     def test_unknown_agent_key_returns_empty(self) -> None:
         assert tool_registry.tools_for_agent("nonexistent") == []

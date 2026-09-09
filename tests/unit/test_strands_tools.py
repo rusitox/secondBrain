@@ -2,8 +2,9 @@
 
 Covers tool count/composition (including the opt-in web_search / http_request
 tools, and the always-on knowledge-system tools — query_knowledge,
-ask_domain_agents, get_pending_questions, confirm_pending_answer — from
-specs/plan-multi-agent-knowledge.md Phase 5/9), and the security-relevant
+ask_domain_agents, get_pending_questions, confirm_pending_answer,
+correct_knowledge — from specs/plan-multi-agent-knowledge.md Phase 5/9), and
+the security-relevant
 behavior of web_search/http_request: Brave Search error handling and the
 http_request domain allowlist (an SSRF / prompt-injection guard — the tool
 is disabled entirely unless the operator configures
@@ -29,7 +30,7 @@ def _tool_names(tools) -> set:
     return {t.tool_name for t in tools}
 
 
-CORE_TOOL_COUNT = 12  # 8 original + query_knowledge, ask_domain_agents, get_pending_questions, confirm_pending_answer
+CORE_TOOL_COUNT = 13  # 8 original + query_knowledge, ask_domain_agents, get_pending_questions, confirm_pending_answer, correct_knowledge
 
 
 class TestToolComposition:
@@ -46,6 +47,7 @@ class TestToolComposition:
         names = _tool_names(tools)
         assert {
             "query_knowledge", "ask_domain_agents", "get_pending_questions", "confirm_pending_answer",
+            "correct_knowledge",
         }.issubset(names)
 
     def test_web_search_registered_when_brave_key_configured(self) -> None:

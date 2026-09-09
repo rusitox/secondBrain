@@ -78,6 +78,11 @@ ORCHESTRATOR_TOOLS: List[ToolInfo] = [
     ),
     ToolInfo("get_pending_questions", "List questions domain agents escalated to the human.", "orchestrator"),
     ToolInfo("confirm_pending_answer", "Answer/confirm a pending question, closing the resolution loop.", "orchestrator"),
+    ToolInfo(
+        "correct_knowledge",
+        "Fix a wrong claim or identity merge in the graph right when the user flags it in chat.",
+        "orchestrator",
+    ),
     ToolInfo("web_search", "Brave web search (opt-in via brave_search_api_key).", "orchestrator"),
     ToolInfo("http_request", "Fetch a URL from an allowed domain (opt-in).", "orchestrator"),
 ]
