@@ -394,6 +394,30 @@ class TestListQuestions:
         open_only = await store.list_questions(db_session, user_id, status=QuestionStatus.OPEN)
         assert [q.id for q in open_only] == [open_q.id]
 
+    async def test_count_questions_matches_filters_regardless_of_limit(
+        self, db_session: AsyncSession,
+    ) -> None:
+        """The backoffice's X-Total-Count header depends on this being the
+        real filtered count, not bounded by whatever `limit` list_questions'
+        page used — otherwise the UI undercounts past that page size."""
+        user_id = await _make_persisted_user(db_session, email="o3@example.com")
+        open_q = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "open", target=QuestionTarget.HUMAN,
+        )
+        answered_q = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "answered", target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+        await store.resolve_question(db_session, user_id, answered_q.id, resolved_by=ResolvedBy.HUMAN)
+        await db_session.commit()
+
+        assert await store.count_questions(db_session, user_id) == 2
+        assert await store.count_questions(db_session, user_id, status=QuestionStatus.OPEN) == 1
+        # A one-row page must not cap the count — the whole point of this function.
+        page = await store.list_questions(db_session, user_id, status=QuestionStatus.OPEN, limit=1)
+        assert len(page) == 1
+        assert page[0].id == open_q.id
+
     async def test_scoped_by_user(self, db_session: AsyncSession) -> None:
         user_a = await _make_persisted_user(db_session, email="o2a@example.com")
         user_b = await _make_persisted_user(db_session, email="o2b@example.com")

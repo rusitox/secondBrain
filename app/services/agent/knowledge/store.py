@@ -409,6 +409,24 @@ async def list_questions(
     return list((await db.execute(stmt)).scalars().all())
 
 
+async def count_questions(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    status: Optional[QuestionStatus] = None,
+    target: Optional[QuestionTarget] = None,
+) -> int:
+    """Real total behind list_questions' page — same filters, no limit/offset.
+    Backs the backoffice's X-Total-Count header (see list_entities/count_entities
+    for the established pattern) so the UI can show "página X de Y" instead of
+    silently truncating at whatever `limit` the page fetch used."""
+    stmt = select(func.count()).select_from(PendingQuestion).where(PendingQuestion.user_id == user_id)
+    if status is not None:
+        stmt = stmt.where(PendingQuestion.status == status)
+    if target is not None:
+        stmt = stmt.where(PendingQuestion.target == target)
+    return (await db.execute(stmt)).scalar_one()
+
+
 # ---------------------------------------------------------------------------
 # Document processing tracking
 # ---------------------------------------------------------------------------

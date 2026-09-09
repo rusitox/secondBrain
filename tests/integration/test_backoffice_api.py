@@ -593,6 +593,28 @@ class TestGraphQuestions:
         assert resp.status_code == 200
         assert len(resp.json()) == 1
 
+    async def test_total_count_header_reflects_full_count_not_just_the_page(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ) -> None:
+        """A limit=1 page must still report the true total via X-Total-Count —
+        this is what lets the Preguntas nav badge and pagination show the real
+        number instead of silently capping at whatever `limit` the page used."""
+        user_id = await _make_persisted_user(db_session, email="q1c@example.com")
+        for i in range(3):
+            await store.raise_question(
+                db_session, user_id, "slack_domain_agent", f"¿Quién es X{i}?", target=QuestionTarget.HUMAN,
+            )
+        await db_session.commit()
+
+        resp = await client.get(
+            "/backoffice/graph/questions",
+            params={"status": "open", "limit": 1},
+            headers={"X-User-Id": str(user_id)},
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+        assert resp.headers["X-Total-Count"] == "3"
+
     async def test_resolves_entity_names_from_context(
         self, client: AsyncClient, db_session: AsyncSession,
     ) -> None:

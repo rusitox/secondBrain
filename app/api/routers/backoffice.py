@@ -449,6 +449,7 @@ async def list_claims(
 
 @router.get("/graph/questions", response_model=List[PendingQuestionRead])
 async def list_questions(
+    response: Response,
     question_status: Optional[QuestionStatus] = Query(None, alias="status"),
     target: Optional[QuestionTarget] = Query(None),
     limit: int = Query(default=50, ge=1, le=200),
@@ -459,6 +460,10 @@ async def list_questions(
     questions = await store.list_questions(
         db, current_user_id, status=question_status, target=target, limit=limit, offset=offset,
     )
+    # X-Total-Count so the UI can page through every open question instead of
+    # silently truncating at `limit` — same pattern as GET /graph/entities.
+    total = await store.count_questions(db, current_user_id, status=question_status, target=target)
+    response.headers["X-Total-Count"] = str(total)
 
     # Resolve context.entity_id/candidate_entity_id to names in one batch query
     # instead of the UI showing raw UUIDs or fetching per-row.

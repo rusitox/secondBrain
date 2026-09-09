@@ -92,7 +92,10 @@ function init() {
   document.getElementById('graph-hops').addEventListener('change', renderCurrentGraphMode);
 
   document.getElementById('questions-refresh').addEventListener('click', loadQuestions);
-  document.getElementById('questions-status-filter').addEventListener('change', loadQuestions);
+  document.getElementById('questions-status-filter').addEventListener('change', () => {
+    questionsPage = 1;
+    loadQuestions();
+  });
 
   document.getElementById('mcp-new-btn').addEventListener('click', () => openMcpModal(null));
   document.getElementById('mcp-modal-cancel').addEventListener('click', closeMcpModal);
@@ -174,6 +177,18 @@ async function apiGet(path) {
   return resp.json();
 }
 
+/** Like apiGet, but also reads X-Total-Count — for paginated list endpoints
+ * that set it (GET /graph/entities, GET /graph/questions) so the UI can show
+ * "página X de Y" instead of silently truncating at whatever `limit` the
+ * page fetch used. Falls back to data.length if the header is absent. */
+async function apiGetWithTotal(path) {
+  const resp = await authedFetch(path);
+  if (!resp.ok) throw new Error(`GET ${path} -> ${resp.status}`);
+  const data = await resp.json();
+  const totalHeader = resp.headers.get('X-Total-Count');
+  return { data, total: totalHeader !== null ? parseInt(totalHeader, 10) : data.length };
+}
+
 async function apiSend(method, path, body) {
   const resp = await authedFetch(path, { method, body: body !== undefined ? JSON.stringify(body) : undefined });
   if (!resp.ok) {
@@ -219,7 +234,7 @@ function switchView(view) {
   if (view === 'runs') loadRuns();
   if (view === 'conversations') loadConversations();
   if (view === 'graph') loadGraph();
-  if (view === 'questions') loadQuestions();
+  if (view === 'questions') { questionsPage = 1; loadQuestions(); }
   if (view === 'mcps') { loadMcpServers(); loadToolsCatalog(); }
   if (view === 'architecture') renderArchitectureView();
 }
@@ -1128,29 +1143,62 @@ function renderGraphDetail(entity) {
 
 // ── Questions ─────────────────────────────────────────────────────────────────
 
+let questionsPage = 1;
+const QUESTIONS_PAGE_SIZE = 100;
+
 async function loadQuestions() {
   const status = document.getElementById('questions-status-filter').value;
   const params = new URLSearchParams();
   if (status) params.set('status', status);
-  params.set('limit', '100');
+  params.set('limit', String(QUESTIONS_PAGE_SIZE));
+  params.set('offset', String((questionsPage - 1) * QUESTIONS_PAGE_SIZE));
 
   const el = document.getElementById('questions-list');
   el.innerHTML = '<div class="empty-hint">Cargando…</div>';
+  document.getElementById('questions-pagination').innerHTML = '';
   try {
-    const questions = await apiGet(`/backoffice/graph/questions?${params}`);
+    const { data: questions, total } = await apiGetWithTotal(`/backoffice/graph/questions?${params}`);
+    if (!questions.length && questionsPage > 1) {
+      // Landed past the last page (e.g. just dismissed the last item on it) — step back.
+      questionsPage = Math.max(1, Math.ceil(total / QUESTIONS_PAGE_SIZE));
+      return loadQuestions();
+    }
     renderQuestions(questions);
+    renderQuestionsPagination(total);
   } catch (e) {
     el.innerHTML = `<div class="empty-hint">Error: ${escapeHtml(e.message)}</div>`;
   }
   refreshQuestionsBadge();
 }
 
+function renderQuestionsPagination(total) {
+  const el = document.getElementById('questions-pagination');
+  const pageCount = Math.max(1, Math.ceil(total / QUESTIONS_PAGE_SIZE));
+  if (pageCount <= 1) {
+    el.innerHTML = total ? `<span class="pagination-summary mono">${total} pregunta${total === 1 ? '' : 's'}</span>` : '';
+    return;
+  }
+  el.innerHTML = `
+    <button type="button" class="btn-secondary btn-small" id="questions-prev" ${questionsPage <= 1 ? 'disabled' : ''}>« Anterior</button>
+    <span class="pagination-summary mono">Página ${questionsPage} de ${pageCount} · ${total} preguntas</span>
+    <button type="button" class="btn-secondary btn-small" id="questions-next" ${questionsPage >= pageCount ? 'disabled' : ''}>Siguiente »</button>
+  `;
+  const prevBtn = document.getElementById('questions-prev');
+  const nextBtn = document.getElementById('questions-next');
+  if (prevBtn) prevBtn.addEventListener('click', () => { questionsPage -= 1; loadQuestions(); });
+  if (nextBtn) nextBtn.addEventListener('click', () => { questionsPage += 1; loadQuestions(); });
+}
+
 async function refreshQuestionsBadge() {
   try {
-    const open = await apiGet('/backoffice/graph/questions?status=open&limit=200');
+    // limit=1 — the body is discarded, only X-Total-Count matters here, so
+    // there's no reason to pull a full page just to read .length off it
+    // (that undercounted whenever open questions outnumbered the limit).
+    const { total } = await apiGetWithTotal('/backoffice/graph/questions?status=open&limit=1');
     const badge = document.getElementById('questions-badge');
-    if (open.length > 0) {
-      badge.textContent = open.length;
+    if (total > 0) {
+      badge.textContent = total > 99 ? '99+' : String(total);
+      badge.title = `${total} preguntas abiertas`;
       badge.hidden = false;
     } else {
       badge.hidden = true;
