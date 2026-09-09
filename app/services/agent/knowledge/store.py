@@ -648,6 +648,21 @@ async def get_knowledge_stats(
     ).all()
     pending_questions_by_target = {target.value: count for target, count in target_rows}
 
+    pending_rows = (
+        await db.execute(
+            select(Document.source, func.count())
+            .outerjoin(
+                ProcessedDocument,
+                (ProcessedDocument.document_id == Document.id)
+                & (ProcessedDocument.source == Document.source)
+                & (ProcessedDocument.user_id == Document.user_id),
+            )
+            .where(Document.user_id == user_id, ProcessedDocument.id.is_(None))
+            .group_by(Document.source)
+        )
+    ).all()
+    pending_documents_by_source = {source: count for source, count in pending_rows}
+
     since = datetime.now(timezone.utc) - timedelta(hours=merged_window_hours)
     entities_merged_recent = (
         await db.execute(
@@ -672,4 +687,5 @@ async def get_knowledge_stats(
         "pending_questions_by_target": pending_questions_by_target,
         "entities_merged_recent": entities_merged_recent,
         "merged_window_hours": merged_window_hours,
+        "pending_documents_by_source": pending_documents_by_source,
     }

@@ -14,6 +14,7 @@ def _settings(
     id_brain_mcp_url: str = "",
     openai_api_key: str = "",
     trace_retention_days: int = 30,
+    knowledge_agent_excluded_sources: str = "",
 ) -> MagicMock:
     settings = MagicMock()
     settings.enable_knowledge_agents = enable_knowledge_agents
@@ -22,6 +23,7 @@ def _settings(
     settings.id_brain_mcp_url = id_brain_mcp_url
     settings.openai_api_key = openai_api_key
     settings.trace_retention_days = trace_retention_days
+    settings.knowledge_agent_excluded_sources = knowledge_agent_excluded_sources
     return settings
 
 
@@ -195,6 +197,33 @@ class TestRunCycle:
         assert len(sessions) == 7
         assert all(s.commit.await_count == 1 for s in sessions)
         assert all(s.rollback.await_count == 0 for s in sessions)
+
+    @pytest.mark.asyncio
+    async def test_excluded_sources_are_skipped(self) -> None:
+        """knowledge_agent_excluded_sources lets a source (e.g. a source being
+        drained manually) be skipped so the scheduler never races a manual
+        drain for the same rows, while every other source still runs."""
+        scheduler = KnowledgeAgentScheduler()
+        user_id = str(uuid.uuid4())
+
+        mock_factory, sessions = _make_fresh_session_factory()
+
+        mock_run_domain_agent = AsyncMock(return_value={"source": "x", "summary": "ok"})
+        mock_run_reconciliation = AsyncMock(return_value={"merged": 0})
+
+        with patch(
+            "app.core.config.get_settings",
+            return_value=_settings(id_brain_mcp_url="", knowledge_agent_excluded_sources="outlook, TEAMS"),
+        ), \
+             patch("app.services.agent.knowledge.scheduler.get_session_factory", return_value=mock_factory), \
+             patch("app.services.agent.knowledge.domain_agent.run_domain_agent", mock_run_domain_agent), \
+             patch("app.services.agent.knowledge.reconciliation.run_reconciliation", mock_run_reconciliation):
+            await scheduler._run_cycle(user_id)
+
+        called_sources = {call.args[0] for call in mock_run_domain_agent.call_args_list}
+        assert called_sources == {"slack", "fathom", "notion"}
+        assert mock_run_domain_agent.call_count == 3
+        mock_run_reconciliation.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_runs_rd_agent_when_configured(self) -> None:

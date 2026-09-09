@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     enable_knowledge_agents: bool = False
     knowledge_agent_interval_minutes: int = 60
     knowledge_agent_batch_size: int = 20
+    # Comma-separated source names to skip in every cycle (e.g. "outlook") — lets a large
+    # backlog be drained manually (scripts/run_domain_agent.py) without the scheduler racing
+    # it for the same rows every interval. Empty = no exclusions, the normal case.
+    knowledge_agent_excluded_sources: str = ""
 
     # Backoffice run/event trace retention (specs/plan-knowledge-backoffice.md, Phase 6) —
     # agent_run_events in particular can carry near-full tool payloads per event (truncated,
