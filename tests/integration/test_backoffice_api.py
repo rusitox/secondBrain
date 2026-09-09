@@ -15,6 +15,7 @@ from app.models.agent_config import AgentConfig
 from app.models.agent_run import AgentRun, RunStatus, RunTrigger, RunType
 from app.models.agent_run_event import AgentRunEvent, RunEventType
 from app.models.entity import EntityType
+from app.models.entity_claim import ClaimStatus
 from app.models.entity_link import LinkResolvedBy
 from app.models.pending_question import QuestionStatus, QuestionTarget
 from app.services import mcp_server_service
@@ -665,6 +666,79 @@ class TestGraphQuestions:
         assert data["status"] == "answered"
         assert data["answer_text"] == "Es el fundador"
 
+    async def test_answer_adds_a_claim_for_a_single_entity_question(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ) -> None:
+        """Before this, "Responder" only recorded answer_text as a note on the
+        question and never touched the graph — same effect as this test now
+        asserts had to be built via the orchestrator's confirm_pending_answer
+        chat tool instead."""
+        user_id = await _make_persisted_user(db_session, email="q2b@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        await db_session.commit()
+        question = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "¿Trabaja en Finanzas?",
+            context={"entity_id": str(entity.id)}, target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+
+        resp = await client.post(
+            f"/backoffice/graph/questions/{question.id}/answer",
+            json={"answer_text": "Sí, en Finanzas"}, headers={"X-User-Id": str(user_id)},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "answered"
+
+        claims = await store.list_claims(db_session, user_id, entity.id, status=ClaimStatus.CONFIRMED_BY_USER)
+        assert len(claims) == 1
+        assert claims[0].claim_text == "Sí, en Finanzas"
+
+    async def test_answer_links_entities_for_a_same_as_question(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ) -> None:
+        user_id = await _make_persisted_user(db_session, email="q2c@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan Pérez")
+        await db_session.commit()
+        question = await store.raise_question(
+            db_session, user_id, "reconciliation_engine", "¿son la misma entidad?",
+            context={"entity_id": str(entity_a.id), "candidate_entity_id": str(entity_b.id)},
+            target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+
+        resp = await client.post(
+            f"/backoffice/graph/questions/{question.id}/answer",
+            json={"answer_text": "Sí, son la misma"}, headers={"X-User-Id": str(user_id)},
+        )
+        assert resp.status_code == 200
+
+        links = await store.list_links_for_entity(db_session, user_id, entity_a.id)
+        assert len(links) == 1
+        assert links[0].relation_type == "same_as"
+        assert links[0].resolved_by == LinkResolvedBy.USER
+
+    async def test_answer_with_confirmed_false_does_not_touch_the_graph(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ) -> None:
+        user_id = await _make_persisted_user(db_session, email="q2d@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        await db_session.commit()
+        question = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "¿duda?",
+            context={"entity_id": str(entity.id)}, target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+
+        resp = await client.post(
+            f"/backoffice/graph/questions/{question.id}/answer",
+            json={"answer_text": "No, no es correcto", "confirmed": False},
+            headers={"X-User-Id": str(user_id)},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "dismissed"
+        assert await store.list_claims(db_session, user_id, entity.id) == []
+
     async def test_dismiss_closes_without_an_answer(
         self, client: AsyncClient, db_session: AsyncSession,
     ) -> None:
@@ -687,6 +761,29 @@ class TestGraphQuestions:
             json={"answer_text": "x"}, headers={"X-User-Id": user_id},
         )
         assert resp.status_code == 404
+
+    async def test_answer_already_resolved_question_409s(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ) -> None:
+        """Distinct from the not-found case above — collapsing both into 404
+        would hide "someone already answered this" behind the same status as
+        "this question doesn't exist"."""
+        user_id = await _make_persisted_user(db_session, email="q4b@example.com")
+        question = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "¿duda?", target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+        first = await client.post(
+            f"/backoffice/graph/questions/{question.id}/answer",
+            json={"answer_text": "primera"}, headers={"X-User-Id": str(user_id)},
+        )
+        assert first.status_code == 200
+
+        second = await client.post(
+            f"/backoffice/graph/questions/{question.id}/answer",
+            json={"answer_text": "segunda"}, headers={"X-User-Id": str(user_id)},
+        )
+        assert second.status_code == 409
 
     async def test_row_isolation(self, client: AsyncClient, db_session: AsyncSession) -> None:
         user_a = await _make_persisted_user(db_session, email="q5a@example.com")

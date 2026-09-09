@@ -1234,8 +1234,14 @@ function renderQuestions(questions) {
       ${q.candidate_answer ? `<div class="question-candidate">Candidata: ${escapeHtml(q.candidate_answer)} ${q.candidate_confidence != null ? `(${(q.candidate_confidence * 100).toFixed(0)}%)` : ''}</div>` : ''}
       ${q.status === 'open' ? `
         <div class="question-actions">
-          <input class="form-input" type="text" placeholder="Escribí una respuesta…" value="${escapeHtml(q.candidate_answer || '')}" />
-          <button class="btn-primary btn-small" data-action="answer">Responder</button>
+          ${q.entity_name && q.candidate_entity_name ? `
+            <input class="form-input" type="text" placeholder="Motivo (opcional)…" value="${escapeHtml(q.candidate_answer || '')}" />
+            <button class="btn-primary btn-small" data-action="answer-same">✅ Son la misma</button>
+            <button class="btn-secondary btn-small" data-action="answer-different">❌ Son distintas</button>
+          ` : `
+            <input class="form-input" type="text" placeholder="Escribí una respuesta…" value="${escapeHtml(q.candidate_answer || '')}" />
+            <button class="btn-primary btn-small" data-action="answer">Responder</button>
+          `}
           <button class="btn-secondary btn-small" data-action="dismiss">Descartar</button>
         </div>
       ` : q.answer_text ? `<div class="mono">Respuesta: ${escapeHtml(q.answer_text)}</div>` : ''}
@@ -1245,19 +1251,40 @@ function renderQuestions(questions) {
 
   el.querySelectorAll('.question-card').forEach((card) => {
     const id = card.dataset.id;
-    const answerBtn = card.querySelector('[data-action="answer"]');
-    const dismissBtn = card.querySelector('[data-action="dismiss"]');
     const input = card.querySelector('input');
-    if (answerBtn) answerBtn.addEventListener('click', () => answerQuestion(id, input.value.trim()));
+    const answerBtn = card.querySelector('[data-action="answer"]');
+    const answerSameBtn = card.querySelector('[data-action="answer-same"]');
+    const answerDifferentBtn = card.querySelector('[data-action="answer-different"]');
+    const dismissBtn = card.querySelector('[data-action="dismiss"]');
+    if (answerBtn) answerBtn.addEventListener('click', () => answerQuestion(id, input.value.trim(), true));
+    if (answerSameBtn) {
+      answerSameBtn.addEventListener('click', () => (
+        answerQuestion(id, input.value.trim() || 'Confirmado: son la misma entidad.', true)
+      ));
+    }
+    if (answerDifferentBtn) {
+      // confirmed=false closes the question (dismissed) without linking —
+      // same_as never gets created, but the reasoning is kept as answer_text
+      // instead of being discarded like a plain "Descartar" would.
+      answerDifferentBtn.addEventListener('click', () => (
+        answerQuestion(id, input.value.trim() || 'Confirmado: son entidades distintas.', false)
+      ));
+    }
     if (dismissBtn) dismissBtn.addEventListener('click', () => dismissQuestion(id));
   });
 }
 
-async function answerQuestion(id, answerText) {
+/** confirmed=true (default) actually writes to the graph — a same_as link
+ * for an identity question, a CONFIRMED_BY_USER claim otherwise — matching
+ * what confirming the same question in chat would do. confirmed=false closes
+ * the question without touching the graph, keeping the answer_text as a note
+ * (e.g. "these are distinct" for an identity question, so a "Son distintas"
+ * click doesn't get misread as agreeing they're the same). */
+async function answerQuestion(id, answerText, confirmed = true) {
   if (!answerText) { showToast('Escribí una respuesta primero.', true); return; }
   try {
-    await apiSend('POST', `/backoffice/graph/questions/${id}/answer`, { answer_text: answerText });
-    showToast('Pregunta respondida.');
+    await apiSend('POST', `/backoffice/graph/questions/${id}/answer`, { answer_text: answerText, confirmed });
+    showToast(confirmed ? 'Pregunta respondida.' : 'Marcado y cerrado.');
     loadQuestions();
   } catch (e) {
     showToast('Error: ' + e.message, true);

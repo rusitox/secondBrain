@@ -268,3 +268,9 @@ class PendingQuestionRead(BaseModel):
 
 class AnswerQuestionRequest(BaseModel):
     answer_text: str
+    confirmed: bool = True
+    """True (default) means the human agrees with/is providing this answer —
+    for a same_as-shaped question this actually links the two entities, for a
+    single-entity question this adds a CONFIRMED_BY_USER claim. False closes
+    the question without touching the graph (same as "Descartar", but keeps
+    the human's answer_text on record instead of discarding it)."""

@@ -240,57 +240,15 @@ def make_agent_tools(
         """
         import uuid as _uuid
 
-        from sqlalchemy.exc import SQLAlchemyError
-
-        from app.models.entity_claim import ClaimStatus
-        from app.models.entity_link import LinkResolvedBy
-        from app.models.pending_question import QuestionStatus, ResolvedBy
         from app.services.agent.knowledge import reconciliation
-        from app.services.agent.knowledge import store as knowledge_store
-
-        question = await knowledge_store.get_question(db, user_id, _uuid.UUID(question_id))
-        if question is None:
-            return {"error": f"question {question_id} not found"}
-        if question.status != QuestionStatus.OPEN:
-            # Already resolved — re-running this would double-write the claim/
-            # link and double-count it in recompute_confidence. A retried tool
-            # call or the LLM re-confirming the same question must be a no-op.
-            return {"error": f"question {question_id} is already {question.status.value}"}
-
-        entity_id = question.context.get("entity_id")
-        candidate_entity_id = question.context.get("candidate_entity_id")
-        touched_entity_ids: List[str] = []
 
         try:
-            async with db.begin_nested():
-                if confirmed and entity_id and candidate_entity_id:
-                    await knowledge_store.link_entities(
-                        db, user_id, _uuid.UUID(entity_id), _uuid.UUID(candidate_entity_id),
-                        relation_type="same_as", resolved_by=LinkResolvedBy.USER, confidence=1.0,
-                    )
-                    touched_entity_ids = [entity_id, candidate_entity_id]
-                elif confirmed and entity_id:
-                    await knowledge_store.add_claim(
-                        db, _uuid.UUID(entity_id), user_id, source="user", claim_text=answer_text,
-                        asserted_by_agent="user", status=ClaimStatus.CONFIRMED_BY_USER, confidence=1.0,
-                    )
-                    touched_entity_ids = [entity_id]
-
-                await knowledge_store.resolve_question(
-                    db, user_id, question.id, ResolvedBy.HUMAN, answer_text=answer_text,
-                    status=QuestionStatus.ANSWERED if confirmed else QuestionStatus.DISMISSED,
-                )
-
-                for eid in touched_entity_ids:
-                    new_confidence = await reconciliation.recompute_confidence(
-                        db, user_id, _uuid.UUID(eid),
-                    )
-                    await knowledge_store.update_entity_confidence(db, user_id, _uuid.UUID(eid), new_confidence)
-        except (SQLAlchemyError, ValueError) as e:
-            logger.warning("confirm_pending_answer failed for question_id=%s: %s", question_id, e)
-            return {"error": str(e)}
-
-        return {"resolved": True, "entities_updated": touched_entity_ids}
+            parsed_question_id = _uuid.UUID(question_id)
+        except ValueError as e:
+            return {"error": f"invalid question_id {question_id!r}: {e}"}
+        return await reconciliation.apply_question_answer(
+            db, user_id, parsed_question_id, answer_text, confirmed,
+        )
 
     @tool
     async def correct_knowledge(

@@ -61,7 +61,7 @@ from app.models.entity_claim import ClaimStatus
 from app.models.pending_question import QuestionStatus, QuestionTarget, ResolvedBy
 from app.services import mcp_server_service
 from app.services.agent import agent_config_service, run_query_service, tool_registry
-from app.services.agent.knowledge import domain_agent, rd_agent, store
+from app.services.agent.knowledge import domain_agent, rd_agent, reconciliation, store
 
 router = APIRouter(prefix="/backoffice", tags=["backoffice"])
 
@@ -499,10 +499,30 @@ async def answer_question(
     current_user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> PendingQuestionRead:
-    question = await store.resolve_question(
-        db, current_user_id, question_id, resolved_by=ResolvedBy.HUMAN,
-        answer_text=data.answer_text, status=QuestionStatus.ANSWERED,
+    # Checked up front (not just via apply_question_answer's own "error" key)
+    # so not-found and already-resolved map to distinct status codes instead
+    # of both collapsing to 404.
+    existing = await store.get_question(db, current_user_id, question_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
+    if existing.status != QuestionStatus.OPEN:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Question is already {existing.status.value}",
+        )
+
+    # Shared with the orchestrator's confirm_pending_answer chat tool
+    # (strands_tools.py) — a same_as-shaped question actually links the two
+    # entities when confirmed, not just a text note on the question.
+    result = await reconciliation.apply_question_answer(
+        db, current_user_id, question_id, data.answer_text, data.confirmed,
     )
+    if "error" in result:
+        # Not-found/already-resolved are already handled above — anything
+        # else here is a genuine write failure (e.g. a context-referenced
+        # entity no longer exists), not a 404.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["error"])
+    question = await store.get_question(db, current_user_id, question_id)
     if question is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
     return PendingQuestionRead.model_validate(question)

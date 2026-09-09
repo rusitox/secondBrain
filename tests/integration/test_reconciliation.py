@@ -224,6 +224,39 @@ class TestRecomputeConfidence:
         assert confidence == 1.0
 
 
+class TestApplyQuestionAnswer:
+    """Shared by confirm_pending_answer (strands_tools.py) and the
+    backoffice's answer endpoint — the write-branches (same_as link /
+    CONFIRMED_BY_USER claim) are covered via those two callers'
+    own tests; this covers the error paths that belong to the shared
+    function itself."""
+
+    async def test_unknown_question_id_returns_error(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="aqa1@example.com")
+
+        result = await reconciliation.apply_question_answer(
+            db_session, user_id, uuid.uuid4(), "respuesta",
+        )
+        assert "error" in result
+
+    async def test_already_resolved_question_returns_error(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="aqa2@example.com")
+        question = await store.raise_question(
+            db_session, user_id, "slack_domain_agent", "¿duda?", target=QuestionTarget.HUMAN,
+        )
+        await db_session.commit()
+        first = await reconciliation.apply_question_answer(
+            db_session, user_id, question.id, "primera respuesta",
+        )
+        await db_session.commit()
+        assert first["resolved"] is True
+
+        second = await reconciliation.apply_question_answer(
+            db_session, user_id, question.id, "segunda respuesta",
+        )
+        assert "error" in second
+
+
 class TestNegotiateSameAs:
     async def test_resolves_via_swarm(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="n1@example.com")

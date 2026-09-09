@@ -42,7 +42,7 @@ from app.models.agent_run import RunStatus, RunTrigger, RunType
 from app.models.entity import Entity, EntityType
 from app.models.entity_claim import ClaimStatus
 from app.models.entity_link import LinkResolvedBy
-from app.models.pending_question import QuestionTarget
+from app.models.pending_question import QuestionStatus, QuestionTarget, ResolvedBy
 from app.services.agent import tracing
 from app.services.agent.knowledge import store
 
@@ -286,6 +286,76 @@ async def recompute_confidence(db: AsyncSession, user_id: uuid.UUID, entity_id: 
         confidence -= 0.2
 
     return max(0.0, min(1.0, confidence))
+
+
+# ---------------------------------------------------------------------------
+# Human answers — shared by the orchestrator's confirm_pending_answer tool
+# (strands_tools.py) and the backoffice's answer endpoint
+# (app/api/routers/backoffice.py), so "responder" means the same thing in
+# both places: before this existed, the backoffice's answer endpoint only
+# recorded answer_text as a note on the question and never touched the
+# graph — closing a same_as question there looked done but never merged
+# anything, unlike confirming the same question in chat.
+# ---------------------------------------------------------------------------
+
+async def apply_question_answer(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    question_id: uuid.UUID,
+    answer_text: str,
+    confirmed: bool = True,
+) -> Dict[str, Any]:
+    """Close a PendingQuestion the way a human confirming/correcting it
+    should actually affect the graph: a same_as-shaped question (context
+    carries both entity_id and candidate_entity_id) links the two entities
+    when confirmed; a single-entity question adds a CONFIRMED_BY_USER claim.
+    Either way the question is closed — answered if confirmed, dismissed if
+    not — but only a confirmation writes anything.
+
+    Returns {"error": ...} for an unknown/not-open question_id, or
+    {"resolved": True, "entities_updated": [...]}.
+    """
+    question = await store.get_question(db, user_id, question_id)
+    if question is None:
+        return {"error": f"question {question_id} not found"}
+    if question.status != QuestionStatus.OPEN:
+        # Already resolved — re-running this would double-write the claim/
+        # link and double-count it in recompute_confidence. A retried call
+        # (or the LLM re-confirming the same question) must be a no-op.
+        return {"error": f"question {question_id} is already {question.status.value}"}
+
+    entity_id = question.context.get("entity_id")
+    candidate_entity_id = question.context.get("candidate_entity_id")
+    touched_entity_ids: List[str] = []
+
+    try:
+        async with db.begin_nested():
+            if confirmed and entity_id and candidate_entity_id:
+                await store.link_entities(
+                    db, user_id, uuid.UUID(entity_id), uuid.UUID(candidate_entity_id),
+                    relation_type="same_as", resolved_by=LinkResolvedBy.USER, confidence=1.0,
+                )
+                touched_entity_ids = [entity_id, candidate_entity_id]
+            elif confirmed and entity_id:
+                await store.add_claim(
+                    db, uuid.UUID(entity_id), user_id, source="user", claim_text=answer_text,
+                    asserted_by_agent="user", status=ClaimStatus.CONFIRMED_BY_USER, confidence=1.0,
+                )
+                touched_entity_ids = [entity_id]
+
+            await store.resolve_question(
+                db, user_id, question.id, ResolvedBy.HUMAN, answer_text=answer_text,
+                status=QuestionStatus.ANSWERED if confirmed else QuestionStatus.DISMISSED,
+            )
+
+            for eid in touched_entity_ids:
+                new_confidence = await recompute_confidence(db, user_id, uuid.UUID(eid))
+                await store.update_entity_confidence(db, user_id, uuid.UUID(eid), new_confidence)
+    except (SQLAlchemyError, ValueError) as e:
+        logger.warning("apply_question_answer failed for question_id=%s: %s", question_id, e)
+        return {"error": str(e)}
+
+    return {"resolved": True, "entities_updated": touched_entity_ids}
 
 
 # ---------------------------------------------------------------------------
