@@ -103,6 +103,40 @@ class TestEntityCRUD:
         assert await store.get_entity(db_session, other_id, entity.id) is None
         assert await store.get_entity(db_session, owner_id, entity.id) is not None
 
+    async def test_delete_entity_cascades_claims_and_links(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="del1@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Borrar")
+        other = await store.create_entity(db_session, user_id, EntityType.PERSON, "Otro")
+        await db_session.commit()
+        await store.add_claim(db_session, entity.id, user_id, "slack", "claim", "slack_domain_agent")
+        await store.link_entities(
+            db_session, user_id, entity.id, other.id,
+            relation_type="same_as", resolved_by=LinkResolvedBy.USER,
+        )
+        await db_session.commit()
+
+        deleted = await store.delete_entity(db_session, user_id, entity.id)
+        await db_session.commit()
+
+        assert deleted is True
+        assert await store.get_entity(db_session, user_id, entity.id) is None
+        # ON DELETE CASCADE on EntityClaim.entity_id / EntityLink.entity_id_a|b —
+        # nothing left dangling on either side of what was just deleted.
+        assert await store.list_claims_for_user(db_session, user_id) == []
+        assert await store.list_links_for_entity(db_session, user_id, other.id) == []
+
+    async def test_delete_entity_missing_or_other_user_returns_false(
+        self, db_session: AsyncSession
+    ) -> None:
+        owner_id = await _make_persisted_user(db_session, email="del2a@example.com")
+        other_id = await _make_persisted_user(db_session, email="del2b@example.com")
+        entity = await store.create_entity(db_session, owner_id, EntityType.PERSON, "X")
+        await db_session.commit()
+
+        assert await store.delete_entity(db_session, owner_id, uuid.uuid4()) is False
+        assert await store.delete_entity(db_session, other_id, entity.id) is False
+        assert await store.get_entity(db_session, owner_id, entity.id) is not None
+
     async def test_find_similar_entities_without_embedding_returns_empty(
         self, db_session: AsyncSession
     ) -> None:
@@ -171,6 +205,55 @@ class TestClaimCRUD:
                 db_session, entity.id, other_id, "slack", "claim", "slack_domain_agent",
             )
 
+    async def test_dispute_claim_flips_status(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="disp1@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        await db_session.commit()
+        claim = await store.add_claim(
+            db_session, entity.id, user_id, "slack", "claim equivocado", "slack_domain_agent",
+        )
+        await db_session.commit()
+
+        disputed = await store.dispute_claim(db_session, user_id, claim.id)
+        await db_session.commit()
+
+        assert disputed is not None
+        assert disputed.status == ClaimStatus.DISPUTED
+        active = await store.list_claims(db_session, user_id, entity.id, status=ClaimStatus.ACTIVE)
+        assert active == []
+
+    async def test_dispute_claim_missing_or_other_user_returns_none(
+        self, db_session: AsyncSession
+    ) -> None:
+        owner_id = await _make_persisted_user(db_session, email="disp2a@example.com")
+        other_id = await _make_persisted_user(db_session, email="disp2b@example.com")
+        entity = await store.create_entity(db_session, owner_id, EntityType.PERSON, "X")
+        await db_session.commit()
+        claim = await store.add_claim(
+            db_session, entity.id, owner_id, "slack", "claim", "slack_domain_agent",
+        )
+        await db_session.commit()
+
+        assert await store.dispute_claim(db_session, owner_id, uuid.uuid4()) is None
+        assert await store.dispute_claim(db_session, other_id, claim.id) is None
+
+    async def test_dispute_claim_scoped_to_entity_id_when_given(self, db_session: AsyncSession) -> None:
+        """correct_knowledge always passes entity_id alongside claim_id — a
+        claim_id that belongs to a different entity than the one named must
+        not be disputed, since that would mean a mismatched conversation
+        reference silently corrupts an unrelated entity's claims."""
+        user_id = await _make_persisted_user(db_session, email="disp3@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        other_entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Y")
+        await db_session.commit()
+        claim = await store.add_claim(
+            db_session, entity.id, user_id, "slack", "claim", "slack_domain_agent",
+        )
+        await db_session.commit()
+
+        assert await store.dispute_claim(db_session, user_id, claim.id, entity_id=other_entity.id) is None
+        assert await store.dispute_claim(db_session, user_id, claim.id, entity_id=entity.id) is not None
+
 
 class TestEntityLinkCRUD:
     async def test_link_entities_and_list_from_either_side(self, db_session: AsyncSession) -> None:
@@ -191,6 +274,52 @@ class TestEntityLinkCRUD:
         assert len(links_from_a) == 1
         assert len(links_from_b) == 1
         assert links_from_a[0].id == links_from_b[0].id
+
+    async def test_links_exist_either_ordering(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="le1@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "A")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.PERSON, "B")
+        await db_session.commit()
+
+        assert await store.links_exist(db_session, user_id, entity_a.id, entity_b.id) is False
+
+        await store.link_entities(
+            db_session, user_id, entity_a.id, entity_b.id,
+            relation_type="same_as", resolved_by=LinkResolvedBy.USER,
+        )
+        await db_session.commit()
+
+        assert await store.links_exist(db_session, user_id, entity_a.id, entity_b.id) is True
+        # Order-independent — a correct_knowledge call naming the entities in
+        # the other order must still find the existing link.
+        assert await store.links_exist(db_session, user_id, entity_b.id, entity_a.id) is True
+        assert await store.links_exist(db_session, user_id, entity_a.id, entity_b.id, relation_type="other") is False
+
+    async def test_unlink_entities_removes_either_ordering(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="un1@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "A")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.PERSON, "B")
+        await db_session.commit()
+        await store.link_entities(
+            db_session, user_id, entity_a.id, entity_b.id,
+            relation_type="same_as", resolved_by=LinkResolvedBy.SWARM,
+        )
+        await db_session.commit()
+
+        # Named in the opposite order from how the link was created.
+        removed = await store.unlink_entities(db_session, user_id, entity_b.id, entity_a.id)
+        await db_session.commit()
+
+        assert removed == 1
+        assert await store.list_links_for_entity(db_session, user_id, entity_a.id) == []
+
+    async def test_unlink_entities_no_match_returns_zero(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="un2@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "A")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.PERSON, "B")
+        await db_session.commit()
+
+        assert await store.unlink_entities(db_session, user_id, entity_a.id, entity_b.id) == 0
 
 
 class TestPendingQuestionLifecycle:

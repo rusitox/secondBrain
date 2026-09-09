@@ -360,6 +360,37 @@ class TestRunReconciliation:
         assert open_questions[0].context["entity_id"] == str(a.id)
         assert open_questions[0].context["candidate_entity_id"] == str(b.id)
 
+    async def test_confidently_distinct_does_not_escalate(self, db_session: AsyncSession) -> None:
+        """Confidence >= threshold trusts the swarm's verdict symmetrically —
+        "confidently distinct" (same_entity=False, high confidence) no longer
+        always escalates, only a genuinely uncertain verdict does. This is
+        the fix for the flood: before, every "distinct" verdict escalated
+        regardless of confidence."""
+        user_id = await _make_persisted_user(db_session, email="r2b@example.com")
+        a = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        b = await store.create_entity(db_session, user_id, EntityType.PERSON, "Y")
+        await db_session.commit()
+
+        with patch.object(
+            reconciliation, "find_candidate_duplicates", AsyncMock(return_value=[(a, b)]),
+        ), patch.object(
+            reconciliation, "negotiate_same_as",
+            AsyncMock(return_value={"same_entity": False, "confidence": 0.95, "reasoning": "distintas"}),
+        ):
+            result = await reconciliation.run_reconciliation(db_session, user_id)
+        await db_session.commit()
+
+        assert result["negotiated"] == 0
+        assert result["auto_resolved_distinct"] == 1
+        assert result["escalated"] == 0
+        open_questions = await store.list_open_questions(db_session, user_id, target=QuestionTarget.HUMAN)
+        assert open_questions == []
+        # Recorded as not_same_as (not just skipped) so future cycles don't
+        # re-negotiate this exact pair forever — see the next test.
+        links = await store.list_links_for_entity(db_session, user_id, a.id)
+        assert len(links) == 1
+        assert links[0].relation_type == "not_same_as"
+
     async def test_skips_pair_with_already_open_question(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="r3@example.com")
         a = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")

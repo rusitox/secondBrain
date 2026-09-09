@@ -49,7 +49,12 @@ from app.services.agent.knowledge import store
 logger = logging.getLogger(__name__)
 
 SIMILARITY_MAX_DISTANCE = 0.15  # cosine distance <= this ~ cosine similarity >= 0.85
-SAME_AS_CONFIDENCE_THRESHOLD = 0.7
+# Applies symmetrically: at or above this, the swarm's verdict is trusted either
+# way (same_entity=True auto-links, same_entity=False needs no human review either)
+# — only a genuinely uncertain verdict below this reaches a human. Before this was
+# symmetric, "confidently distinct" (the overwhelming majority of verdicts) always
+# escalated regardless of confidence, which is what flooded Preguntas.
+SAME_AS_CONFIDENCE_THRESHOLD = 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +132,14 @@ async def find_candidate_duplicates(
                     continue
                 seen_pairs.add(pair)
                 if await _already_linked(db, user_id, entity.id, other.id):
+                    continue
+                if await store.links_exist(db, user_id, entity.id, other.id, relation_type="not_same_as"):
+                    # Already negotiated to a confident "distinct" verdict (see
+                    # _run_reconciliation_pass) — without this, a pair the swarm
+                    # already decided about would get rediscovered by embedding
+                    # similarity and re-negotiated (a real LLM call) every single
+                    # cycle forever, since a confident "distinct" writes nothing
+                    # a same_as-only check would ever see.
                     continue
                 candidates.append((entity, other))
     return candidates
@@ -335,6 +348,7 @@ async def _run_reconciliation_pass(
     candidates = await find_candidate_duplicates(db, user_id, entity_type=entity_type)
 
     negotiated: List[Dict[str, Any]] = []
+    auto_resolved_distinct: List[Dict[str, Any]] = []
     escalated: List[Dict[str, Any]] = []
     skipped_pending = 0
     touched: Set[uuid.UUID] = set()
@@ -355,13 +369,28 @@ async def _run_reconciliation_pass(
 
         try:
             async with db.begin_nested():
-                if verdict["same_entity"] and (verdict["confidence"] or 0) >= SAME_AS_CONFIDENCE_THRESHOLD:
+                confident = (verdict["confidence"] or 0) >= SAME_AS_CONFIDENCE_THRESHOLD
+                if confident and verdict["same_entity"]:
                     await store.link_entities(
                         db, user_id, entity_a.id, entity_b.id,
                         relation_type="same_as", resolved_by=LinkResolvedBy.SWARM,
                         confidence=verdict["confidence"],
                     )
                     negotiated.append({"entity_a": str(entity_a.id), "entity_b": str(entity_b.id)})
+                elif confident:
+                    # Swarm is confident they're distinct — trusted the same way a
+                    # confident "same" is trusted above, so this doesn't also need
+                    # a human to confirm "yes, these two unrelated things are
+                    # unrelated." Recorded as a not_same_as link (not just skipped)
+                    # so find_candidate_duplicates' own not_same_as check stops this
+                    # exact pair from being rediscovered by embedding similarity and
+                    # re-negotiated — a real LLM call — every single future cycle.
+                    await store.link_entities(
+                        db, user_id, entity_a.id, entity_b.id,
+                        relation_type="not_same_as", resolved_by=LinkResolvedBy.SWARM,
+                        confidence=verdict["confidence"],
+                    )
+                    auto_resolved_distinct.append({"entity_a": str(entity_a.id), "entity_b": str(entity_b.id)})
                 else:
                     question = await store.raise_question(
                         db, user_id, "reconciliation_engine",
@@ -390,6 +419,7 @@ async def _run_reconciliation_pass(
     return {
         "auto_linked": len(auto_linked),
         "negotiated": len(negotiated),
+        "auto_resolved_distinct": len(auto_resolved_distinct),
         "escalated": len(escalated),
         "skipped_pending": skipped_pending,
         "entities_recomputed": len(touched),

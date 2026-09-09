@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
@@ -58,6 +58,24 @@ async def get_entity(
     """Scoped by user_id — an entity_id belonging to another user must never resolve."""
     stmt = select(Entity).where(Entity.id == entity_id, Entity.user_id == user_id)
     return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def delete_entity(db: AsyncSession, user_id: uuid.UUID, entity_id: uuid.UUID) -> bool:
+    """Delete an entity and everything that hangs off it — EntityClaim.entity_id
+    and EntityLink.entity_id_a/b both carry ON DELETE CASCADE to entities.id
+    (see their models), so this one DELETE is enough; no manual claim/link
+    cleanup needed. Returns False (no-op) if the entity doesn't exist or
+    belongs to another user — never raises for a not-found id.
+
+    Any PendingQuestion whose context still references this entity_id is the
+    caller's responsibility to resolve — context is a JSONB blob, not a real
+    FK, so it doesn't cascade and won't error, but it'll go stale."""
+    entity = await get_entity(db, user_id, entity_id)
+    if entity is None:
+        return False
+    await db.delete(entity)
+    await db.flush()
+    return True
 
 
 async def list_entities_by_ids(
@@ -213,6 +231,38 @@ async def list_claims(
     return list((await db.execute(stmt)).scalars().all())
 
 
+async def dispute_claim(
+    db: AsyncSession, user_id: uuid.UUID, claim_id: uuid.UUID,
+    entity_id: Optional[uuid.UUID] = None,
+) -> Optional[EntityClaim]:
+    """Mark a claim ClaimStatus.DISPUTED — the human (via the orchestrator's
+    correct_knowledge tool) is telling the system a specific claim is wrong.
+    Claims are never overwritten in place (see the model's own docstring):
+    the claim stays, just no longer trusted as current — recompute_confidence
+    already treats DISPUTED as a negative signal, and _consult_peer_agents'
+    view_claims tools already filter to ACTIVE only, so a disputed claim
+    stops influencing new negotiations without needing to be deleted.
+
+    entity_id, when given, additionally requires the claim to belong to that
+    entity — correct_knowledge always has both (its own required entity_id
+    plus a claim_id from that same entity's query_knowledge listing), and
+    without this check a mismatched pair (stale conversation context, LLM
+    mistake) would silently dispute a claim on a different entity than the
+    one actually being corrected, with no error to catch it.
+
+    Returns None (no-op) if claim_id doesn't exist, belongs to another user,
+    or (when entity_id is given) belongs to a different entity."""
+    stmt = select(EntityClaim).where(EntityClaim.id == claim_id, EntityClaim.user_id == user_id)
+    claim = (await db.execute(stmt)).scalar_one_or_none()
+    if claim is None:
+        return None
+    if entity_id is not None and claim.entity_id != entity_id:
+        return None
+    claim.status = ClaimStatus.DISPUTED
+    await db.flush()
+    return claim
+
+
 async def list_claims_for_user(
     db: AsyncSession,
     user_id: uuid.UUID,
@@ -265,6 +315,55 @@ async def link_entities(
     db.add(link)
     await db.flush()
     return link
+
+
+async def unlink_entities(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_id_a: uuid.UUID,
+    entity_id_b: uuid.UUID,
+    relation_type: str = "same_as",
+) -> int:
+    """Undo a link_entities call — e.g. the orchestrator's correct_knowledge
+    tool reversing a wrong same_as merge (reconciliation's own, or one the
+    user made earlier). Matches either a/b ordering, since link_entities'
+    caller-supplied order isn't guaranteed to match how the user names them
+    back. Returns the number of rows removed (0 or 1 in practice, since
+    link_entities itself has no uniqueness constraint stopping a duplicate —
+    this removes all matches either way)."""
+    stmt = delete(EntityLink).where(
+        EntityLink.user_id == user_id,
+        EntityLink.relation_type == relation_type,
+        or_(
+            and_(EntityLink.entity_id_a == entity_id_a, EntityLink.entity_id_b == entity_id_b),
+            and_(EntityLink.entity_id_a == entity_id_b, EntityLink.entity_id_b == entity_id_a),
+        ),
+    )
+    result = await db.execute(stmt)
+    await db.flush()
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def links_exist(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    entity_id_a: uuid.UUID,
+    entity_id_b: uuid.UUID,
+    relation_type: str = "same_as",
+) -> bool:
+    """Whether entity_id_a/b already have a relation_type link (either
+    ordering) — lets a caller (correct_knowledge) skip link_entities when the
+    user confirms a merge that's already there, instead of creating a
+    duplicate link_entities has no constraint against."""
+    stmt = select(func.count()).select_from(EntityLink).where(
+        EntityLink.user_id == user_id,
+        EntityLink.relation_type == relation_type,
+        or_(
+            and_(EntityLink.entity_id_a == entity_id_a, EntityLink.entity_id_b == entity_id_b),
+            and_(EntityLink.entity_id_a == entity_id_b, EntityLink.entity_id_b == entity_id_a),
+        ),
+    )
+    return (await db.execute(stmt)).scalar_one() > 0
 
 
 async def list_links_for_entity(
