@@ -2,3 +2,4 @@
 - [Proactive welcome plan](project_proactive_welcome.md) — CLI startup welcome reuses /agent/query with synthetic prompt; only cli/chat.py changes
 - [Intelligent Learning Agent plan](project_intelligent_learning.md) — Ownership learning, cross-platform correlation, welcome redesign; no DB changes, no new tools; 5-phase sequence
 - [Multi-agent architecture plan](project_multi_agent.md) — 7-agent system; sub-agents as Python async (not Anthropic tools); asyncio.gather(); thin shim on agent.py; no DB changes
+- [Strands migration plan](project_strands_migration.md) — Migrate custom orchestrator to AWS Strands; @tool closures for DB context; SSE event names preserved; Python 3.10+ blocker risk

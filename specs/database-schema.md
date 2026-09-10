@@ -89,6 +89,46 @@ Part of the multi-agent knowledge system (`specs/plan-multi-agent-knowledge.md`)
 - `document_id`: UUID (FK -> documents.id), unique
 - `source`: Text — tracks which documents a domain agent already extracted
 
+### 11. `agent_runs` (Backoffice — One Row Per Agent/Swarm Invocation)
+Part of the knowledge-system backoffice (`specs/plan-knowledge-backoffice.md`). Domain agents,
+reconciliation, and peer negotiations previously discarded their conversation once they returned
+a summary string — this is where it's persisted instead.
+- `id`: UUID (PK), `user_id`: UUID (FK -> users.id)
+- `agent_key`: Text (e.g. 'slack', 'rd', 'reconciliation', 'orchestrator')
+- `run_type`: Enum ('domain_agent', 'rd_agent', 'reconciliation', 'negotiation', 'chat')
+- `trigger`: Enum ('scheduler', 'manual', 'api')
+- `status`: Enum ('running', 'completed', 'failed'), `model_id`: Text (nullable)
+- `started_at`, `finished_at`, `duration_ms`, `input_tokens`, `output_tokens`, `total_tokens`
+- `summary`: Text (nullable), `error`: Text (nullable), `stats`: JSONB
+- `parent_run_id`: UUID (FK -> agent_runs.id, SET NULL) — a negotiation triggered by another run
+  (`ask_peer_agents`, `negotiate_same_as`, the chat agent's `ask_domain_agents`) nests under it
+
+### 12. `agent_run_events` (Backoffice — Ordered Conversation Steps)
+- `id`: UUID (PK), `run_id`: UUID (FK -> agent_runs.id), `seq`: Integer (ordering)
+- `event_type`: Enum ('assistant_text', 'tool_call', 'tool_result', 'handoff', 'verdict', 'error')
+- `actor`: Text (nullable), `tool_name`: Text (nullable), `payload`: JSONB
+- `created_at`: Timestamp — immutable once written, no `updated_at`
+
+### 13. `agent_configs` (Backoffice — Per-Agent Overrides)
+- `id`: UUID (PK), `user_id`: UUID (FK -> users.id)
+- `agent_key`: Text, `enabled`: Boolean (default true)
+- `model_id`: Text (nullable), `system_prompt`: Text (nullable) — `NULL` means "use the code
+  default"; a user with no row at all gets exactly the hardcoded behavior
+- `enabled_tools`: JSONB list (nullable), `mcp_server_ids`: JSONB list (default `[]`)
+- `params`: JSONB (default `{}`)
+- Unique on `(user_id, agent_key)`
+
+### 14. `mcp_servers` (Backoffice — User-Registered MCP Servers)
+- `id`: UUID (PK), `user_id`: UUID (FK -> users.id)
+- `name`: Text, `url`: Text, `auth_header`: Text (default 'Authorization')
+- `api_key_encrypted`: Text (nullable) — Fernet-encrypted, same pattern as
+  `integrations.access_token`
+- `enabled`: Boolean (default true)
+- `allowed_tools` / `rejected_tools`: JSONB lists (nullable) — map to Strands'
+  `MCPClient(tool_filters=...)`
+- `last_checked_at`: Timestamp (nullable), `last_status`: Text (nullable)
+- `discovered_tools`: JSONB list (default `[]`)
+
 ---
 
 ## 🔍 Key Queries

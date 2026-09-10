@@ -37,7 +37,13 @@
       "Bash(python3 -c \"import zoneinfo; print\\('zoneinfo ok'\\)\")",
       "Bash(python3 *)",
       "Bash(awk '{print $2}')",
-      "Bash(pkill -f uvicorn)"
+      "Bash(pkill -f uvicorn)",
+      "Bash(python3.11 --version)",
+      "Bash(pyenv versions *)",
+      "Bash(pyenv local *)",
+      "Bash(wait)",
+      "Bash(pip show *)",
+      "Bash(pkill -f \"uvicorn app.main\")"
     ]
   }
 }

@@ -1,7 +1,10 @@
 # Plan: Backoffice del sistema multi-agente de conocimiento
 
-**Status**: Fases 0-6 implementadas en `feat/knowledge-backoffice`, con code review y fixes
-aplicados en cada checkpoint. Pendiente: merge a `main`.
+**Status**: Fases 0-6 implementadas y mergeadas a `main` (PR #4, `feat/knowledge-backoffice`),
+con code review y fixes aplicados en cada checkpoint. Además del backoffice en sí, ese merge sumó
+dos herramientas nuevas del orquestador de chat (`correct_knowledge`, `ask_domain_agents`) y el
+umbral simétrico de reconciliación — ver `specs/technical-architecture.md` y
+`docs/architecture/memory_logic.md`.
 
 ## Goal
 

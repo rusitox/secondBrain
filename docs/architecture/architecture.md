@@ -10,13 +10,14 @@ The Digital Twin is a personalized AI assistant that acts as an AI Chief of Staf
 - **Privacy-First**: Tokens encrypted at rest (Fernet), row-level isolation by user_id.
 
 ## Component Stack
-- **API**: FastAPI (async, 13 routers)
+- **API**: FastAPI (async, 14 routers)
 - **ORM**: SQLAlchemy 2.0 (async with asyncpg)
 - **Memory Store**: PostgreSQL + pgvector (Supabase)
 - **LLM**: Claude (Anthropic API) for reasoning, commitment detection, briefings; OpenAI models via Strands for the agent loop
 - **Embeddings**: OpenAI `text-embedding-3-small` (1536 dims)
-- **Orchestration**: `StrandsOrchestrator` — a single AWS Strands `Agent` per request running Strands' native multi-turn tool-use loop (memory retriever, task manager, calendar sync, style analyzer, web search, http request, plus knowledge-graph tools). No manual tool loop, no sub-agent fan-out.
+- **Orchestration**: `StrandsOrchestrator` — a single AWS Strands `Agent` per request running Strands' native multi-turn tool-use loop (memory retriever, task manager, calendar sync, style analyzer, web search, http request, plus knowledge-graph tools — including `correct_knowledge` and `ask_domain_agents`, letting the chat agent fix or validate the knowledge graph live in conversation). No manual tool loop, no sub-agent fan-out.
 - **Knowledge graph**: A separate multi-agent system (one Strands domain agent per data source, negotiating via scoped `Swarm`s) builds and reconciles a shared entity/claim graph in the background — see `specs/plan-multi-agent-knowledge.md`.
+- **Backoffice**: Observability/config web UI (`static/backoffice/`) over the knowledge system — every agent run and its full conversation is persisted, and model/prompt/tools/MCP servers are configurable per agent — see `specs/plan-knowledge-backoffice.md`.
 - **CLI**: Rich + prompt_toolkit (chat interface with onboarding wizard)
 
 ## Data Sources (Connectors)

@@ -1,34 +1,41 @@
 ---
-name: Voice Interface Review
-description: Voice STT/TTS endpoints, SSE streaming agent, vanilla JS UI — feat/voice-interface branch
+name: Voice Interface Review (updated 2026-09-03)
+description: Voice STT/TTS endpoints, SSE streaming agent, vanilla JS UI, auth login — updated after fixes confirmed
 type: project
 ---
 
-Phase "voice interface" code review completed on 2026-09-02. Key findings:
+Phase "voice interface" initial review completed 2026-09-02. Re-reviewed 2026-09-03 after merge to main.
 
-**Criticals:**
-- `voice.py`: ALLOWED_AUDIO_TYPES defined but never checked — any content-type passes, including non-audio. Check file.content_type before reading.
-- `agent.py:160`: bare `except Exception` in `run_query()` catches CancelledError — 14th+ recurrence. Use `except Exception` + re-raise `asyncio.CancelledError`, or catch specific exceptions.
-- `agent.py:160`: `str(e)` leaks internal exception details (stack traces, DB errors) directly to SSE client — use sanitized message.
-- `transcriber.py:59`: `asyncio.get_event_loop()` deprecated in Python 3.10+ and broken on Python 3.12. Use `asyncio.get_running_loop()` instead.
-- `tts.py`: `async with ... as response: yield chunk` — the async generator outlives the `async with` context if the client disconnects mid-stream; resource leak.
-- `claude_client.py:204`: Final streaming call re-issues the full conversation without the previously-fetched non-streaming response result; if the LLM decides to call a tool again in the streaming call (no `tool_choice="none"` guard), you get a double tool-use loop. Should pass `tool_choice={"type": "none"}` to force text-only output.
+**Issues FIXED since initial review:**
+- ALLOWED_AUDIO_TYPES is now checked before reading file body.
+- asyncio.get_event_loop() replaced with get_running_loop() in transcriber.py.
+- TTS resource leak (async generator outliving context) fixed — tts.py now returns bytes directly (no streaming generator).
+- bare except in voice.py TTS path now catches specific (RuntimeError, ValueError) with explicit CancelledError re-raise.
+- XSS: DOMPurify added alongside marked.js in index.html; renderMarkdown() uses DOMPurify.sanitize() when available.
+- Language hardcoded to "es" removed — language is now Optional[str] and caller-controlled.
+- validateApiKey no longer calls full agent query for login validation (login flow replaced by POST /auth/login).
+- marked.js now pinned to specific version (15.0.7) on CDN, DOMPurify also pinned (3.2.4).
 
-**Warnings:**
-- `transcriber.py:50,70`: language hardcoded to `"es"` — makes the tool useless for non-Spanish audio. Expose as config or schema field.
-- `voice.py:86`: bare `except Exception` on TTS path — 15th+ recurrence.
-- `voice.py:43`: audio bytes read entirely into memory before size check — should check Content-Length header first, or stream-read with a limit.
-- `agent.py:107`: `run_query` task is `create_task` but if the SSE client disconnects before SENTINEL, the task keeps running and DB session may be used after the request scope ends.
-- `app/api/schemas/briefing.py`: `AgentStreamRequest` is a duplicate of `AgentQueryRequest` with identical fields — should inherit or alias.
-- `app.js:161-168`: `validateApiKey` calls `/agent/query` with `{ question: 'ping' }` — triggers full LLM call + tool loop on every login. Use a lightweight endpoint (e.g., `/auth/me`) instead.
-- `app.js:813`: `renderMarkdown` feeds LLM-generated text to `marked.parse()` with no sanitization — XSS risk if marked output is set as `innerHTML`. Add DOMPurify or use `marked` with a sanitizer.
+**Remaining / new issues (2026-09-03 review):**
 
-**Info:**
-- `index.html:11`: marked.js loaded from CDN (unpinned) — pin to specific version for reproducibility.
-- `static/voice/style.css`: Google Fonts CDN call on load — leaks user IP to Google on every page view; self-host the font.
-- `transcriber.py:46`: temp file suffix hardcoded to `.webm` regardless of actual format — local Whisper may fail on `.ogg` uploads.
+CRITICAL:
+- auth.py:57 — portal_password compared with == (timing attack). The portal password is a shared secret; timing-safe comparison required.
+- auth.py:84 — db.flush() without commit. get_db() commits on yield exit, but if an exception is raised between flush and the route return, the transaction rolls back and the new API key is silently lost. Same applies to /api-keys, /bootstrap, and /regenerate. The key has already been returned to the client — data inconsistency.
+- base.py:116 — _make_get_calendar() does not forward user_timezone. CalendarSyncTool.get_today_events() defaults to "UTC" silently. Calendar times shown in UI will be wrong for non-UTC users. orchestrator.py's _executor_get_calendar DOES pass user_timezone correctly — base.py is the legacy version used by agents that inherit BaseSubAgent.
 
-**Recurring systemic patterns confirmed:**
-- bare `except Exception` (now 15+ occurrences)
-- `asyncio.get_event_loop()` vs `get_running_loop()` (Python 3.8 compat risk)
-- lru_cache singleton holding async clients (same concern as agent.py)
+WARNING:
+- auth.py:225-227 — bootstrap endpoint: bare `except Exception` swallows any Settings load error and defaults is_prod=False, meaning the bootstrap endpoint stays open even if config is broken. Should propagate the error instead.
+- orchestrator.py:578 — _route_agents receives augmented_question (with identity prefix) for keyword matching — the prefix text "IDENTIDAD DEL USUARIO" won't interfere but "FECHA DE HOY" could theoretically match future keywords. Low risk, but cleaner to pass original question to router.
+- orchestrator.py:672-677 — synthesis prompt uses % formatting: `_SYNTHESIS_SYSTEM.format(style=style)`. If style_text contains a literal { or }, format() will raise KeyError. This is the same str.format() prompt injection pattern flagged in Phase 6 (5th+ recurrence). Use Template or f-string at construction time.
+- app.js:473 — sentenceBuf TTS flush threshold is 90 chars OR sentence-ending punctuation. If the agent streams a very long sentence (>300 chars, no punctuation), multiple segments are enqueued. The finalizeAgentMessage() then checks `ttsQueue.length === 0` and re-enqueues the full answer — resulting in double TTS playback of the last segment. The condition should be `if (!ttsPlaying)` without the queue check, or skip re-enqueue if streaming TTS was already fired.
+
+INFO:
+- auth.py:21 — _KEY_LABEL = "sb_live_" duplicated from security.py (flagged in API Key Auth Review). Still not DRY.
+- voice.py — lru_cache on _get_transcriber() holds the WhisperTranscriber singleton forever. If openai_api_key is rotated at runtime (settings reload), the cached transcriber retains the old key. Minor in practice; documented.
+- index.html — marked.js and DOMPurify loaded from CDN (jsDelivr). Still leaks user IP to CDN on page load; acceptable trade-off for now but self-hosting is cleaner long-term.
+
+**Recurring systemic patterns confirmed in this pass:**
+- str.format() on system prompts (now 6th recurrence — orchestrator.py synthesis prompt)
+- bare except Exception in non-agent code (bootstrap endpoint)
+- flush-without-commit risk (auth.py — same as agent memory review)
+- user_timezone not forwarded through all code paths (base.py vs orchestrator.py divergence)

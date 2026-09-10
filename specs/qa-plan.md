@@ -4,7 +4,7 @@
 
 Definir la estrategia de testing para garantizar la calidad del sistema. Cubre unit tests, integration tests, y E2E tests alineados a todas las features implementadas.
 
-**Estado actual:** 1055 tests, todos passing (salvo fallos preexistentes conocidos y no relacionados en `test_teams_connector.py`).
+**Estado actual:** 1234 tests, todos passing (salvo 6 fallos preexistentes conocidos y no relacionados en `test_teams_connector.py`, y un test probabilístico ocasional — `test_key_prefix_is_unique` — que genera colisiones de prefix al azar en una fracción muy chica de corridas).
 
 ---
 
@@ -69,6 +69,14 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
 - [x] Strands `@tool` wrappers: memory retriever, task manager, calendar sync, style analyzer,
   `save_learning`/`search_learnings`, opt-in `web_search`/`http_request`, knowledge-graph tools
   (`test_strands_tools.py`, `test_learning_tools.py`)
+- [x] `correct_knowledge`: claim correction (new high-confidence claim, optional dispute of a
+  specific wrong claim) and identity correction (merge/unmerge two entities via `same_as`,
+  including overriding a stale automatic `not_same_as`), confidence recomputation for every
+  entity touched (`test_strands_tools.py`, `test_tool_registry.py`,
+  `test_strands_tools_knowledge.py`)
+- [x] `ask_domain_agents`: mid-conversation scoped-`Swarm` negotiation triggered from chat, nests
+  under the chat run via `parent_run_id` (`test_strands_tools.py`, `test_tool_registry.py`,
+  `test_strands_tools_knowledge.py`, `test_domain_agent.py`)
 - [x] `SequentialToolExecutor` enforced (shared `AsyncSession` across all tools in a turn)
 
 #### Services — Multi-Agent Knowledge System
@@ -83,7 +91,10 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
 - [x] `resolution.py`: find-or-create-entity (case-insensitive match, attribute merging), consult
   knowledge base (`test_reconciliation.py` covers the shared helpers)
 - [x] `reconciliation.py`: deterministic email-based auto-link, embedding-similarity candidate
-  detection, `same_as` merge negotiation, confidence recomputation, `entity_type`-scoped auto-link
+  detection, `same_as` merge negotiation, confidence recomputation, `entity_type`-scoped auto-link,
+  symmetric `SAME_AS_CONFIDENCE_THRESHOLD` (a confident "distinct" verdict auto-resolves without
+  human review just like a confident "same" one — fixes the pre-fix flood of every confident
+  "distinct" verdict escalating to `pending_questions` regardless of confidence)
   (`test_reconciliation.py`, unit + integration)
 - [x] `swarm_negotiation.py`: shared scoped-`Swarm` core (`test_swarm_negotiation.py`)
 - [x] Knowledge tools exposed to the request-time agent: `query_knowledge`, `get_pending_questions`,
@@ -371,7 +382,7 @@ tests/
 
 | Criterio | Umbral | Estado |
 |---|---|---|
-| All tests passing | 1055/1055 (6 fallos preexistentes no relacionados en `test_teams_connector.py`) | **Met** |
+| All tests passing | 1234/1234 (6 fallos preexistentes no relacionados en `test_teams_connector.py`, +1 test probabilístico ocasional) | **Met** |
 | Type checking (mypy) | No errors in app/ cli/ | **Met** |
 | Security: auth + encryption | All tests passing | **Met** |
 | E2E: happy paths | All passing | **Met** |
