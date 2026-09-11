@@ -1,14 +1,45 @@
 """Integration tests for Slack connector (HTTP mocked with respx)."""
+from typing import List, Optional
+
 import pytest
 import respx
 from httpx import Response
 
+from app.api.schemas.voice import TranscribeResponse
 from app.services.connectors.slack import SlackConnector, SLACK_API_URL
+from app.services.voice.transcriber import WhisperTranscriber
 
 
 @pytest.fixture
 def connector() -> SlackConnector:
     return SlackConnector()
+
+
+class _FakeTranscriber(WhisperTranscriber):
+    """Test double: no network, no Whisper cost — records what it was asked to transcribe."""
+
+    def __init__(self, transcript: str = "Hola equipo", raise_error: bool = False) -> None:
+        super().__init__(mode="api", model_name="base", openai_api_key="")
+        self.transcript = transcript
+        self.raise_error = raise_error
+        self.calls: List[str] = []
+
+    async def transcribe(
+        self, audio_bytes: bytes, filename: str = "audio.webm", language: Optional[str] = None,
+    ) -> TranscribeResponse:
+        self.calls.append(filename)
+        if self.raise_error:
+            raise RuntimeError("transcription failed")
+        return TranscribeResponse(transcript=self.transcript, language="es", duration_seconds=1.5)
+
+
+def _audio_file(
+    file_id: str = "F001",
+    url: str = "https://files.slack.com/files-pri/T1-F001/voice.m4a",
+    size: int = 1000,
+    mimetype: str = "audio/mp4",
+):
+    return {"id": file_id, "mimetype": mimetype, "url_private": url, "size": size, "name": "voice.m4a"}
 
 
 # ---------------------------------------------------------------------------
@@ -599,3 +630,201 @@ class TestTokenValidation:
         """HTTP error during auth.test returns False without raising."""
         respx.post(f"{SLACK_API_URL}/auth.test").mock(return_value=Response(500))
         assert await connector.validate_token("xoxb-bad") is False
+
+
+# ---------------------------------------------------------------------------
+# Audio message transcription
+# ---------------------------------------------------------------------------
+
+class TestAudioTranscription:
+    @respx.mock
+    async def test_voice_message_without_text_transcribed(self) -> None:
+        """A voice note (no text, one audio file) is ingested using the transcript as content."""
+        transcriber = _FakeTranscriber(transcript="Hola equipo, les mando esto por audio")
+        connector = SlackConnector(transcriber=transcriber)
+
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(
+            return_value=_channels_response([{"id": "C001", "name": "general"}]),
+        )
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {"user": "U001", "ts": "1000.000", "files": [_audio_file()]},
+            ]),
+        )
+        respx.get("https://files.slack.com/files-pri/T1-F001/voice.m4a").mock(
+            return_value=Response(200, content=b"fake-audio-bytes"),
+        )
+        respx.get(f"{SLACK_API_URL}/users.info").mock(
+            return_value=_user_response("U001", display_name="Alice"),
+        )
+
+        items = await connector.fetch_items(access_token="xoxb-test")
+        assert len(items) == 1
+        assert items[0].content == "Hola equipo, les mando esto por audio"
+        assert items[0].metadata["has_audio"] is True
+        assert transcriber.calls == ["voice.m4a"]
+
+    @respx.mock
+    async def test_text_and_audio_combined(self) -> None:
+        """A message with both text and an audio attachment merges both into content."""
+        transcriber = _FakeTranscriber(transcript="y el audio dice esto")
+        connector = SlackConnector(transcriber=transcriber)
+
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(
+            return_value=_channels_response([{"id": "C001", "name": "general"}]),
+        )
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {"text": "Mirá esto", "user": "U001", "ts": "1000.000", "files": [_audio_file()]},
+            ]),
+        )
+        respx.get("https://files.slack.com/files-pri/T1-F001/voice.m4a").mock(
+            return_value=Response(200, content=b"fake-audio-bytes"),
+        )
+        respx.get(f"{SLACK_API_URL}/users.info").mock(
+            return_value=_user_response("U001", display_name="Alice"),
+        )
+
+        items = await connector.fetch_items(access_token="xoxb-test")
+        assert "Mirá esto" in items[0].content
+        assert "y el audio dice esto" in items[0].content
+
+    @respx.mock
+    async def test_non_audio_file_ignored(self) -> None:
+        """A non-audio attachment (e.g. an image) is not sent to the transcriber."""
+        transcriber = _FakeTranscriber()
+        connector = SlackConnector(transcriber=transcriber)
+
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(
+            return_value=_channels_response([{"id": "C001", "name": "general"}]),
+        )
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {
+                    "text": "check this out",
+                    "user": "U001",
+                    "ts": "1000.000",
+                    "files": [_audio_file(mimetype="image/png", url="https://files.slack.com/img.png")],
+                },
+            ]),
+        )
+        respx.get(f"{SLACK_API_URL}/users.info").mock(
+            return_value=_user_response("U001", display_name="Alice"),
+        )
+
+        items = await connector.fetch_items(access_token="xoxb-test")
+        assert items[0].content == "check this out"
+        assert items[0].metadata["has_audio"] is False
+        assert transcriber.calls == []
+
+    @respx.mock
+    async def test_oversized_audio_skipped_without_download(self) -> None:
+        """A file over voice_max_audio_mb is never downloaded or transcribed."""
+        transcriber = _FakeTranscriber()
+        connector = SlackConnector(transcriber=transcriber)
+
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(
+            return_value=_channels_response([{"id": "C001", "name": "general"}]),
+        )
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {"user": "U001", "ts": "1000.000", "files": [_audio_file(size=100 * 1024 * 1024)]},
+            ]),
+        )
+        download_route = respx.get("https://files.slack.com/files-pri/T1-F001/voice.m4a").mock(
+            return_value=Response(200, content=b"fake-audio-bytes"),
+        )
+        respx.get(f"{SLACK_API_URL}/users.info").mock(
+            return_value=_user_response("U001", display_name="Alice"),
+        )
+
+        items = await connector.fetch_items(access_token="xoxb-test")
+        assert len(download_route.calls) == 0
+        assert transcriber.calls == []
+        # No text and no transcript — same as a file-only message today: skipped.
+        assert len(items) == 0
+
+    @respx.mock
+    async def test_download_failure_does_not_crash_sync(self) -> None:
+        """A 403 (e.g. missing files:read scope) on download is logged, not fatal."""
+        transcriber = _FakeTranscriber()
+        connector = SlackConnector(transcriber=transcriber)
+
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(
+            return_value=_channels_response([{"id": "C001", "name": "general"}]),
+        )
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {"text": "still here", "user": "U001", "ts": "1000.000", "files": [_audio_file()]},
+                {"text": "other message", "user": "U001", "ts": "1001.000"},
+            ]),
+        )
+        respx.get("https://files.slack.com/files-pri/T1-F001/voice.m4a").mock(
+            return_value=Response(403, content=b"missing_scope"),
+        )
+        respx.get(f"{SLACK_API_URL}/users.info").mock(
+            return_value=_user_response("U001", display_name="Alice"),
+        )
+
+        items = await connector.fetch_items(access_token="xoxb-test")
+        assert len(items) == 2
+        assert items[0].content == "still here"  # text kept even though transcription failed
+
+    @respx.mock
+    async def test_transcription_error_does_not_crash_sync(self) -> None:
+        """The transcriber raising does not take down the whole sync."""
+        transcriber = _FakeTranscriber(raise_error=True)
+        connector = SlackConnector(transcriber=transcriber)
+
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(
+            return_value=_channels_response([{"id": "C001", "name": "general"}]),
+        )
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {"text": "hola", "user": "U001", "ts": "1000.000", "files": [_audio_file()]},
+            ]),
+        )
+        respx.get("https://files.slack.com/files-pri/T1-F001/voice.m4a").mock(
+            return_value=Response(200, content=b"fake-audio-bytes"),
+        )
+        respx.get(f"{SLACK_API_URL}/users.info").mock(
+            return_value=_user_response("U001", display_name="Alice"),
+        )
+
+        items = await connector.fetch_items(access_token="xoxb-test")
+        assert len(items) == 1
+        assert items[0].content == "hola"
+
+    @respx.mock
+    async def test_dm_audio_downloaded_with_dm_token(self) -> None:
+        """Audio in a DM is downloaded using the User Token, not the Bot Token."""
+        transcriber = _FakeTranscriber(transcript="mensaje de voz en el dm")
+        connector = SlackConnector(transcriber=transcriber)
+        bot_token = "xoxb-bot-token"
+        user_token = "xoxp-user-token"
+
+        def channel_list_handler(request):
+            types = request.url.params.get("types", "")
+            if "im" in types:
+                return _channels_response([{"id": "D001", "name": "dm"}])
+            return _channels_response([])
+
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(side_effect=channel_list_handler)
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {"user": "U001", "ts": "1000.000", "files": [_audio_file()]},
+            ]),
+        )
+        download_route = respx.get("https://files.slack.com/files-pri/T1-F001/voice.m4a").mock(
+            return_value=Response(200, content=b"fake-audio-bytes"),
+        )
+        respx.get(f"{SLACK_API_URL}/users.info").mock(
+            return_value=_user_response("U001", display_name="Alice"),
+        )
+
+        items = await connector.fetch_items(access_token=bot_token, user_token=user_token)
+        assert len(items) == 1
+        assert items[0].content == "mensaje de voz en el dm"
+        auth_header = download_route.calls[0].request.headers.get("Authorization", "")
+        assert user_token in auth_header
+        assert bot_token not in auth_header
