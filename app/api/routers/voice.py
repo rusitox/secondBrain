@@ -2,14 +2,13 @@
 import asyncio
 import logging
 import uuid
-from functools import lru_cache
 
 from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
 
 from app.api.deps import get_current_user_id
 from app.api.schemas.voice import SpeakRequest, TranscribeResponse
 from app.core.config import get_settings
-from app.services.voice.transcriber import WhisperTranscriber
+from app.services.voice.transcriber import get_transcriber
 from app.services.voice import tts as tts_service
 
 logger = logging.getLogger(__name__)
@@ -19,16 +18,6 @@ ALLOWED_AUDIO_TYPES = {
     "audio/webm", "audio/ogg", "audio/wav", "audio/mpeg",
     "audio/mp4", "audio/m4a", "audio/x-m4a", "application/octet-stream",
 }
-
-
-@lru_cache(maxsize=1)
-def _get_transcriber() -> WhisperTranscriber:
-    settings = get_settings()
-    return WhisperTranscriber(
-        mode=settings.stt_mode,
-        model_name=settings.whisper_model,
-        openai_api_key=settings.openai_api_key,
-    )
 
 
 @router.post("/transcribe", response_model=TranscribeResponse)
@@ -67,7 +56,7 @@ async def transcribe_audio(
             detail=f"Audio file exceeds {settings.voice_max_audio_mb}MB limit",
         )
 
-    transcriber = _get_transcriber()
+    transcriber = get_transcriber()
     try:
         result = await transcriber.transcribe(audio_bytes, filename=file.filename or "audio.webm")
     except RuntimeError as e:

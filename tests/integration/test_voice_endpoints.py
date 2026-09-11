@@ -42,7 +42,7 @@ class TestTranscribeEndpoint:
         mock_transcriber.transcribe = AsyncMock(return_value=TranscribeResponse(
             transcript="hola mundo", language="es", duration_seconds=1.5
         ))
-        with patch("app.api.routers.voice._get_transcriber", return_value=mock_transcriber):
+        with patch("app.api.routers.voice.get_transcriber", return_value=mock_transcriber):
             resp = await client.post(
                 "/voice/transcribe",
                 files={"file": ("audio.webm", b"fake-audio-data", "audio/webm")},

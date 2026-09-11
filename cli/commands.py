@@ -274,6 +274,7 @@ class CommandRouter:
             "A Slack User Token (xoxp-...) allows syncing your personal DMs.\n"
             "Required scopes: channels:history channels:read groups:history groups:read\n"
             "                 im:history im:read mpim:history mpim:read users:read\n"
+            "                 files:read (optional, needed to transcribe audio messages)\n"
             "Get one at: api.slack.com → your app → OAuth & Permissions → User Token Scopes"
         )
 

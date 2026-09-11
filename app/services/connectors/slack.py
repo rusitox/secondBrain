@@ -7,16 +7,19 @@ Handles rate limiting (HTTP 429) with exponential backoff.
 
 Token types and access scope:
   Bot Token  (xoxb-…)  Required scopes: channels:history, channels:read,
-                        groups:history, groups:read, users:read
+                        groups:history, groups:read, users:read, files:read
                         Access: channels and private channels the bot is a
                         member of. DMs (im/mpim) returned are the BOT's DMs,
                         not the user's personal conversations.
 
   User Token (xoxp-…)  Required scopes: channels:history, channels:read,
                         groups:history, groups:read, im:history, im:read,
-                        mpim:history, mpim:read, users:read
+                        mpim:history, mpim:read, users:read, files:read
                         Access: all channels and DMs visible to the
                         authenticated user, including personal DMs.
+
+  files:read is only needed to download audio attachments for
+  transcription (see below) — everything else works without it.
 
 For full DM coverage, configure a User Token alongside the Bot Token:
   - access_token  → Bot Token  (used for channel messages)
@@ -24,6 +27,12 @@ For full DM coverage, configure a User Token alongside the Bot Token:
 
 If only a User Token is configured (access_token starts with xoxp-),
 the connector uses it for everything (channels + DMs) automatically.
+
+Audio messages (voice notes and audio attachments) are downloaded and
+transcribed with Whisper, then ingested as text. This needs the extra
+scope `files:read` on whichever token covers the conversation. Without
+it the download returns 403 and the message is ingested without its
+transcript (logged, never fatal).
 """
 import logging
 import asyncio
@@ -33,6 +42,7 @@ from typing import Any, Dict, List, Optional, Set
 import httpx
 
 from app.services.connectors.base import BaseConnector, ConnectorItem
+from app.services.voice.transcriber import WhisperTranscriber, get_transcriber
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +50,9 @@ SLACK_API_URL = "https://slack.com/api"
 DEFAULT_PAGE_LIMIT = 200
 MAX_PAGES = 100  # Safety limit to prevent infinite pagination loops
 REQUEST_TIMEOUT = 30.0
+# Media downloads are far slower than API calls, so they get their own budget.
+AUDIO_DOWNLOAD_TIMEOUT = 120.0
+AUDIO_MIMETYPE_PREFIX = "audio/"
 
 # Rate limit retry
 MAX_RETRIES = 3
@@ -63,6 +76,9 @@ class SlackConnector(BaseConnector):
 
     Pass user_token to fetch_items to enable personal DM access.
     """
+
+    def __init__(self, transcriber: Optional[WhisperTranscriber] = None) -> None:
+        self._transcriber = transcriber
 
     @property
     def platform(self) -> str:
@@ -132,6 +148,7 @@ class SlackConnector(BaseConnector):
                 for msg in messages:
                     msg["_channel_id"] = channel_id
                     msg["_channel_name"] = channel_name
+                    msg["_headers"] = channel_headers
                     raw_messages.append(msg)
 
                     # Fetch thread replies for thread parent messages
@@ -148,6 +165,7 @@ class SlackConnector(BaseConnector):
                                 continue  # skip the parent (already included)
                             reply["_channel_id"] = channel_id
                             reply["_channel_name"] = channel_name
+                            reply["_headers"] = channel_headers
                             raw_messages.append(reply)
 
             # 2. Fetch DMs and group DMs using dm_token (User Token only)
@@ -173,6 +191,7 @@ class SlackConnector(BaseConnector):
                         msg["_channel_id"] = channel_id
                         msg["_channel_name"] = channel_name
                         msg["_is_dm"] = True
+                        msg["_headers"] = dm_headers
                         raw_messages.append(msg)
 
                         # Thread replies in DMs
@@ -190,6 +209,7 @@ class SlackConnector(BaseConnector):
                                 reply["_channel_id"] = channel_id
                                 reply["_channel_name"] = channel_name
                                 reply["_is_dm"] = True
+                                reply["_headers"] = dm_headers
                                 raw_messages.append(reply)
 
             # 3. Resolve all user IDs to display names in one pass
@@ -205,6 +225,17 @@ class SlackConnector(BaseConnector):
             # 4. Build ConnectorItems
             for msg in raw_messages:
                 text = msg.get("text", "")
+
+                audio_transcript = await self._transcribe_audio_files(
+                    client, msg.get("_headers", {}), msg,
+                )
+                if audio_transcript:
+                    text = (
+                        f"{text}\n\n[Audio transcript]: {audio_transcript}".strip()
+                        if text.strip()
+                        else audio_transcript
+                    )
+
                 if not text or not text.strip():
                     continue
 
@@ -229,6 +260,7 @@ class SlackConnector(BaseConnector):
                         "thread_ts": thread_ts,
                         "is_thread_reply": bool(thread_ts and thread_ts != ts),
                         "is_dm": is_dm,
+                        "has_audio": bool(audio_transcript),
                     },
                 ))
 
@@ -346,6 +378,65 @@ class SlackConnector(BaseConnector):
                 break
 
         return replies
+
+    def _get_transcriber(self) -> WhisperTranscriber:
+        if self._transcriber is None:
+            self._transcriber = get_transcriber()
+        return self._transcriber
+
+    async def _transcribe_audio_files(
+        self,
+        client: httpx.AsyncClient,
+        headers: Dict[str, str],
+        msg: Dict[str, Any],
+    ) -> Optional[str]:
+        """Download and transcribe any audio attachments on a message.
+
+        Never raises: a bad file, a missing `files:read` scope, or a
+        transcription failure is logged and skipped, not fatal to the sync.
+        """
+        from app.core.config import get_settings
+
+        audio_files = [
+            f for f in msg.get("files", [])
+            if str(f.get("mimetype", "")).startswith(AUDIO_MIMETYPE_PREFIX)
+        ]
+        if not audio_files:
+            return None
+
+        settings = get_settings()
+        max_bytes = settings.voice_max_audio_mb * 1024 * 1024
+        transcriber = self._get_transcriber()
+        transcripts: List[str] = []
+
+        for f in audio_files:
+            file_id = f.get("id", "?")
+            size = f.get("size", 0) or 0
+            if size > max_bytes:
+                logger.warning(
+                    "Slack: skipping audio file %s (%d bytes exceeds %dMB limit)",
+                    file_id, size, settings.voice_max_audio_mb,
+                )
+                continue
+
+            url = f.get("url_private", "")
+            if not url:
+                continue
+
+            try:
+                resp = await client.get(url, headers=headers, timeout=AUDIO_DOWNLOAD_TIMEOUT)
+                resp.raise_for_status()
+                result = await transcriber.transcribe(
+                    resp.content, filename=f.get("name") or "audio.m4a",
+                )
+            except (httpx.HTTPError, RuntimeError) as e:
+                logger.warning("Slack: could not transcribe audio file %s: %s", file_id, e)
+                continue
+
+            if result.transcript.strip():
+                transcripts.append(result.transcript.strip())
+
+        return "\n\n".join(transcripts) if transcripts else None
 
     async def _resolve_usernames(
         self,
