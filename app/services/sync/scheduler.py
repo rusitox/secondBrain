@@ -172,6 +172,13 @@ class SyncScheduler:
                     fetch_kwargs["user_token"] = user_token
                 items = await connector.fetch_items(**fetch_kwargs)
 
+                # Lazily capture the connected account's own id on this
+                # platform (e.g. Slack's user_id) — needed for exact-match
+                # "mentions of me" filtering. Most connectors don't
+                # implement get_own_account_id and just return None.
+                if integration.external_account_id is None:
+                    integration.external_account_id = await connector.get_own_account_id(token)
+
                 from app.core.config import get_settings
                 settings = get_settings()
                 pipeline = IngestionPipeline(embedder=Embedder(api_key=settings.openai_api_key))

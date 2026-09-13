@@ -20,6 +20,8 @@ class CommitmentUpdate(BaseModel):
     status: Optional[CommitmentStatus] = None
     due_date: Optional[datetime] = None
     priority: Optional[int] = Field(default=None, ge=1, le=5)
+    owner: Optional[str] = None
+    commitment_text: Optional[str] = None
 
 
 class CommitmentRead(BaseModel):

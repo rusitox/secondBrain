@@ -57,24 +57,35 @@ class _FakeStrandsAgent:
     """Stand-in for a Strands ``Agent`` — avoids hitting OpenAI in tests.
 
     Only implements what StrandsOrchestrator.query() touches: invoke_async /
-    stream_async (both no-ops here) and .messages / .callback_handler, which
-    is what the answer and tools_used are read from after the run.
+    stream_async (both return/yield a real strands.AgentResult here, since
+    query() reads the answer off ``result.message`` rather than
+    agent.messages) and .callback_handler, which is what tools_used is read
+    from after the run.
     """
 
     def __init__(self, answer: str, tool_names: list = None) -> None:
+        from strands.agent.agent_result import AgentResult
+        from strands.telemetry.metrics import EventLoopMetrics
+
         from app.services.agent.strands_orchestrator import _StreamingCallbackHandler
 
-        self.messages = [{"role": "assistant", "content": [{"text": answer}]}]
-        self.callback_handler = _StreamingCallbackHandler(stream_callback=None)
-        for name in (tool_names or []):
-            self.callback_handler(current_tool_use={"name": name})
+        message = {"role": "assistant", "content": [{"text": answer}]}
+        self.messages = [message]
+        self._result = AgentResult(
+            stop_reason="end_turn",
+            message=message,
+            metrics=EventLoopMetrics(),
+            state={},
+        )
+        self.callback_handler = _StreamingCallbackHandler(None)
+        for i, name in enumerate(tool_names or []):
+            self.callback_handler(current_tool_use={"toolUseId": f"fake_{i}", "name": name})
 
-    async def invoke_async(self, question: str) -> None:
-        return None
+    async def invoke_async(self, question: str):
+        return self._result
 
     async def stream_async(self, question: str):
-        return
-        yield  # pragma: no cover - makes this an async generator
+        yield {"result": self._result}
 
 
 def _make_real_orchestrator(answer: str = "Test answer.", tool_names=None) -> StrandsOrchestrator:
@@ -388,3 +399,110 @@ class TestAgentQueryForwarding:
 
         call_kwargs = orch.query.call_args[1]
         assert str(call_kwargs["user_id"]) == user_id
+
+
+# ---------------------------------------------------------------------------
+# /agent/stream — SSE plumbing
+# ---------------------------------------------------------------------------
+
+def _make_stream_orchestrator(events: list, answer: str = "Test answer.") -> MagicMock:
+    """Mock orchestrator whose query() calls emit(...) for each given event
+    before returning — exercises the router's SSE queue/order plumbing
+    end-to-end without a real Strands agent."""
+
+    async def fake_query(
+        *, db: Any, user_id: Any, question: str, session_id: Any = None, emit: Any = None,
+    ) -> Dict[str, Any]:
+        if emit is not None:
+            for event_name, event_data in events:
+                emit(event_name, event_data)
+        return {
+            "answer": answer,
+            "tools_used": [],
+            "sources": [],
+            "session_id": session_id or str(uuid.uuid4()),
+            "iterations": 1,
+            "turn_id": str(uuid.uuid4()),
+            "stop_reason": "end_turn",
+            "awaiting": [],
+        }
+
+    orch = MagicMock()
+    orch.query = fake_query
+    return orch
+
+
+class TestAgentStreamEndpoint:
+    @pytest.fixture(autouse=True)
+    def _reset_sse_starlette_app_status(self):
+        """sse_starlette caches should_exit_event as a module-level anyio.Event
+        bound to whichever event loop first created it. pytest-asyncio gives
+        each test function its own loop, so the second SSE test in a run
+        crashes with "bound to a different event loop" unless the cached
+        event is cleared first so it's lazily recreated on the current loop.
+        See sse_starlette.sse.AppStatus.should_exit_event.
+        """
+        from sse_starlette.sse import AppStatus
+
+        AppStatus.should_exit_event = None
+        yield
+
+    @pytest.mark.asyncio
+    async def test_events_arrive_in_emission_order_with_done_last(
+        self, client: AsyncClient
+    ) -> None:
+        _, _, headers = await _create_user_and_api_key(client)
+        orch = _make_stream_orchestrator(events=[
+            ("session", {"session_id": "s1", "turn_id": "t1"}),
+            ("thinking", {"id": "t1", "category": "AGENTE", "label": "search_memory", "status": "active"}),
+            ("token", {"text": "hola"}),
+        ])
+
+        with patch("app.api.routers.agent._get_agent", return_value=orch):
+            async with client.stream(
+                "POST", "/agent/stream", json={"question": "hola"}, headers=headers,
+            ) as resp:
+                assert resp.status_code == 200
+                event_names = [
+                    line.split(":", 1)[1].strip()
+                    async for line in resp.aiter_lines()
+                    if line.startswith("event:")
+                ]
+
+        assert event_names == ["session", "thinking", "token", "done"]
+
+    @pytest.mark.asyncio
+    async def test_done_event_carries_stop_reason_and_metadata(
+        self, client: AsyncClient
+    ) -> None:
+        _, _, headers = await _create_user_and_api_key(client)
+        orch = _make_stream_orchestrator(events=[])
+
+        with patch("app.api.routers.agent._get_agent", return_value=orch):
+            async with client.stream(
+                "POST", "/agent/stream", json={"question": "hola"}, headers=headers,
+            ) as resp:
+                body = "".join([line async for line in resp.aiter_lines()])
+
+        assert '"stop_reason": "end_turn"' in body
+        assert '"awaiting": []' in body
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_failure_emits_error_then_closes(
+        self, client: AsyncClient
+    ) -> None:
+        _, _, headers = await _create_user_and_api_key(client)
+        orch = MagicMock()
+        orch.query = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch("app.api.routers.agent._get_agent", return_value=orch):
+            async with client.stream(
+                "POST", "/agent/stream", json={"question": "hola"}, headers=headers,
+            ) as resp:
+                event_names = [
+                    line.split(":", 1)[1].strip()
+                    async for line in resp.aiter_lines()
+                    if line.startswith("event:")
+                ]
+
+        assert event_names == ["error"]

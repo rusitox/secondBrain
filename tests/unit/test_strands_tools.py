@@ -18,10 +18,18 @@ import pytest
 from app.services.agent.strands_tools import make_agent_tools
 
 
-def _make_settings(brave_search_api_key: str = "", http_request_allowed_domains: str = "") -> MagicMock:
+def _make_settings(
+    brave_search_api_key: str = "",
+    http_request_allowed_domains: str = "",
+    enable_generative_ui: bool = False,
+) -> MagicMock:
     settings = MagicMock()
     settings.brave_search_api_key = brave_search_api_key
     settings.http_request_allowed_domains = http_request_allowed_domains
+    # A bare MagicMock() attribute is truthy by default — this must be set
+    # explicitly, or every `if settings.enable_generative_ui:` branch in
+    # make_agent_tools reads as True regardless of what the test intends.
+    settings.enable_generative_ui = enable_generative_ui
     return settings
 
 
@@ -29,7 +37,7 @@ def _tool_names(tools) -> set:
     return {t.tool_name for t in tools}
 
 
-CORE_TOOL_COUNT = 11  # 8 original + query_knowledge, get_pending_questions, confirm_pending_answer
+CORE_TOOL_COUNT = 13  # 8 original + query_knowledge, get_pending_questions, confirm_pending_answer, get_emails, get_my_mentions
 
 
 class TestToolComposition:
@@ -45,6 +53,16 @@ class TestToolComposition:
             tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
         names = _tool_names(tools)
         assert {"query_knowledge", "get_pending_questions", "confirm_pending_answer"}.issubset(names)
+
+    def test_get_emails_registered(self) -> None:
+        with patch("app.core.config.get_settings", return_value=_make_settings()):
+            tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
+        assert "get_emails" in _tool_names(tools)
+
+    def test_get_my_mentions_registered(self) -> None:
+        with patch("app.core.config.get_settings", return_value=_make_settings()):
+            tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
+        assert "get_my_mentions" in _tool_names(tools)
 
     def test_web_search_registered_when_brave_key_configured(self) -> None:
         with patch("app.core.config.get_settings", return_value=_make_settings(brave_search_api_key="bsk-test")):
@@ -69,6 +87,22 @@ class TestToolComposition:
         with patch("app.core.config.get_settings", return_value=settings):
             tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
         assert len(tools) == CORE_TOOL_COUNT + 2
+
+    def test_request_user_input_absent_when_generative_ui_disabled(self) -> None:
+        with patch("app.core.config.get_settings", return_value=_make_settings(enable_generative_ui=False)):
+            tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
+        assert "request_user_input" not in _tool_names(tools)
+        assert len(tools) == CORE_TOOL_COUNT
+
+    def test_request_user_input_registered_when_generative_ui_enabled(self) -> None:
+        with patch("app.core.config.get_settings", return_value=_make_settings(enable_generative_ui=True)):
+            tools = make_agent_tools(db=MagicMock(), user_id=uuid.uuid4())
+        assert "request_user_input" in _tool_names(tools)
+        # propose_action and describe_action_types are gated by the same
+        # flag — see TestProposeAction*/TestDescribeActionTypes.
+        assert "propose_action" in _tool_names(tools)
+        assert "describe_action_types" in _tool_names(tools)
+        assert len(tools) == CORE_TOOL_COUNT + 3
 
 
 def _get_tool(tools, name: str):

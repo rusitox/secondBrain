@@ -126,6 +126,52 @@ class TestChatSessionQuery:
         # Should not raise
         await session._handle_query("test")
 
+    @pytest.mark.asyncio
+    async def test_thinking_event_prints_live_progress(self) -> None:
+        """Regression guard: _handle_query used to key this branch on a
+        "tool_call" event the backend never actually emits (see
+        app.api.schemas.stream.EVENT_SCHEMAS) — it silently never fired.
+        The live "* <label>" progress line must come from "thinking"."""
+        api = _make_api()
+
+        async def _thinking_stream(
+            question: str, session_id: Optional[str] = None,
+        ) -> AsyncGenerator[Tuple[str, Any], None]:
+            yield "thinking", {"id": "t1", "category": "AGENTE", "label": "search_memory", "status": "active"}
+            yield "token", {"text": "listo"}
+            yield "done", {"session_id": "sid", "iterations": 1, "tools_used": ["search_memory"]}
+
+        api.agent_query_stream = _thinking_stream
+        session = ChatSession(api=api, config=_make_config())
+        session._prompt_session = None
+
+        with patch("cli.chat.print_muted") as mock_print_muted:
+            await session._handle_query("test")
+
+        printed = [c.args[0] for c in mock_print_muted.call_args_list]
+        assert any("search_memory" in p for p in printed)
+
+    @pytest.mark.asyncio
+    async def test_thinking_event_deduped_by_id_not_reprinted(self) -> None:
+        api = _make_api()
+
+        async def _thinking_stream(
+            question: str, session_id: Optional[str] = None,
+        ) -> AsyncGenerator[Tuple[str, Any], None]:
+            yield "thinking", {"id": "reasoning", "category": "RAZONAMIENTO", "label": "Priorizando ", "status": "active"}
+            yield "thinking", {"id": "reasoning", "label": "12 ítems", "status": "active"}
+            yield "done", {"session_id": "sid", "iterations": 1, "tools_used": []}
+
+        api.agent_query_stream = _thinking_stream
+        session = ChatSession(api=api, config=_make_config())
+        session._prompt_session = None
+
+        with patch("cli.chat.print_muted") as mock_print_muted:
+            await session._handle_query("test")
+
+        progress_lines = [c.args[0] for c in mock_print_muted.call_args_list if c.args[0].startswith("  * ")]
+        assert len(progress_lines) == 1
+
 
 class TestChatSessionLoop:
     @pytest.mark.asyncio

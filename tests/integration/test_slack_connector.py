@@ -599,3 +599,110 @@ class TestTokenValidation:
         """HTTP error during auth.test returns False without raising."""
         respx.post(f"{SLACK_API_URL}/auth.test").mock(return_value=Response(500))
         assert await connector.validate_token("xoxb-bad") is False
+
+
+# ---------------------------------------------------------------------------
+# Own account id (for mention matching)
+# ---------------------------------------------------------------------------
+
+class TestOwnAccountId:
+    @respx.mock
+    async def test_returns_user_id_on_success(self, connector: SlackConnector) -> None:
+        respx.post(f"{SLACK_API_URL}/auth.test").mock(
+            return_value=Response(200, json={"ok": True, "user_id": "U_OWN"}),
+        )
+        assert await connector.get_own_account_id("xoxb-valid") == "U_OWN"
+
+    @respx.mock
+    async def test_returns_none_when_not_ok(self, connector: SlackConnector) -> None:
+        respx.post(f"{SLACK_API_URL}/auth.test").mock(
+            return_value=Response(200, json={"ok": False}),
+        )
+        assert await connector.get_own_account_id("xoxb-bad") is None
+
+    @respx.mock
+    async def test_returns_none_on_http_error(self, connector: SlackConnector) -> None:
+        respx.post(f"{SLACK_API_URL}/auth.test").mock(return_value=Response(500))
+        assert await connector.get_own_account_id("xoxb-bad") is None
+
+
+# ---------------------------------------------------------------------------
+# Mention resolution
+# ---------------------------------------------------------------------------
+
+class TestMentionResolution:
+    @respx.mock
+    async def test_mention_resolved_in_content(self, connector: SlackConnector) -> None:
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(
+            return_value=_channels_response([{"id": "C001", "name": "general"}]),
+        )
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {"text": "hey <@U002> can you review this?", "user": "U001", "ts": "1000.000"},
+            ]),
+        )
+
+        def users_handler(request):
+            uid = request.url.params.get("user")
+            names = {"U001": "Alice", "U002": "Bob"}
+            return _user_response(uid, display_name=names.get(uid, uid))
+
+        respx.get(f"{SLACK_API_URL}/users.info").mock(side_effect=users_handler)
+
+        items = await connector.fetch_items(access_token="xoxb-test")
+        assert items[0].content == "hey @Bob can you review this?"
+        assert items[0].metadata["mentions"] == ["U002"]
+
+    @respx.mock
+    async def test_mention_only_user_still_resolved(self, connector: SlackConnector) -> None:
+        """A user who is @-mentioned but never posted a message must still
+        get their username resolved — not just message authors."""
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(
+            return_value=_channels_response([{"id": "C001", "name": "general"}]),
+        )
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {"text": "cc <@U999>", "user": "U001", "ts": "1000.000"},
+            ]),
+        )
+        users_route = respx.get(f"{SLACK_API_URL}/users.info").mock(
+            side_effect=lambda request: _user_response(
+                request.url.params.get("user"), display_name="Charlie",
+            ),
+        )
+
+        items = await connector.fetch_items(access_token="xoxb-test")
+        assert items[0].content == "cc @Charlie"
+        called_uids = {c.request.url.params.get("user") for c in users_route.calls}
+        assert {"U001", "U999"}.issubset(called_uids)
+
+    @respx.mock
+    async def test_no_mentions_yields_empty_list(self, connector: SlackConnector) -> None:
+        respx.get(f"{SLACK_API_URL}/conversations.list").mock(
+            return_value=_channels_response([{"id": "C001", "name": "general"}]),
+        )
+        respx.get(f"{SLACK_API_URL}/conversations.history").mock(
+            return_value=_history_response([
+                {"text": "no mentions here", "user": "U001", "ts": "1000.000"},
+            ]),
+        )
+        respx.get(f"{SLACK_API_URL}/users.info").mock(
+            return_value=_user_response("U001", display_name="Alice"),
+        )
+
+        items = await connector.fetch_items(access_token="xoxb-test")
+        assert items[0].metadata["mentions"] == []
+        assert items[0].content == "no mentions here"
+
+    def test_resolve_mentions_unit(self, connector: SlackConnector) -> None:
+        text = "hi <@U1|old_name> and <@U2>"
+        resolved, mentions = connector._resolve_mentions(text, {"U1": "Alice", "U2": "Bob"})
+        assert resolved == "hi @Alice and @Bob"
+        assert mentions == ["U1", "U2"]
+
+    def test_resolve_mentions_falls_back_to_raw_id_when_unresolved(
+        self, connector: SlackConnector,
+    ) -> None:
+        resolved, mentions = connector._resolve_mentions("hi <@U404>", {})
+        assert resolved == "hi @U404"
+        assert mentions == ["U404"]

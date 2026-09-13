@@ -34,3 +34,7 @@ backups/
 # Coverage
 .coverage
 htmlcov/
+
+# Frontend (frontend/ — MAREA, Svelte + Vite)
+node_modules/
+static/marea/

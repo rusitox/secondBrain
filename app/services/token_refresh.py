@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,20 @@ logger = logging.getLogger(__name__)
 
 # Platforms that use short-lived Microsoft Graph tokens
 _MS_PLATFORMS = {Platform.OUTLOOK, Platform.TEAMS}
+
+# Outlook and Teams share ONE MSAL cache file (same MS account, same
+# client_id) — their sync jobs run independently via APScheduler and can
+# land in the same tick, each calling _msal_refresh_sync in its own
+# executor thread. Without this lock, two concurrent read-modify-write
+# cycles on the same file can interleave (one process's write starting
+# before another's finishes) and corrupt it — this is exactly how the
+# cache previously ended up with trailing garbage data ("Extra data: line
+# N column 1"), taking BOTH integrations down with the same error at the
+# same last_sync_at. A process-local threading.Lock is sufficient here:
+# this is a single-instance self-hosted deployment (see e.g.
+# scripts/sync_fathom_incremental.py's hardcoded USER_ID), never multiple
+# processes/workers contending for the same file.
+_msal_cache_lock = threading.Lock()
 
 # Refresh if token expires within this many seconds
 _EXPIRY_BUFFER_SECONDS = 300  # 5 minutes
@@ -64,29 +79,42 @@ def _msal_refresh_sync(client_id: str, authority: str, scopes: str, cache_path: 
     scope_list = scopes.split()
     cache_file = Path(cache_path) if cache_path else Path.home() / ".secondbrain" / "msal_cache.json"
 
-    if not cache_file.exists():
-        logger.warning("MSAL cache not found at %s — cannot refresh token silently", cache_file)
-        return None
+    with _msal_cache_lock:
+        if not cache_file.exists():
+            logger.warning("MSAL cache not found at %s — cannot refresh token silently", cache_file)
+            return None
 
-    cache = SerializableTokenCache()
-    cache.deserialize(cache_file.read_text())
+        cache = SerializableTokenCache()
+        try:
+            cache.deserialize(cache_file.read_text())
+        except (ValueError, json.JSONDecodeError) as e:
+            # A corrupted cache file must fail loudly and distinctly here —
+            # letting json.JSONDecodeError itself propagate up produces an
+            # opaque "Extra data: line N column 1" as the sync error, with
+            # no indication of what actually broke or how to fix it.
+            logger.error(
+                "MSAL cache at %s is corrupted (%s) — delete/regenerate it "
+                "via re-auth; cannot refresh token silently until then",
+                cache_file, e,
+            )
+            return None
 
-    app = PublicClientApplication(client_id, authority=authority, token_cache=cache)
-    accounts = app.get_accounts()
-    if not accounts:
-        logger.warning("No MSAL accounts found in cache — cannot refresh token silently")
-        return None
+        app = PublicClientApplication(client_id, authority=authority, token_cache=cache)
+        accounts = app.get_accounts()
+        if not accounts:
+            logger.warning("No MSAL accounts found in cache — cannot refresh token silently")
+            return None
 
-    result = app.acquire_token_silent(scope_list, account=accounts[0])
-    if not result or "access_token" not in result:
-        logger.warning("MSAL silent refresh failed: %s", result.get("error_description") if result else "no result")
-        return None
+        result = app.acquire_token_silent(scope_list, account=accounts[0])
+        if not result or "access_token" not in result:
+            logger.warning("MSAL silent refresh failed: %s", result.get("error_description") if result else "no result")
+            return None
 
-    if cache.has_state_changed:
-        cache_file.write_text(cache.serialize())
-        logger.debug("MSAL cache updated")
+        if cache.has_state_changed:
+            cache_file.write_text(cache.serialize())
+            logger.debug("MSAL cache updated")
 
-    return result["access_token"]
+        return result["access_token"]
 
 
 async def ensure_fresh_token(integration: Integration, db: AsyncSession) -> str:

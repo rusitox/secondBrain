@@ -6,6 +6,7 @@ the documents table, and applies optional metadata filters.
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, select, text
@@ -22,6 +23,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_SIMILARITY_THRESHOLD = 0.3
 DEFAULT_TOP_K = 10
 
+# Pure semantic similarity has no notion of "recent" — a query like "latest
+# mentions of X" scores documents purely on topical closeness, so a widened
+# candidate pool is pulled by similarity first (bounded, not a full scan)
+# and then re-ranked by recency, instead of only ever looking at the top-K
+# most similar rows.
+RECENCY_CANDIDATE_POOL = 50
+
 
 @dataclass
 class SearchResult:
@@ -33,6 +41,7 @@ class SearchResult:
     source_id: str
     metadata: Dict[str, Any]
     similarity: float
+    _fallback_timestamp: Optional[datetime] = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -44,6 +53,32 @@ class SearchResult:
             "similarity": self.similarity,
         }
 
+    def recency_key(self) -> datetime:
+        """Best-effort timestamp for recency ranking.
+
+        Prefers the source content's own timestamp (metadata["timestamp"],
+        e.g. when a message was sent) over ingestion time — "recent" should
+        mean recent in the real world, not recently synced. Falls back to
+        the document's created_at (passed in as _fallback_timestamp) when
+        the metadata timestamp is missing or unparseable.
+        """
+        raw = self.metadata.get("timestamp") if self.metadata else None
+        if raw:
+            try:
+                normalized = str(raw).replace("Z", "+00:00")
+                dt = datetime.fromisoformat(normalized)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except ValueError:
+                pass
+        fallback = self._fallback_timestamp
+        if fallback is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        # SQLite (used in tests) doesn't preserve tzinfo on DateTime(timezone=True)
+        # columns — normalize so recency comparisons never mix naive/aware datetimes.
+        return fallback if fallback.tzinfo is not None else fallback.replace(tzinfo=timezone.utc)
+
 
 async def semantic_search(
     db: AsyncSession,
@@ -53,13 +88,19 @@ async def semantic_search(
     top_k: int = DEFAULT_TOP_K,
     threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     filters: Optional[SearchFilters] = None,
+    sort: str = "relevance",
 ) -> List[SearchResult]:
     """Run semantic search for a user's documents.
 
     1. Embeds the query text via the embedder.
     2. Queries pgvector for nearest neighbors (cosine distance).
     3. Applies metadata filters (date range, source, author).
-    4. Returns results sorted by similarity (highest first).
+    4. Returns results sorted by similarity (highest first), unless
+       sort="recent" — pure semantic similarity has no notion of recency,
+       so for questions like "latest mentions of X" a wider candidate pool
+       is pulled by similarity/threshold as usual, then re-ranked by
+       SearchResult.recency_key() (source timestamp, falling back to
+       ingestion time) and trimmed back down to top_k.
     """
     # Step 1: Embed the query
     query_embedding = await embedder.embed_single(query)
@@ -90,6 +131,7 @@ async def semantic_search(
                 Document.metadata_["timestamp"].astext <= filters.date_to.isoformat()
             )
 
+    candidate_limit = top_k if sort == "relevance" else max(top_k, RECENCY_CANDIDATE_POOL)
     stmt = (
         select(
             Document,
@@ -97,7 +139,7 @@ async def semantic_search(
         )
         .where(and_(*conditions))
         .order_by(cosine_distance.asc())
-        .limit(top_k)
+        .limit(candidate_limit)
     )
 
     result = await db.execute(stmt)
@@ -117,11 +159,16 @@ async def semantic_search(
                 source_id=doc.source_id,
                 metadata=doc.metadata_ or {},
                 similarity=round(similarity, 4),
+                _fallback_timestamp=doc.created_at,
             )
         )
 
+    if sort == "recent":
+        search_results.sort(key=lambda r: r.recency_key(), reverse=True)
+        search_results = search_results[:top_k]
+
     logger.info(
-        "Semantic search for user=%s returned %d results (query=%r, top_k=%d, threshold=%.2f)",
-        user_id, len(search_results), query[:50], top_k, threshold,
+        "Semantic search for user=%s returned %d results (query=%r, top_k=%d, threshold=%.2f, sort=%s)",
+        user_id, len(search_results), query[:50], top_k, threshold, sort,
     )
     return search_results

@@ -27,12 +27,19 @@ the connector uses it for everything (channels + DMs) automatically.
 """
 import logging
 import asyncio
+import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
 from app.services.connectors.base import BaseConnector, ConnectorItem
+
+# Slack's raw mention syntax in message text, e.g. "<@U012ABC>" or, for a
+# link-styled mention, "<@U012ABC|alice>" — the display-name suffix (if
+# present) is Slack's own stale cache and is ignored in favor of name_map,
+# which is resolved fresh via users.info on every sync.
+_MENTION_RE = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
 
 logger = logging.getLogger(__name__)
 
@@ -192,21 +199,24 @@ class SlackConnector(BaseConnector):
                                 reply["_is_dm"] = True
                                 raw_messages.append(reply)
 
-            # 3. Resolve all user IDs to display names in one pass
-            # Use channel_token for user resolution (bot token always has users:read)
+            # 3. Resolve all user IDs to display names in one pass — authors
+            # AND anyone @-mentioned in a message body, or a mention would
+            # resolve to nothing (see _resolve_mentions below).
             user_ids: Set[str] = set()
             for msg in raw_messages:
                 uid = msg.get("user", "")
                 if uid:
                     user_ids.add(uid)
+                user_ids.update(_MENTION_RE.findall(msg.get("text", "")))
 
             name_map = await self._resolve_usernames(client, channel_headers, user_ids)
 
             # 4. Build ConnectorItems
             for msg in raw_messages:
-                text = msg.get("text", "")
-                if not text or not text.strip():
+                raw_text = msg.get("text", "")
+                if not raw_text or not raw_text.strip():
                     continue
+                text, mentions = self._resolve_mentions(raw_text, name_map)
 
                 uid = msg.get("user", "")
                 author = name_map.get(uid, uid) if uid else ""
@@ -229,6 +239,7 @@ class SlackConnector(BaseConnector):
                         "thread_ts": thread_ts,
                         "is_thread_reply": bool(thread_ts and thread_ts != ts),
                         "is_dm": is_dm,
+                        "mentions": mentions,
                     },
                 ))
 
@@ -248,6 +259,22 @@ class SlackConnector(BaseConnector):
                 return data.get("ok", False)
         except httpx.HTTPError:
             return False
+
+    async def get_own_account_id(self, access_token: str) -> Optional[str]:
+        """Return this token's own Slack user_id via auth.test — needed to
+        later tell "a message that mentions me" (<@this_id>) apart from one
+        mentioning someone else."""
+        try:
+            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{SLACK_API_URL}/auth.test",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("user_id") if data.get("ok") else None
+        except httpx.HTTPError:
+            return None
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -375,6 +402,24 @@ class SlackConnector(BaseConnector):
                 name_map[uid] = uid
 
         return name_map
+
+    @staticmethod
+    def _resolve_mentions(text: str, name_map: Dict[str, str]) -> Tuple[str, List[str]]:
+        """Replace raw "<@UID>" mention tokens with "@DisplayName" and
+        return the raw mentioned ids alongside.
+
+        Storing the resolved text is what makes a mention findable by
+        semantic/keyword search at all — the raw Slack ID means nothing to
+        either. The raw id list is kept separately for an exact-match
+        "was I mentioned" filter (see app.services.agent.tools.mentions),
+        since a display name alone can't be matched reliably (nicknames,
+        "unknown" fallbacks, name collisions).
+        """
+        mentions = _MENTION_RE.findall(text)
+        resolved = _MENTION_RE.sub(
+            lambda m: f"@{name_map.get(m.group(1), m.group(1))}", text,
+        )
+        return resolved, mentions
 
     async def _api_call(
         self,

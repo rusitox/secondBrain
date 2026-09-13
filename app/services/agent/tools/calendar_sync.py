@@ -1,5 +1,6 @@
 """Calendar sync tool — fetch today's calendar events from knowledge base."""
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -11,6 +12,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.document import Document
 
 logger = logging.getLogger(__name__)
+
+_CHUNK_SUFFIX_RE = re.compile(r"#chunk(\d+)$")
+
+
+def _base_source_id(source_id: str) -> str:
+    """Strip the ingestion pipeline's '#chunk{i}' suffix, if any.
+
+    A long meeting transcript is split into multiple Document rows
+    (source_id, source_id#chunk1, source_id#chunk2, ...) by
+    app.services.ingestion.pipeline — all of them describe the same
+    calendar event and must collapse back into one.
+    """
+    return _CHUNK_SUFFIX_RE.sub("", source_id or "")
+
+
+def _chunk_index(source_id: str) -> int:
+    match = _CHUNK_SUFFIX_RE.search(source_id or "")
+    return int(match.group(1)) if match else 0
 
 
 def _parse_event_timestamp(timestamp: str) -> Optional[datetime]:
@@ -73,42 +92,60 @@ class CalendarSyncTool:
             upcoming_only: If True (default), exclude events that have already started.
 
         Looks for documents with source='outlook' and metadata.type='calendar_event'
-        that match the target date. Filters metadata in Python for cross-DB
-        compatibility (JSONB operators are PG-only).
+        that match the target date. The type filter runs in SQL on Postgres
+        (JSONB ->> 'type') — this table can hold hundreds of thousands of a
+        user's Outlook documents (emails included), and pulling all of them
+        into Python just to keep a few hundred calendar events made this
+        tool noticeably slow. SQLite (used in tests) has no JSONB operators,
+        so it still filters in Python there — same end result either way,
+        just faster on the real database. The date/timezone comparison
+        below still happens in Python regardless of dialect, since it needs
+        actual datetime parsing, not a string match. A single calendar
+        event that was chunked into multiple Document rows at ingestion
+        time is collapsed back into one entry (see _base_source_id).
+
+        "Today" is evaluated in the user's own timezone, not UTC — an event
+        at 23:30 local time can fall on a different UTC calendar day, and
+        comparing raw UTC date strings both drops and mis-times events near
+        local midnight.
         """
         now = datetime.now(timezone.utc)
         target_date = date or now
-        date_str = target_date.strftime("%Y-%m-%d")
+        local_tz = dateutil_tz.gettz(user_timezone) or dateutil_tz.UTC
+        target_date_str = target_date.astimezone(local_tz).strftime("%Y-%m-%d")
 
-        # Query Outlook documents for this user, then filter calendar events in Python
-        # (JSONB operators not supported on SQLite used in tests)
-        stmt = (
-            select(Document)
-            .where(
-                and_(
-                    Document.user_id == user_id,
-                    Document.source == "outlook",
-                )
-            )
-        )
+        conditions = [Document.user_id == user_id, Document.source == "outlook"]
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            conditions.append(Document.metadata_["type"].astext == "calendar_event")
+        stmt = select(Document).where(and_(*conditions))
         result = await db.execute(stmt)
         docs = result.scalars().all()
 
-        events: List[Dict[str, Any]] = []
+        # One representative Document per real-world event (the lowest chunk
+        # index, i.e. the first chunk), keyed by the event's base source_id.
+        event_docs: Dict[str, Document] = {}
         for doc in docs:
             meta = doc.metadata_ or {}
             if meta.get("type") != "calendar_event":
                 continue
             timestamp = meta.get("timestamp", "")
-            if date_str not in timestamp:
+            event_dt = _parse_event_timestamp(timestamp)
+            if event_dt is None:
+                continue
+            if event_dt.astimezone(local_tz).strftime("%Y-%m-%d") != target_date_str:
+                continue
+            if upcoming_only and event_dt <= now:
                 continue
 
-            if upcoming_only:
-                event_dt = _parse_event_timestamp(timestamp)
-                # Skip events that have already started; fail-open if unparseable
-                if event_dt is not None and event_dt <= now:
-                    continue
+            base_id = _base_source_id(doc.source_id)
+            existing = event_docs.get(base_id)
+            if existing is None or _chunk_index(doc.source_id) < _chunk_index(existing.source_id):
+                event_docs[base_id] = doc
 
+        events: List[Dict[str, Any]] = []
+        for doc in event_docs.values():
+            meta = doc.metadata_ or {}
+            timestamp = meta.get("timestamp", "")
             events.append({
                 "subject": meta.get("subject", ""),
                 "timestamp": timestamp,
@@ -123,7 +160,7 @@ class CalendarSyncTool:
             "Calendar: found %d %s events for %s (user=%s)",
             len(events),
             "upcoming" if upcoming_only else "total",
-            date_str,
+            target_date_str,
             user_id,
         )
         return events

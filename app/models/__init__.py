@@ -14,6 +14,10 @@ from app.models.pending_question import (
     PendingQuestion, QuestionTarget, QuestionStatus, ResolvedBy,
 )
 from app.models.processed_document import ProcessedDocument
+from app.models.user_interaction import UserInteraction, InteractionStatus
+from app.models.agent_session_state import AgentSessionState
+from app.models.proposed_action import ProposedAction, ActionStatus
+from app.models.action_audit import ActionAuditLog
 
 __all__ = [
     "Base",
@@ -41,4 +45,10 @@ __all__ = [
     "QuestionStatus",
     "ResolvedBy",
     "ProcessedDocument",
+    "UserInteraction",
+    "InteractionStatus",
+    "AgentSessionState",
+    "ProposedAction",
+    "ActionStatus",
+    "ActionAuditLog",
 ]

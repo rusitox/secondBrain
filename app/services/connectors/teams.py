@@ -131,7 +131,7 @@ class TeamsConnector(BaseConnector):
         client: httpx.AsyncClient,
         headers: Dict[str, str],
         url: str,
-        params: Dict[str, Any],
+        params: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """Make a Graph API call with rate limit retry and exponential backoff."""
         last_error: Optional[Exception] = None
@@ -172,7 +172,7 @@ class TeamsConnector(BaseConnector):
         """List chats sorted by most recently updated, up to MAX_PAGES pages."""
         chats: List[Dict[str, Any]] = []
         url: Optional[str] = f"{GRAPH_BASE_URL}/me/chats"
-        params: Dict[str, Any] = {
+        params: Optional[Dict[str, Any]] = {
             "$top": DEFAULT_PAGE_SIZE,
             "$select": "id,topic,chatType,lastUpdatedDateTime",
             # NOTE: $orderby is not supported on /me/chats — Graph API returns
@@ -193,8 +193,11 @@ class TeamsConnector(BaseConnector):
             # Stop early once we have enough chats
             if len(chats) >= MAX_CHATS:
                 break
+            # params=None (not {}) — see msgraph.py's _fetch_emails for why:
+            # httpx.get(url_with_query, params={}) overwrites the URL's own
+            # query string, silently discarding @odata.nextLink's cursor.
             url = data.get("@odata.nextLink")
-            params = {}
+            params = None
 
         return chats
 
@@ -214,7 +217,7 @@ class TeamsConnector(BaseConnector):
         """
         messages: List[Dict[str, Any]] = []
         url: Optional[str] = f"{GRAPH_BASE_URL}/me/chats/{chat_id}/messages"
-        params: Dict[str, Any] = {"$top": DEFAULT_PAGE_SIZE}
+        params: Optional[Dict[str, Any]] = {"$top": DEFAULT_PAGE_SIZE}
         since_utc = since.astimezone(timezone.utc) if since else None
 
         # Limit to 5 pages per chat (250 messages max) to keep sync fast
@@ -244,7 +247,8 @@ class TeamsConnector(BaseConnector):
             if since_utc and not found_newer:
                 break
 
+            # params=None (not {}) — see _list_chats above for why.
             url = data.get("@odata.nextLink")
-            params = {}
+            params = None
 
         return messages

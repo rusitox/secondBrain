@@ -1,13 +1,48 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.commitment import Commitment, CommitmentStatus
+from app.models.user import User
 from app.api.schemas.commitment import CommitmentCreate, CommitmentUpdate
+
+# Free-text owner values the commitment detector emits when it could not
+# identify a specific person — never treat these as "the account holder".
+_AMBIGUOUS_OWNERS: Set[str] = {"", "unknown", "speaker"}
+
+
+def is_owned_by_user(owner: Optional[str], user: Optional[User]) -> bool:
+    """Whether a commitment's free-text `owner` clearly refers to `user`.
+
+    Commitment.owner is unstructured text an LLM pulled out of meeting/
+    message content — it can just as easily name someone else ("Daniel",
+    "Santiago") as the account holder. Surfacing someone else's commitment
+    as the user's own is misleading, so this fails closed: an owner that
+    doesn't clearly match is treated as NOT the user's, not as "probably
+    mine". Matches against full name, first name, email, and the email's
+    local part, case-insensitively.
+    """
+    if not owner or user is None:
+        return False
+    owner_norm = owner.strip().lower()
+    if not owner_norm or owner_norm in _AMBIGUOUS_OWNERS:
+        return False
+
+    candidates: Set[str] = set()
+    full_name = (user.full_name or "").strip().lower()
+    if full_name:
+        candidates.add(full_name)
+        candidates.add(full_name.split()[0])
+    email = (user.email or "").strip().lower()
+    if email:
+        candidates.add(email)
+        candidates.add(email.split("@")[0])
+
+    return owner_norm in candidates
 
 
 async def create_commitment(db: AsyncSession, data: CommitmentCreate) -> Commitment:
@@ -71,6 +106,10 @@ async def update_commitment(
         commitment.due_date = data.due_date
     if data.priority is not None:
         commitment.priority = data.priority
+    if data.owner is not None:
+        commitment.owner = data.owner
+    if data.commitment_text is not None:
+        commitment.commitment_text = data.commitment_text
     await db.flush()
     await db.refresh(commitment)
     return commitment

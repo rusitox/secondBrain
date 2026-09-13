@@ -155,11 +155,21 @@ class ChatSession:
             async for event, data in self._api.agent_query_stream(
                 question, session_id=self._session_id
             ):
-                if event == "tool_call":
-                    tool = data.get("tool", "")
-                    if tool not in tools_announced:
-                        print_muted("  * %s" % tool)
-                        tools_announced.append(tool)
+                if event == "thinking":
+                    # Replaces the old "tool_call" event this branch used to
+                    # key on — the backend stopped emitting that name when
+                    # app/api/schemas/stream.py's EVENT_SCHEMAS was
+                    # introduced (see that module and
+                    # strands_orchestrator.py's _StreamingCallbackHandler),
+                    # and this branch silently never fired since. Dedupe by
+                    # `id` (a toolUseId, or "reasoning") rather than tool
+                    # name — reasoning's repeated "active" emissions share
+                    # one id, so only its first delta prints here.
+                    step_id = data.get("id", "")
+                    label = data.get("label")
+                    if data.get("status") == "active" and label and step_id not in tools_announced:
+                        print_muted("  * %s" % label)
+                        tools_announced.append(step_id)
                 elif event == "token":
                     if not answer_started:
                         console.print()

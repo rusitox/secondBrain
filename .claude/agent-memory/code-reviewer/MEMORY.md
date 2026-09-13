@@ -21,3 +21,5 @@
 - [Agent Memory Upgrade Review](project_agent_memory_review.md) -- flush-no-commit, prompt injection (5th!), ORM/server_default mismatch, ConversationTurn never written, SDK objects in dict messages
 - [Voice Interface Review](project_voice_interface_review.md) -- No content-type check, bare except (14th+), str(e) to SSE client, get_event_loop deprecated, TTS resource leak, XSS in marked.js
 - [User Profile - Mariano](user_mariano.md) -- Building secondBrain/Digital Twin with FastAPI+SQLAlchemy+pgvector on Python 3.8
+- [MAREA Fase 5 Review](project_marea_fase5_review.md) -- systems/status backlog-threshold asymmetry, TTS Web Audio node leak, shared-rAF race
+- [MAREA Fase 6 Review](project_marea_fase6_review.md) -- optional select field unsubmittable (empty-string vs undefined/null), SSE error discards partial action_proposed/session state

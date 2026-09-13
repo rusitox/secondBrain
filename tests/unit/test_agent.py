@@ -13,6 +13,7 @@ import pytest
 from app.services.agent.tools.memory_retriever import MemoryRetrieverTool
 from app.services.agent.tools.task_manager import TaskManagerTool
 from app.services.agent.tools.calendar_sync import CalendarSyncTool
+from app.services.agent.tools.email_reader import EmailReaderTool
 from app.services.agent.tools.style_analyzer import StyleAnalyzerTool
 
 
@@ -38,6 +39,19 @@ class TestMemoryRetrieverTool:
             results = await tool.run(AsyncMock(), uuid.uuid4(), "test query")
         assert len(results) == 1
         assert results[0]["source"] == "slack"
+
+    @pytest.mark.asyncio
+    async def test_run_forwards_sort_to_semantic_search(self) -> None:
+        """sort="recent" must reach semantic_search — it's what lets it
+        re-rank results by timestamp instead of pure similarity."""
+        mock_embedder = MagicMock()
+        tool = MemoryRetrieverTool(embedder=mock_embedder)
+
+        with patch("app.services.agent.tools.memory_retriever.semantic_search", new_callable=AsyncMock) as mock_search:
+            mock_search.return_value = []
+            await tool.run(AsyncMock(), uuid.uuid4(), "latest mentions", sort="recent")
+
+        assert mock_search.call_args.kwargs["sort"] == "recent"
 
 
 class TestTaskManagerTool:
@@ -75,6 +89,83 @@ class TestCalendarSyncTool:
         mock_db.execute = AsyncMock(return_value=mock_result)
         events = await tool.get_today_events(mock_db, uuid.uuid4())
         assert events == []
+
+    @pytest.mark.asyncio
+    async def test_postgres_pushes_type_filter_into_sql(self) -> None:
+        """On Postgres, the metadata.type=='calendar_event' filter should
+        run in the DB query itself, not just in the Python loop afterward
+        — this table can hold hundreds of thousands of a user's Outlook
+        documents (emails included), and pulling all of them into Python
+        just to keep a few hundred calendar events made this tool
+        noticeably slow in practice."""
+        tool = CalendarSyncTool()
+        mock_db = AsyncMock()
+        mock_db.bind = MagicMock()
+        mock_db.bind.dialect.name = "postgresql"
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        await tool.get_today_events(mock_db, uuid.uuid4())
+
+        executed_stmt = mock_db.execute.call_args[0][0]
+        compiled = str(executed_stmt.compile(compile_kwargs={"literal_binds": False}))
+        assert "->>" in compiled  # Postgres JSONB text-extraction operator
+
+    @pytest.mark.asyncio
+    async def test_sqlite_does_not_push_type_filter_into_sql(self) -> None:
+        """SQLite (used in tests) has no JSONB operators — the type filter
+        must stay purely in the Python loop there, matching existing
+        behavior exactly."""
+        tool = CalendarSyncTool()
+        mock_db = AsyncMock()
+        mock_db.bind = MagicMock()
+        mock_db.bind.dialect.name = "sqlite"
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        await tool.get_today_events(mock_db, uuid.uuid4())
+
+        executed_stmt = mock_db.execute.call_args[0][0]
+        compiled = str(executed_stmt.compile(compile_kwargs={"literal_binds": False}))
+        assert "->>" not in compiled
+
+
+class TestEmailReaderTool:
+    @pytest.mark.asyncio
+    async def test_postgres_pushes_type_filter_into_sql(self) -> None:
+        """Same fast-path fix as CalendarSyncTool — see that class's
+        matching test for why this table needs SQL-side filtering."""
+        tool = EmailReaderTool()
+        mock_db = AsyncMock()
+        mock_db.bind = MagicMock()
+        mock_db.bind.dialect.name = "postgresql"
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        await tool.get_emails_for_date(mock_db, uuid.uuid4())
+
+        executed_stmt = mock_db.execute.call_args[0][0]
+        compiled = str(executed_stmt.compile(compile_kwargs={"literal_binds": False}))
+        assert "->>" in compiled
+
+    @pytest.mark.asyncio
+    async def test_sqlite_does_not_push_type_filter_into_sql(self) -> None:
+        tool = EmailReaderTool()
+        mock_db = AsyncMock()
+        mock_db.bind = MagicMock()
+        mock_db.bind.dialect.name = "sqlite"
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        await tool.get_emails_for_date(mock_db, uuid.uuid4())
+
+        executed_stmt = mock_db.execute.call_args[0][0]
+        compiled = str(executed_stmt.compile(compile_kwargs={"literal_binds": False}))
+        assert "->>" not in compiled
 
 
 class TestStyleAnalyzerTool:

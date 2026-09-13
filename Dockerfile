@@ -1,3 +1,16 @@
+# Stage 0: Frontend build (MAREA — see frontend/vite.config.ts)
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ .
+# vite.config.ts's outDir "../static/marea" is relative to /frontend, so
+# this lands at /static/marea — copied into the runtime image below.
+RUN npm run build
+
 # Stage 1: Build dependencies
 FROM python:3.11-slim-bookworm AS builder
 
@@ -34,6 +47,13 @@ WORKDIR /app
 COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
+# static/ was never copied here before — app/main.py's mounts for
+# /voice-ui and /marea were silently 404ing in every deployed image ("if
+# os.path.isdir(...)" made the miss invisible; it now at least logs a
+# warning). static/voice/ is hand-written and copied as-is; static/marea/
+# is MAREA's build output from the frontend-builder stage above.
+COPY static/voice ./static/voice
+COPY --from=frontend-builder /static/marea ./static/marea
 COPY infra/docker-entrypoint.sh /docker-entrypoint.sh
 
 RUN chmod +x /docker-entrypoint.sh

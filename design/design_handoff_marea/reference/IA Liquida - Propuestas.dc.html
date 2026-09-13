@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Michroma&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0e1116;font-family:'Space Grotesk',system-ui,sans-serif}
+a{color:#7ec8ff}a:hover{color:#b7e3ff}
+.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(255,255,255,.07);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#eaf2ff;color:#0e1116;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 13px/1.2 'Space Grotesk',sans-serif;color:#eaf2ff}
+.dv-intro{max-width:960px;font:12px/1.6 'Space Grotesk',sans-serif;color:rgba(234,242,255,.55);margin:0 0 24px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(255,255,255,.12);color:#eaf2ff;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11.5px/1.3 'Space Grotesk',sans-serif;color:rgba(234,242,255,.6)}
+.dv-card{max-width:100%;background:#000;border:1px solid rgba(255,255,255,.08);border-radius:10px;box-shadow:0 2px 16px rgba(0,0,0,.4);overflow:hidden}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:24px 0 0;font:12px/1.5 'Space Grotesk',sans-serif;color:rgba(234,242,255,.45)}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes condense{from{opacity:0;filter:blur(14px)}to{opacity:1;filter:blur(0)}}
+@keyframes bar{0%,100%{transform:scaleY(.22)}50%{transform:scaleY(1)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</helmet>
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Conversación con IA líquida — 3 conceptos vivos</span></div>
+<p class="dv-intro">Supuestos: interacción voz-primero · lienzo 1280×800 (adaptable a móvil después) · cada propuesta corre su demo automática ciclando reposo → escucha → pensando → respuesta → panel; los chips inferiores (o un clic sobre el agua) saltan de estado. El agua es la presencia de la IA: cede el centro cuando hay que mostrar información o un formulario generado on-the-fly. Tweaks disponibles: velocidad, energía y auto-demo.</p>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a" data-screen-label="1a MAREA">
+<div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>MAREA — esfera metaball que se divide, se abre en ola y se repliega a la esquina · oscuro profundo</div>
+<div class="dv-card" style="width:1280px;height:800px;position:relative;overflow:hidden;background:radial-gradient(1100px 760px at 50% 44%,#0b1c36 0%,#060d1c 55%,#030710 100%);border:1px solid rgba(120,190,255,.14)">
+<canvas id="cvA" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+<div onClick="{{ cycleA }}" title="Tocar el agua para cambiar de estado" style="position:absolute;inset:0;cursor:pointer"></div>
+<div style="position:absolute;top:28px;left:32px;display:flex;flex-direction:column;gap:7px;pointer-events:none">
+<div style="font-family:Michroma,sans-serif;font-size:13px;letter-spacing:.3em;color:#9fd8ff">MAREA<span style="color:rgba(159,216,255,.45)"> ·01</span></div>
+<div style="display:flex;align-items:center;gap:8px"><span style="width:7px;height:7px;border-radius:50%;background:#54e0ff;box-shadow:0 0 10px #54e0ff;animation:pulse 2s infinite"></span><span style="font-size:11px;letter-spacing:.22em;color:rgba(210,240,255,.78)">{{ labelA }}</span></div>
+</div>
+<div style="position:absolute;top:28px;right:32px;text-align:right;pointer-events:none">
+<div style="font-size:10px;letter-spacing:.2em;color:rgba(160,210,255,.6)">NÚCLEO CONECTADO A</div>
+<div style="font-size:12px;color:rgba(224,245,255,.85);margin-top:4px">Gmail · Slack · Calendar · Asana</div>
+</div>
+<div style="position:absolute;left:50%;bottom:120px;transform:translateX(-50%);display:flex;gap:5px;align-items:flex-end;height:34px;opacity:{{ voA }};transition:opacity .5s;pointer-events:none">
+<span style="width:4px;height:100%;background:linear-gradient(#54e0ff,#1a6fd4);border-radius:2px;transform-origin:bottom;animation:bar .74s ease-in-out -.1s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#54e0ff,#1a6fd4);border-radius:2px;transform-origin:bottom;animation:bar .58s ease-in-out -.3s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#54e0ff,#1a6fd4);border-radius:2px;transform-origin:bottom;animation:bar .92s ease-in-out -.2s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#54e0ff,#1a6fd4);border-radius:2px;transform-origin:bottom;animation:bar .66s ease-in-out -.45s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#54e0ff,#1a6fd4);border-radius:2px;transform-origin:bottom;animation:bar .84s ease-in-out -.15s infinite"></span>
+</div>
+<div style="position:absolute;inset:0;pointer-events:none">
+<span id="lblA1" style="position:absolute;left:0;top:0;opacity:0;transition:opacity .4s;font-size:10px;letter-spacing:.16em;font-weight:500;color:#bfe9ff;white-space:nowrap"><span style="color:#54e0ff">●</span> AG · CORREO</span>
+<span id="lblA2" style="position:absolute;left:0;top:0;opacity:0;transition:opacity .4s;font-size:10px;letter-spacing:.16em;font-weight:500;color:#bfe9ff;white-space:nowrap"><span style="color:#54e0ff">●</span> AG · SLACK</span>
+<span id="lblA3" style="position:absolute;left:0;top:0;opacity:0;transition:opacity .4s;font-size:10px;letter-spacing:.16em;font-weight:500;color:#bfe9ff;white-space:nowrap"><span style="color:#54e0ff">●</span> AG · CALENDAR</span>
+<span id="lblA4" style="position:absolute;left:0;top:0;opacity:0;transition:opacity .4s;font-size:10px;letter-spacing:.16em;font-weight:500;color:#bfe9ff;white-space:nowrap"><span style="color:#9fb0ff">●</span> HERR · RANKING</span>
+<span id="lblA5" style="position:absolute;left:0;top:0;opacity:0;transition:opacity .4s;font-size:10px;letter-spacing:.16em;font-weight:500;color:#bfe9ff;white-space:nowrap"><span style="color:#6ef2c5">●</span> SYS · ASANA</span>
+</div>
+<sc-if value="{{ traceA }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;left:32px;top:118px;width:300px;background:rgba(9,26,50,.58);backdrop-filter:blur(14px);border:1px solid rgba(120,200,255,.2);border-radius:16px;padding:18px 20px 12px;pointer-events:none;animation:condense .6s both">
+<div style="font-size:10px;letter-spacing:.25em;color:#6fc9ff">PROCESO DE PENSAMIENTO</div>
+<div style="font-size:10px;color:rgba(190,225,255,.55);margin:4px 0 8px">agentes · herramientas · sistemas</div>
+<sc-for list="{{ stepsA }}" as="st" hint-placeholder-count="3">
+<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid rgba(120,200,255,.08);animation:fadeUp .4s both">
+<span style="{{ st.badgeStyle }}">{{ st.badge }}</span>
+<div style="flex:1;font-size:11.5px;line-height:1.4;color:#dceeff">{{ st.text }}</div>
+<span style="{{ st.statusStyle }}">{{ st.status }}</span>
+</div>
+</sc-for>
+</div>
+</sc-if>
+<sc-if value="{{ respondA }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;left:56%;top:118px;transform:translateX(-50%);width:600px;padding:26px 32px;background:rgba(9,26,50,.6);backdrop-filter:blur(16px);border:1px solid rgba(120,200,255,.22);border-radius:18px;animation:condense .9s .25s both">
+<sc-if value="{{ askA }}" hint-placeholder-val="{{ true }}">
+<div style="font-size:10px;letter-spacing:.25em;color:#6fc9ff;margin-bottom:12px">LA IA NECESITA UN DATO TUYO</div>
+<div style="font-size:19px;line-height:1.5;color:#eaf6ff;margin-bottom:18px"><b style="color:#7fe3ff;font-weight:600">Valentina</b> espera tu respuesta sobre el <b style="color:#7fe3ff;font-weight:600">presupuesto Q4</b>. ¿Qué decidís?</div>
+<div style="display:flex;gap:8px;margin-bottom:14px">
+<sc-for list="{{ decChipsA }}" as="d" hint-placeholder-count="3"><button onClick="{{ d.onClick }}" style="{{ d.style }}">{{ d.label }}</button></sc-for>
+</div>
+<input value="{{ inputA }}" onChange="{{ onInputA }}" onFocus="{{ pauseA }}" placeholder="Agregá un comentario, ej: «ajustar la partida de viajes»" style="width:100%;box-sizing:border-box;padding:12px 14px;background:rgba(4,16,34,.6);border:1px solid rgba(120,200,255,.3);border-radius:10px;font:14px 'Space Grotesk',sans-serif;color:#eaf6ff;outline:none;margin-bottom:16px">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+<span style="font-size:10.5px;color:rgba(190,225,255,.55)">La demo se pausa mientras escribís</span>
+<button onClick="{{ genA }}" style="padding:11px 22px;background:#54e0ff;color:#052540;border:none;border-radius:10px;font:600 12px 'Space Grotesk',sans-serif;letter-spacing:.06em;cursor:pointer;box-shadow:0 0 18px rgba(84,224,255,.4)" style-hover="transform:translateY(-1px)">GENERAR RESPUESTA →</button>
+</div>
+</sc-if>
+<sc-if value="{{ draftShowA }}" hint-placeholder-val="{{ false }}">
+<div style="font-size:10px;letter-spacing:.25em;color:#6ef2c5;margin-bottom:12px">RESPUESTA GENERADA · LISTA PARA ENVIAR</div>
+<div style="background:rgba(4,16,34,.55);border:1px solid rgba(120,200,255,.18);border-radius:12px;padding:16px 18px;animation:condense .6s both">
+<div style="font-size:11px;color:rgba(190,225,255,.7);padding-bottom:10px;border-bottom:1px solid rgba(120,200,255,.12);margin-bottom:12px">Para: <b style="color:#dceeff">Valentina Ruiz</b> · Asunto: <b style="color:#dceeff">Re: Presupuesto Q4</b></div>
+<div style="font-size:14.5px;line-height:1.6;color:#eaf6ff">{{ draftA }}</div>
+<div style="font-size:11px;color:rgba(190,225,255,.55);margin-top:12px">Redactado por MAREA con tu decisión — editable antes de enviar.</div>
+</div>
+<div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
+<button onClick="{{ editA }}" style="padding:10px 18px;background:rgba(8,28,56,.5);color:rgba(205,238,255,.85);border:1px solid rgba(120,200,255,.28);border-radius:10px;font:500 12px 'Space Grotesk',sans-serif;cursor:pointer">← Editar dato</button>
+<button onClick="{{ sendA }}" style="padding:10px 22px;background:#6ef2c5;color:#04301f;border:none;border-radius:10px;font:600 12px 'Space Grotesk',sans-serif;letter-spacing:.06em;cursor:pointer;box-shadow:0 0 18px rgba(110,242,197,.35)" style-hover="transform:translateY(-1px)">ENVIAR ✓</button>
+</div>
+</sc-if>
+</div>
+</sc-if>
+<sc-if value="{{ panelA }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;padding:98px 44px 0;pointer-events:none">
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px">
+<div style="background:rgba(9,26,50,.52);backdrop-filter:blur(14px);border:1px solid rgba(120,200,255,.18);border-radius:16px;padding:20px 22px;animation:condense .8s .05s both">
+<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px"><span style="font-size:10px;letter-spacing:.22em;color:#6fc9ff">CORREO</span><span style="font-size:11px;color:rgba(190,225,255,.8)">3 importantes</span></div>
+<div style="padding:9px 0;border-bottom:1px solid rgba(120,200,255,.1)"><div style="font-size:13px;color:#eaf6ff;font-weight:500">Valentina Ruiz</div><div style="font-size:12px;color:rgba(190,225,255,.8)">Presupuesto Q4 · 09:12</div></div>
+<div style="padding:9px 0;border-bottom:1px solid rgba(120,200,255,.1)"><div style="font-size:13px;color:#eaf6ff;font-weight:500">Martín Oliva</div><div style="font-size:12px;color:rgba(190,225,255,.8)">Contrato v3 · 08:47</div></div>
+<div style="padding:9px 0"><div style="font-size:13px;color:#eaf6ff;font-weight:500">RRHH</div><div style="font-size:12px;color:rgba(190,225,255,.8)">Firma pendiente · ayer</div></div>
+</div>
+<div style="background:rgba(9,26,50,.52);backdrop-filter:blur(14px);border:1px solid rgba(120,200,255,.18);border-radius:16px;padding:20px 22px;animation:condense .8s .2s both">
+<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px"><span style="font-size:10px;letter-spacing:.22em;color:#6fc9ff">SLACK</span><span style="font-size:11px;color:rgba(190,225,255,.8)">5 pendientes</span></div>
+<div style="padding:9px 0;border-bottom:1px solid rgba(120,200,255,.1)"><div style="font-size:13px;color:#eaf6ff;font-weight:500">#producto <span style="color:#7fe3ff">(2)</span></div><div style="font-size:12px;color:rgba(190,225,255,.8)">Review del sprint</div></div>
+<div style="padding:9px 0;border-bottom:1px solid rgba(120,200,255,.1)"><div style="font-size:13px;color:#eaf6ff;font-weight:500">@sofi <span style="color:#7fe3ff">(1)</span></div><div style="font-size:12px;color:rgba(190,225,255,.8)">«¿Viste el deck?»</div></div>
+<div style="padding:9px 0"><div style="font-size:13px;color:#eaf6ff;font-weight:500">#incidentes <span style="color:#7fe3ff">(2)</span></div><div style="font-size:12px;color:rgba(190,225,255,.8)">Confirmar cierre</div></div>
+</div>
+<div style="background:rgba(9,26,50,.52);backdrop-filter:blur(14px);border:1px solid rgba(120,200,255,.18);border-radius:16px;padding:20px 22px;animation:condense .8s .35s both">
+<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px"><span style="font-size:10px;letter-spacing:.22em;color:#6fc9ff">TAREAS</span><span style="font-size:11px;color:rgba(190,225,255,.8)">4 hoy</span></div>
+<div style="padding:9px 0;border-bottom:1px solid rgba(120,200,255,.1);font-size:13px;color:#eaf6ff">Enviar presupuesto Q4</div>
+<div style="padding:9px 0;border-bottom:1px solid rgba(120,200,255,.1);font-size:13px;color:#eaf6ff">Demo cliente · 15:00</div>
+<div style="padding:9px 0;border-bottom:1px solid rgba(120,200,255,.1);font-size:13px;color:#eaf6ff">Revisar PR #482</div>
+<div style="padding:9px 0;font-size:13px;color:#eaf6ff">Llamar al contador</div>
+</div>
+</div>
+<div style="position:absolute;right:220px;bottom:88px;font-size:11px;letter-spacing:.14em;color:rgba(160,210,255,.6);text-align:right;animation:fadeUp .8s .6s both">LA ESFERA CEDIÓ EL CENTRO —<br>DECÍ «VOLVÉ» PARA RETOMAR</div>
+</div>
+</sc-if>
+<div style="position:absolute;left:50%;bottom:28px;transform:translateX(-50%);display:flex;gap:8px;z-index:5">
+<sc-for list="{{ chipsA }}" as="c" hint-placeholder-count="5"><button onClick="{{ c.onClick }}" style="{{ c.style }}" style-hover="transform:translateY(-1px)">{{ c.label }}</button></sc-for>
+<button onClick="{{ toggleAutoA }}" style="{{ autoStyleA }}">{{ autoLabelA }}</button>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1b" data-screen-label="1b CAUCE">
+<div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>CAUCE — charco digital con oleaje, remolino y formulario que se condensa on-the-fly · claro etéreo</div>
+<div class="dv-card" style="width:1280px;height:800px;position:relative;overflow:hidden;background:linear-gradient(180deg,#f7fafb 0%,#ecf4f7 55%,#ddedf2 100%);border:1px solid rgba(14,116,144,.15)">
+<canvas id="cvB" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+<div onClick="{{ cycleB }}" title="Tocar el agua para cambiar de estado" style="position:absolute;inset:0;cursor:pointer"></div>
+<div style="position:absolute;top:28px;left:32px;display:flex;flex-direction:column;gap:7px;pointer-events:none">
+<div style="font-family:Michroma,sans-serif;font-size:13px;letter-spacing:.3em;color:#0e5a74">CAUCE<span style="color:rgba(14,90,116,.4)"> ·02</span></div>
+<div style="display:flex;align-items:center;gap:8px"><span style="width:7px;height:7px;border-radius:50%;background:#0e7490;box-shadow:0 0 8px rgba(14,116,144,.5);animation:pulse 2s infinite"></span><span style="font-size:11px;letter-spacing:.22em;color:#33606f">{{ labelB }}</span></div>
+</div>
+<div style="position:absolute;top:28px;right:32px;text-align:right;pointer-events:none">
+<div style="font-size:10px;letter-spacing:.2em;color:rgba(14,90,116,.55)">SISTEMAS</div>
+<div style="font-size:12px;color:#1d4e5f;margin-top:4px">Gmail · Slack · Asana · Calendar</div>
+</div>
+<div style="position:absolute;left:50%;bottom:150px;transform:translateX(-50%);display:flex;gap:5px;align-items:flex-end;height:32px;opacity:{{ voB }};transition:opacity .5s;pointer-events:none">
+<span style="width:4px;height:100%;background:linear-gradient(#2ba3c4,#0e7490);border-radius:2px;transform-origin:bottom;animation:bar .7s ease-in-out -.1s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#2ba3c4,#0e7490);border-radius:2px;transform-origin:bottom;animation:bar .55s ease-in-out -.3s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#2ba3c4,#0e7490);border-radius:2px;transform-origin:bottom;animation:bar .9s ease-in-out -.2s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#2ba3c4,#0e7490);border-radius:2px;transform-origin:bottom;animation:bar .62s ease-in-out -.4s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#2ba3c4,#0e7490);border-radius:2px;transform-origin:bottom;animation:bar .8s ease-in-out -.15s infinite"></span>
+</div>
+<sc-if value="{{ respondB }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;left:50%;top:170px;transform:translateX(-50%);width:600px;padding:26px 32px;background:rgba(255,255,255,.72);backdrop-filter:blur(18px);border:1px solid rgba(14,116,144,.18);border-radius:18px;box-shadow:0 18px 50px rgba(14,90,116,.14);animation:condense .8s both;pointer-events:none">
+<div style="font-size:10px;letter-spacing:.25em;color:#0e7490;margin-bottom:12px">LA OLA DEJÓ ESTO AL RETIRARSE</div>
+<div style="font-size:20px;line-height:1.55;color:#12333d">Encontré <b style="color:#0e7490">4 tareas pendientes</b> y <b style="color:#0e7490">3 correos sin responder</b>. Te armo un formulario para cargar la tarea que falta.</div>
+</div>
+</sc-if>
+<sc-if value="{{ panelB }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;left:50%;top:74px;transform:translateX(-50%);width:520px;background:rgba(255,255,255,.75);backdrop-filter:blur(20px);border:1px solid rgba(14,116,144,.18);border-radius:20px;padding:26px 30px;box-shadow:0 24px 60px rgba(14,90,116,.16);animation:condense .8s .1s both">
+<div style="font-size:10px;letter-spacing:.25em;color:#0e7490">FORMULARIO GENERADO ON-THE-FLY</div>
+<div style="font-size:22px;font-weight:600;color:#12333d;margin:8px 0 2px">Nueva tarea</div>
+<div style="font-size:12px;color:#46707e;margin-bottom:18px">La IA condensó estos campos según tu pedido por voz.</div>
+<div style="animation:condense .7s .3s both;margin-bottom:14px">
+<div style="font-size:10px;letter-spacing:.2em;color:#0e7490;margin-bottom:6px">TÍTULO</div>
+<input value="Preparar demo para Nova Labs" style="width:100%;box-sizing:border-box;padding:11px 12px;background:rgba(255,255,255,.8);border:1px solid rgba(14,116,144,.28);border-radius:10px;font:14px 'Space Grotesk',sans-serif;color:#12333d;outline:none">
+</div>
+<div style="animation:condense .7s .45s both;margin-bottom:14px">
+<div style="font-size:10px;letter-spacing:.2em;color:#0e7490;margin-bottom:6px">SISTEMA DESTINO</div>
+<div style="display:flex;gap:8px">
+<span style="padding:7px 14px;border-radius:999px;font-size:11.5px;background:#0e7490;color:#f2fbfd">Asana</span>
+<span style="padding:7px 14px;border-radius:999px;font-size:11.5px;border:1px solid rgba(14,116,144,.3);color:#2a6377">Gmail</span>
+<span style="padding:7px 14px;border-radius:999px;font-size:11.5px;border:1px solid rgba(14,116,144,.3);color:#2a6377">Slack</span>
+<span style="padding:7px 14px;border-radius:999px;font-size:11.5px;border:1px solid rgba(14,116,144,.3);color:#2a6377">Calendar</span>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;animation:condense .7s .6s both;margin-bottom:20px">
+<div><div style="font-size:10px;letter-spacing:.2em;color:#0e7490;margin-bottom:6px">FECHA LÍMITE</div><input value="Hoy · 18:00" style="width:100%;box-sizing:border-box;padding:11px 12px;background:rgba(255,255,255,.8);border:1px solid rgba(14,116,144,.28);border-radius:10px;font:14px 'Space Grotesk',sans-serif;color:#12333d;outline:none"></div>
+<div><div style="font-size:10px;letter-spacing:.2em;color:#0e7490;margin-bottom:6px">PRIORIDAD</div><div style="display:flex;gap:6px;padding-top:2px"><span style="padding:8px 13px;border-radius:999px;font-size:11.5px;background:#0e7490;color:#f2fbfd">Alta</span><span style="padding:8px 13px;border-radius:999px;font-size:11.5px;border:1px solid rgba(14,116,144,.3);color:#2a6377">Media</span><span style="padding:8px 13px;border-radius:999px;font-size:11.5px;border:1px solid rgba(14,116,144,.3);color:#2a6377">Baja</span></div></div>
+</div>
+<button style="width:100%;padding:13px;background:#0e7490;color:#f2fbfd;border:none;border-radius:12px;font:600 13px 'Space Grotesk',sans-serif;letter-spacing:.08em;cursor:pointer;animation:condense .7s .75s both" style-hover="background:#0b5f77">CREAR TAREA — LA OLA CONFIRMA</button>
+</div>
+</sc-if>
+<div style="position:absolute;left:50%;bottom:28px;transform:translateX(-50%);display:flex;gap:8px;z-index:5">
+<sc-for list="{{ chipsB }}" as="c" hint-placeholder-count="5"><button onClick="{{ c.onClick }}" style="{{ c.style }}" style-hover="transform:translateY(-1px)">{{ c.label }}</button></sc-for>
+<button onClick="{{ toggleAutoB }}" style="{{ autoStyleB }}">{{ autoLabelB }}</button>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1c" data-screen-label="1c FILAMENTO">
+<div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>FILAMENTO — cintas de agua tipo cuerdas vocales que se abren en cortina y se ramifican hacia los sistemas · violeta amanecer</div>
+<div class="dv-card" style="width:1280px;height:800px;position:relative;overflow:hidden;background:linear-gradient(160deg,#0b0716 0%,#150b28 55%,#261242 100%);border:1px solid rgba(200,160,255,.16)">
+<canvas id="cvC" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+<div onClick="{{ cycleC }}" title="Tocar el agua para cambiar de estado" style="position:absolute;inset:0;cursor:pointer"></div>
+<div style="position:absolute;top:28px;left:32px;display:flex;flex-direction:column;gap:7px;pointer-events:none">
+<div style="font-family:Michroma,sans-serif;font-size:13px;letter-spacing:.3em;color:#cbb1ff">FILAMENTO<span style="color:rgba(203,177,255,.4)"> ·03</span></div>
+<div style="display:flex;align-items:center;gap:8px"><span style="width:7px;height:7px;border-radius:50%;background:#c9a2ff;box-shadow:0 0 10px #c9a2ff;animation:pulse 2s infinite"></span><span style="font-size:11px;letter-spacing:.22em;color:rgba(238,228,255,.78)">{{ labelC }}</span></div>
+</div>
+<div style="position:absolute;top:28px;right:32px;text-align:right;pointer-events:none">
+<div style="font-size:10px;letter-spacing:.2em;color:rgba(203,177,255,.6)">DOMINIO MULTI-SISTEMA</div>
+<div style="font-size:12px;color:rgba(242,236,255,.85);margin-top:4px">12 novedades sincronizadas</div>
+</div>
+<div style="position:absolute;left:50%;bottom:120px;transform:translateX(-50%);display:flex;gap:5px;align-items:flex-end;height:34px;opacity:{{ voC }};transition:opacity .5s;pointer-events:none">
+<span style="width:4px;height:100%;background:linear-gradient(#c9a2ff,#5f5bff);border-radius:2px;transform-origin:bottom;animation:bar .72s ease-in-out -.1s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#c9a2ff,#5f5bff);border-radius:2px;transform-origin:bottom;animation:bar .56s ease-in-out -.3s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#c9a2ff,#5f5bff);border-radius:2px;transform-origin:bottom;animation:bar .9s ease-in-out -.2s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#c9a2ff,#5f5bff);border-radius:2px;transform-origin:bottom;animation:bar .64s ease-in-out -.42s infinite"></span>
+<span style="width:4px;height:100%;background:linear-gradient(#c9a2ff,#5f5bff);border-radius:2px;transform-origin:bottom;animation:bar .82s ease-in-out -.15s infinite"></span>
+</div>
+<sc-if value="{{ respondC }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:640px;padding:28px 34px;background:rgba(26,12,48,.55);backdrop-filter:blur(16px);border:1px solid rgba(205,165,255,.24);border-radius:18px;animation:condense .9s .3s both;pointer-events:none">
+<div style="font-size:10px;letter-spacing:.25em;color:#c9a2ff;margin-bottom:12px">LAS CINTAS SE ABRIERON PARA HABLAR</div>
+<div style="font-size:21px;line-height:1.55;color:#f2ecff">Sincronicé <b style="color:#dcbdff;font-weight:600">Gmail, Slack y Calendar</b>: 12 novedades. Tres necesitan una decisión tuya — te las muestro.</div>
+</div>
+</sc-if>
+<sc-if value="{{ panelC }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;pointer-events:none">
+<div style="position:absolute;left:130px;top:452px;width:140px;text-align:center">
+<div style="font-family:Michroma,sans-serif;font-size:10px;letter-spacing:.3em;color:#cbb1ff;animation:condense .7s .2s both">NÚCLEO</div>
+</div>
+<div style="position:absolute;left:880px;top:200px;transform:translate(-50%,-50%);padding:14px 20px;background:rgba(26,12,48,.6);backdrop-filter:blur(12px);border:1px solid rgba(205,165,255,.25);border-radius:14px;animation:condense .7s .25s both;min-width:150px">
+<div style="font-size:10px;letter-spacing:.22em;color:#c9a2ff">GMAIL</div>
+<div style="font-size:14px;color:#f2ecff;margin-top:4px">3 importantes</div>
+</div>
+<div style="position:absolute;left:960px;top:400px;transform:translate(-50%,-50%);padding:14px 20px;background:rgba(26,12,48,.6);backdrop-filter:blur(12px);border:1px solid rgba(205,165,255,.25);border-radius:14px;animation:condense .7s .4s both;min-width:150px">
+<div style="font-size:10px;letter-spacing:.22em;color:#c9a2ff">SLACK</div>
+<div style="font-size:14px;color:#f2ecff;margin-top:4px">5 pendientes</div>
+</div>
+<div style="position:absolute;left:860px;top:600px;transform:translate(-50%,-50%);padding:14px 20px;background:rgba(26,12,48,.6);backdrop-filter:blur(12px);border:1px solid rgba(205,165,255,.25);border-radius:14px;animation:condense .7s .55s both;min-width:150px">
+<div style="font-size:10px;letter-spacing:.22em;color:#c9a2ff">CALENDAR</div>
+<div style="font-size:14px;color:#f2ecff;margin-top:4px">4 eventos hoy</div>
+</div>
+<div style="position:absolute;left:64px;top:470px;width:300px;background:rgba(26,12,48,.55);backdrop-filter:blur(12px);border:1px solid rgba(205,165,255,.22);border-radius:16px;padding:18px 22px;animation:condense .8s .5s both">
+<div style="font-size:10px;letter-spacing:.25em;color:#c9a2ff;margin-bottom:12px">DECISIONES EN COLA · 3</div>
+<div style="padding:8px 0;border-bottom:1px solid rgba(205,165,255,.12);font-size:13px;color:#f2ecff">Aprobar presupuesto Q4 →</div>
+<div style="padding:8px 0;border-bottom:1px solid rgba(205,165,255,.12);font-size:13px;color:#f2ecff">Mover 1:1 con Sofía →</div>
+<div style="padding:8px 0;font-size:13px;color:#f2ecff">Responder a RRHH →</div>
+</div>
+</div>
+</sc-if>
+<div style="position:absolute;left:50%;bottom:28px;transform:translateX(-50%);display:flex;gap:8px;z-index:5">
+<sc-for list="{{ chipsC }}" as="c" hint-placeholder-count="5"><button onClick="{{ c.onClick }}" style="{{ c.style }}" style-hover="transform:translateY(-1px)">{{ c.label }}</button></sc-for>
+<button onClick="{{ toggleAutoC }}" style="{{ autoStyleC }}">{{ autoLabelC }}</button>
+</div>
+</div>
+</div>
+
+</div>
+<p class="dv-next">Probá: «llevá <a class="dv-oid" href="#1a">1a</a> a pantalla completa como prototipo» · «el remolino de <a class="dv-oid" href="#1b">1b</a> más violento» · «<a class="dv-oid" href="#1c">1c</a> en versión móvil» · «nuevas direcciones»</p>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;velocidad&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:1,&quot;min&quot;:0.3,&quot;max&quot;:2,&quot;step&quot;:0.05,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Animación&quot;},&quot;energia&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:1,&quot;min&quot;:0.4,&quot;max&quot;:1.8,&quot;step&quot;:0.05,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Animación&quot;},&quot;autoDemo&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Demo&quot;}}">
+class Component extends DCLogic {
+  state = { sA:'idle', sB:'idle', sC:'idle', autoA:null, autoB:null, autoC:null, showRespB:false, stepA:0, respPhaseA:'ask', decisionA:'Aprobar', inputA:'' };
+  STEPS_A = [
+    {b:'RAZONAMIENTO', t:'Intención detectada: «resumen del día»'},
+    {b:'AGENTE', t:'Correo → leyendo Gmail (3 hilos nuevos)'},
+    {b:'AGENTE', t:'Mensajería → Slack: 2 canales sin leer'},
+    {b:'HERRAMIENTA', t:'calendar.buscar_eventos(hoy)'},
+    {b:'SISTEMA', t:'Asana: 4 tareas abiertas'},
+    {b:'RAZONAMIENTO', t:'Priorizando 12 ítems → síntesis'}
+  ];
+  BADGE_C = {
+    AGENTE:['rgba(84,224,255,.16)','#54e0ff'],
+    HERRAMIENTA:['rgba(140,160,255,.16)','#9fb0ff'],
+    SISTEMA:['rgba(110,242,197,.14)','#6ef2c5'],
+    RAZONAMIENTO:['rgba(255,255,255,.09)','rgba(220,240,255,.8)']
+  };
+  ORDER = ['idle','listen','think','respond','panel'];
+  DUR = { idle:3000, listen:3400, think:3400, respond:5800, panel:8000 };
+  LABELS = { idle:'EN REPOSO', listen:'ESCUCHANDO', think:'PROCESANDO', respond:'RESPONDIENDO', panel:'SISTEMAS ACTIVOS' };
+  CHIP_L = { idle:'Reposo', listen:'Escucha', think:'Pensando', respond:'Respuesta', panel:'Panel' };
+
+  aud(t){ return Math.min(1, Math.abs(Math.sin(t*6.3)*.65 + Math.sin(t*9.7)*.35) + .15*Math.abs(Math.sin(t*17.3))); }
+  autoOn(X){ const v=this.state['auto'+X]; return v===null ? (this.props.autoDemo ?? true) : v; }
+  nextOf(s){ return this.ORDER[(this.ORDER.indexOf(s)+1)%5]; }
+
+  advance(X, s, manual){
+    this['ent'+X] = performance.now();
+    const o = {}; o['s'+X] = s;
+    if (manual) o['auto'+X] = false;
+    if (X==='B'){ o.showRespB = false; clearTimeout(this.tB);
+      if (s==='respond') this.tB = setTimeout(()=>this.setState({showRespB:true}), 850); }
+    if (X==='A'){ o.stepA = s==='think' ? 0 : (s==='respond'||s==='panel' ? this.STEPS_A.length : 0);
+      if (s==='respond') o.respPhaseA = 'ask'; }
+    this.setState(o);
+  }
+  pick(X,k){ return (e)=>{ if(e&&e.stopPropagation)e.stopPropagation(); this.advance(X,k,true); }; }
+
+  chipStyle(X, act){
+    const T = {
+      A:{b:'1px solid rgba(120,200,255,.28)',bg:'rgba(8,28,56,.5)',c:'rgba(205,238,255,.85)',abg:'#54e0ff',ac:'#052540',sh:'0 0 18px rgba(84,224,255,.45)'},
+      B:{b:'1px solid rgba(14,116,144,.32)',bg:'rgba(255,255,255,.6)',c:'#2a6377',abg:'#0e7490',ac:'#f2fbfd',sh:'0 4px 16px rgba(14,116,144,.35)'},
+      C:{b:'1px solid rgba(205,165,255,.3)',bg:'rgba(30,14,56,.5)',c:'#ddccf8',abg:'#c9a2ff',ac:'#241243',sh:'0 0 18px rgba(201,162,255,.45)'}
+    }[X];
+    return `padding:7px 14px;border-radius:999px;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:11px;letter-spacing:.06em;cursor:pointer;transition:all .3s;border:${act?'1px solid transparent':T.b};background:${act?T.abg:T.bg};color:${act?T.ac:T.c};box-shadow:${act?T.sh:'none'}`;
+  }
+
+  renderVals(){
+    const V = {};
+    for (const X of ['A','B','C']){
+      const s = this.state['s'+X];
+      V['label'+X] = this.LABELS[s];
+      V['vo'+X] = s==='listen' ? 1 : 0;
+      V['panel'+X] = s==='panel';
+      V['chips'+X] = this.ORDER.map(k=>({ label:this.CHIP_L[k], style:this.chipStyle(X,k===s), onClick:this.pick(X,k) }));
+      V['cycle'+X] = (e)=>this.advance(X, this.nextOf(this.state['s'+X]), true);
+      const auto = this.autoOn(X);
+      V['autoStyle'+X] = this.chipStyle(X, auto);
+      V['autoLabel'+X] = auto ? '▶ AUTO' : '▷ AUTO';
+      V['toggleAuto'+X] = (e)=>{ if(e&&e.stopPropagation)e.stopPropagation(); this['ent'+X]=performance.now(); this.setState({['auto'+X]: !auto}); };
+    }
+    V.respondA = this.state.sA==='respond';
+    const sA = this.state.sA;
+    V.askA = this.state.respPhaseA==='ask';
+    V.draftShowA = this.state.respPhaseA==='draft';
+    V.inputA = this.state.inputA;
+    V.onInputA = (e)=>this.setState({inputA:e.target.value, autoA:false});
+    V.pauseA = ()=>this.setState({autoA:false});
+    V.genA = (e)=>{ if(e&&e.stopPropagation)e.stopPropagation(); this.setState({respPhaseA:'draft', autoA:false}); };
+    V.editA = (e)=>{ if(e&&e.stopPropagation)e.stopPropagation(); this.setState({respPhaseA:'ask'}); };
+    V.sendA = (e)=>{ if(e&&e.stopPropagation)e.stopPropagation(); this.advance('A','panel',true); };
+    V.decChipsA = ['Aprobar','Con cambios','Rechazar'].map(d=>({
+      label:d, style:this.chipStyle('A', d===this.state.decisionA),
+      onClick:(e)=>{ if(e&&e.stopPropagation)e.stopPropagation(); this.setState({decisionA:d, autoA:false}); }
+    }));
+    const bodies = {
+      'Aprobar':'Hola Valentina: revisé el presupuesto Q4 y queda aprobado.',
+      'Con cambios':'Hola Valentina: el presupuesto Q4 va bien, pero antes de aprobarlo necesito un ajuste.',
+      'Rechazar':'Hola Valentina: por ahora no puedo aprobar el presupuesto Q4 tal como está.'
+    };
+    const note = this.state.inputA.trim();
+    V.draftA = bodies[this.state.decisionA] + (note ? ` Un detalle: ${note}.` : '') + ' ¿Lo repasamos cinco minutos antes de la demo de las 15:00?';
+    V.traceA = sA==='think' || sA==='respond';
+    const shown = sA==='respond' ? this.STEPS_A.length : this.state.stepA;
+    V.stepsA = this.STEPS_A.slice(0, shown).map((st,i)=>{
+      const done = sA==='respond' || i < shown-1;
+      const [bg,c] = this.BADGE_C[st.b];
+      return { badge:st.b, text:st.t,
+        badgeStyle:`flex:none;margin-top:1px;font-size:8.5px;letter-spacing:.12em;padding:3px 6px;border-radius:5px;background:${bg};color:${c}`,
+        status: done ? '✓' : '●',
+        statusStyle: done ? 'flex:none;font-size:11px;color:#6ef2c5' : 'flex:none;font-size:9px;color:#54e0ff;animation:pulse 1s infinite' };
+    });
+    V.respondB = this.state.sB==='respond' && this.state.showRespB;
+    V.respondC = this.state.sC==='respond';
+    return V;
+  }
+
+  componentDidMount(){
+    this.t0 = performance.now();
+    this.entA = this.entB = this.entC = this.t0;
+    this.dropsB = []; this.nodesC = [{x:880,y:200},{x:960,y:400},{x:860,y:600}];
+    this.initA(); this.initB(); this.initC();
+    this.raf = requestAnimationFrame(this.tick);
+  }
+  componentWillUnmount(){ cancelAnimationFrame(this.raf); clearTimeout(this.tB); }
+
+  tick = (now)=>{
+    const speed = this.props.velocidad ?? 1;
+    const t = (now - this.t0)/1000 * speed;
+    for (const X of ['A','B','C']){
+      if (this.autoOn(X) && now - this['ent'+X] > this.DUR[this.state['s'+X]]/Math.max(speed,.5))
+        this.advance(X, this.nextOf(this.state['s'+X]), false);
+    }
+    if (this.state.sA==='think'){
+      const shown = Math.min(this.STEPS_A.length, 1 + Math.floor((now-this.entA)/(500/Math.max(speed,.5))));
+      if (shown !== this.state.stepA) this.setState({stepA:shown});
+    }
+    this.drawA(t); this.drawB(t); this.drawC(t);
+    this.raf = requestAnimationFrame(this.tick);
+  };
+
+  lerpP(P, T, k){ for (const key in T) P[key] += (T[key]-P[key])*k; }
+
+  /* ---------- A: WebGL metaballs ---------- */
+  initA(){
+    const cv = document.getElementById('cvA'); if(!cv) return;
+    const dpr = Math.min(window.devicePixelRatio||1, 2);
+    cv.width = 1280*dpr; cv.height = 800*dpr;
+    const gl = cv.getContext('webgl', {alpha:true, premultipliedAlpha:false, antialias:true});
+    if(!gl) return;
+    const vs = 'attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}';
+    const fs = `precision highp float;
+uniform vec2 uRes;uniform float uT;uniform vec3 uB[8];
+uniform float uNoise,uRipple,uGlow,uScale,uSquash;uniform vec2 uC;
+void main(){
+ vec2 uv=(gl_FragCoord.xy-.5*uRes)/min(uRes.x,uRes.y);
+ vec2 p=(uv-uC)/uScale; p.y*=uSquash;
+ p+=uNoise*.05*vec2(sin(p.y*7.+uT*1.3)+.5*sin(p.y*17.-uT*2.1), cos(p.x*6.-uT*1.1)+.5*cos(p.x*15.+uT*1.7));
+ float f=0.;
+ for(int i=0;i<8;i++){vec2 d=p-uB[i].xy;f+=uB[i].z*uB[i].z/(dot(d,d)+1e-5);}
+ float m=smoothstep(.92,1.08,f);
+ float inner=clamp((f-1.)/4.,0.,1.);
+ vec3 deep=vec3(.01,.14,.38),mid=vec3(.07,.48,.9),hi=vec3(.6,.96,1.);
+ vec3 col=mix(mid,deep,inner);
+ col+=hi*.18*smoothstep(-.2,.5,p.y);
+ float rim=smoothstep(.92,1.04,f)*(1.-smoothstep(1.04,1.5,f));
+ col+=hi*rim*(.55+.6*uGlow);
+ vec2 sp=p-uB[0].xy-vec2(-.09,.11);
+ col+=hi*exp(-dot(sp,sp)*90.)*.5*m;
+ float halo=uGlow*.5*clamp(f*.55,0.,1.)*(1.-m);
+ float dc=length(uv-uC);
+ float rings=0.;
+ for(int k=0;k<3;k++){float ph=fract(uT*.34+float(k)*.333);float rr=.1+ph*.5;
+  rings+=(1.-smoothstep(0.,.012,abs(dc-rr)))*(1.-ph);}
+ vec3 oc=col*m+hi*halo+hi*rings*uRipple*.8;
+ float a=max(max(m,halo*.9),rings*uRipple*.55);
+ gl_FragColor=vec4(oc,a);
+}`;
+    const mk=(t,s)=>{const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);
+      if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(sh)); return sh;};
+    const pr = gl.createProgram();
+    gl.attachShader(pr, mk(gl.VERTEX_SHADER,vs)); gl.attachShader(pr, mk(gl.FRAGMENT_SHADER,fs));
+    gl.linkProgram(pr); gl.useProgram(pr);
+    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,3,-1,-1,3]), gl.STATIC_DRAW);
+    const la = gl.getAttribLocation(pr,'a'); gl.enableVertexAttribArray(la); gl.vertexAttribPointer(la,2,gl.FLOAT,false,0,0);
+    const U = {}; for (const n of ['uRes','uT','uNoise','uRipple','uGlow','uScale','uSquash','uC']) U[n]=gl.getUniformLocation(pr,n);
+    U.uB = gl.getUniformLocation(pr,'uB[0]');
+    this.glA = gl; this.uA = U;
+    this.pa = { split:0, noise:.45, ripple:0, glow:.5, scale:.85, cx:0, cy:.05, squash:1, audio:0 };
+    this.lblsA = [1,2,3,4,5].map(i=>document.getElementById('lblA'+i));
+  }
+  targetA(s, dt){
+    switch(s){
+      case 'listen': return {split:.05,noise:1,ripple:1,glow:.9,scale:.9,cx:0,cy:.05,squash:1,audio:1};
+      case 'think': return {split:1,noise:.5,ripple:0,glow:.7,scale:.8,cx:.14,cy:.05,squash:1,audio:0};
+      case 'respond': return dt<.6
+        ? {split:.3,noise:1,ripple:0,glow:1.1,scale:1.6,cx:0,cy:-.08,squash:.75,audio:0}
+        : {split:.1,noise:.8,ripple:0,glow:.8,scale:1.25,cx:0,cy:-.55,squash:3.2,audio:.5};
+      case 'panel': return {split:0,noise:.5,ripple:0,glow:.95,scale:.32,cx:.56,cy:-.42,squash:1,audio:.2};
+      default: return {split:0,noise:.45,ripple:0,glow:.55,scale:.85,cx:0,cy:.05,squash:1,audio:0};
+    }
+  }
+  drawA(t){
+    const gl = this.glA; if(!gl) return;
+    const en = this.props.energia ?? 1;
+    const dt = (performance.now()-this.entA)/1000;
+    this.lerpP(this.pa, this.targetA(this.state.sA, dt), .055);
+    const P = this.pa, U = this.uA;
+    const b = new Float32Array(24);
+    const pulse = 1 + P.audio*(.07*Math.sin(t*9) + .05*Math.sin(t*13.7));
+    b[0] = .03*Math.sin(t*.7)*(1-P.split); b[1] = .04*Math.sin(t*.9+2)*(1-P.split);
+    b[2] = .30*(1-.62*P.split)*pulse;
+    for (let i=1;i<8;i++){
+      const ang = t*(.6+1.9*P.split) + i*Math.PI*2/7;
+      const rad = (.10+.36*P.split)*(.8+.3*((i*.37)%1));
+      b[i*3] = Math.cos(ang)*rad; b[i*3+1] = Math.sin(ang)*rad*.92;
+      b[i*3+2] = .085 + .02*Math.sin(t*2+i);
+    }
+    gl.viewport(0,0,gl.drawingBufferWidth,gl.drawingBufferHeight);
+    gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(U.uRes, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.uniform1f(U.uT, t); gl.uniform3fv(U.uB, b);
+    gl.uniform1f(U.uNoise, P.noise); gl.uniform1f(U.uRipple, P.ripple);
+    gl.uniform1f(U.uGlow, P.glow*en); gl.uniform1f(U.uScale, Math.max(P.scale,.05));
+    gl.uniform1f(U.uSquash, P.squash); gl.uniform2f(U.uC, P.cx, P.cy);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const showL = this.state.sA==='think' ? Math.min(1, Math.max(0, (P.split-.35)*2)) : 0;
+    if (this.lblsA) this.lblsA.forEach((el,idx)=>{
+      if(!el) return;
+      const i = idx+1;
+      const uvx = P.cx + b[i*3]*P.scale, uvy = P.cy + (b[i*3+1]/P.squash)*P.scale;
+      el.style.transform = `translate(${640 + uvx*800 + 16}px, ${400 - uvy*800 - 7}px)`;
+      el.style.opacity = showL;
+    });
+  }
+
+  /* ---------- B: 2D pool ---------- */
+  initB(){
+    const cv = document.getElementById('cvB'); if(!cv) return;
+    const dpr = Math.min(window.devicePixelRatio||1, 2);
+    cv.width = 1280*dpr; cv.height = 800*dpr;
+    this.ctxB = cv.getContext('2d'); this.dprB = dpr;
+    this.pb = { level:.22, amp:10, ripple:0, vortex:0, rain:0 };
+  }
+  targetB(s, dt){
+    switch(s){
+      case 'listen': return {level:.24, amp:24, ripple:1, vortex:0, rain:0};
+      case 'think': return {level:.2, amp:8, ripple:0, vortex:1, rain:0};
+      case 'respond': return dt<.7 ? {level:.92, amp:30, ripple:0, vortex:0, rain:0}
+                                   : {level:.3, amp:13, ripple:0, vortex:0, rain:0};
+      case 'panel': return {level:.1, amp:5, ripple:0, vortex:0, rain:1};
+      default: return {level:.22, amp:10, ripple:0, vortex:0, rain:0};
+    }
+  }
+  drawB(t){
+    const ctx = this.ctxB; if(!ctx) return;
+    const en = this.props.energia ?? 1;
+    const W=1280, H=800, dt=(performance.now()-this.entB)/1000;
+    this.lerpP(this.pb, this.targetB(this.state.sB, dt), .06);
+    const P = this.pb, amp = P.amp*en;
+    ctx.setTransform(this.dprB,0,0,this.dprB,0,0);
+    ctx.clearRect(0,0,W,H);
+    const surf = H*(1-P.level);
+    const dip = x => P.vortex*70*Math.exp(-Math.pow(x-W/2,2)/(2*130*130));
+    if (P.ripple>.02){
+      for (let k=0;k<4;k++){
+        const ph = (t*.55 + k*.25) % 1, rx = 30+ph*320;
+        ctx.strokeStyle = `rgba(20,110,150,${(1-ph)*P.ripple*.4})`; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.ellipse(W/2, surf+6, rx, rx*.2, 0, 0, Math.PI*2); ctx.stroke();
+      }
+    }
+    const layers = [
+      {f:.006,sp:.9,a:1,fill:'rgba(126,200,222,.35)'},
+      {f:.0084,sp:1.3,a:.78,fill:'rgba(74,157,196,.42)'},
+      {f:.0072,sp:1.7,a:.6,fill:null}
+    ];
+    layers.forEach((L,l)=>{
+      const yAt = x => surf + dip(x) + Math.sin(x*L.f + t*L.sp + l*2)*amp*L.a + Math.sin(x*.017 - t*1.6 + l)*amp*.35;
+      ctx.beginPath(); ctx.moveTo(0,H);
+      for (let x=0;x<=W;x+=14) ctx.lineTo(x, yAt(x));
+      ctx.lineTo(W,H); ctx.closePath();
+      if (l===2){
+        const g = ctx.createLinearGradient(0,surf-30,0,H);
+        g.addColorStop(0,'rgba(46,130,172,.92)'); g.addColorStop(1,'rgba(14,66,102,.96)');
+        ctx.fillStyle = g;
+      } else ctx.fillStyle = L.fill;
+      ctx.fill();
+      if (l===2){
+        ctx.beginPath();
+        for (let x=0;x<=W;x+=14){ const y=yAt(x); x===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }
+        ctx.strokeStyle='rgba(255,255,255,.55)'; ctx.lineWidth=1.5; ctx.stroke();
+      }
+    });
+    if (P.vortex>.03){
+      const n=16;
+      for (let i=0;i<n;i++){
+        const hf=i/n, ang=t*2.4+i*Math.PI*2/n*3;
+        const orb=(14+95*(1-hf))*P.vortex;
+        const x=W/2+Math.cos(ang+hf*5)*orb, y=surf-14-hf*170*P.vortex+Math.sin(ang*1.3)*8;
+        ctx.shadowColor='#4ec3e0'; ctx.shadowBlur=14;
+        ctx.fillStyle=`rgba(38,150,190,${.85*P.vortex})`;
+        ctx.beginPath(); ctx.arc(x,y,3.5+6*(1-hf),0,Math.PI*2); ctx.fill();
+        ctx.shadowBlur=0;
+      }
+    }
+    if (this.state.sB==='listen' && Math.random()<P.ripple*.35 && this.dropsB.length<50){
+      const side = Math.random()<.5;
+      this.dropsB.push({x: side?60+Math.random()*160:W-60-Math.random()*160, y:surf, vx:(Math.random()-.5)*3.5, vy:-(4.5+Math.random()*5.5), tp:'s'});
+    }
+    if (P.rain>.1 && Math.random()<P.rain*.2 && this.dropsB.length<50)
+      this.dropsB.push({x:Math.random()*W, y:-10, vx:0, vy:6.5+Math.random()*4, tp:'r'});
+    this.dropsB = this.dropsB.filter(d=>{
+      d.vy += d.tp==='s'?.3:.12; d.x+=d.vx; d.y+=d.vy;
+      if (d.y > surf+16) return false;
+      if (d.tp==='r'){ ctx.strokeStyle='rgba(60,150,185,.55)'; ctx.lineWidth=1.4;
+        ctx.beginPath(); ctx.moveTo(d.x,d.y-10); ctx.lineTo(d.x,d.y); ctx.stroke(); }
+      else { ctx.fillStyle='rgba(40,140,180,.85)';
+        ctx.beginPath(); ctx.arc(d.x,d.y,2.6,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(255,255,255,.5)';
+        ctx.beginPath(); ctx.arc(d.x-1,d.y-1,1,0,Math.PI*2); ctx.fill(); }
+      return true;
+    });
+  }
+
+  /* ---------- C: filament ribbons ---------- */
+  initC(){
+    const cv = document.getElementById('cvC'); if(!cv) return;
+    const dpr = Math.min(window.devicePixelRatio||1, 2);
+    cv.width = 1280*dpr; cv.height = 800*dpr;
+    this.ctxC = cv.getContext('2d'); this.dprC = dpr;
+    this.wc = { idle:1, listen:0, think:0, respond:0, panel:0 };
+  }
+  fnC(state, s, i, t, off){
+    switch(state){
+      case 'listen': { const env=Math.sin(Math.PI*s);
+        return {x:120+1040*s, y:400+off*36+Math.sin(s*26+t*7+i*.3)*(8+95*this.aud(t))*env}; }
+      case 'think': { const a2=s*Math.PI*4+t*1.3+i*.27;
+        const R=160+45*Math.sin(s*9.42+t*1.1)+off*70;
+        return {x:640+Math.cos(a2)*R*1.12, y:400+Math.sin(a2)*R*.78}; }
+      case 'respond': { const side=i%2===0?-1:1, arc=Math.pow(Math.sin(Math.PI*s),.75);
+        return {x:70+1140*s, y:400+side*(46+150*arc+Math.abs(off)*80)+Math.sin(s*9+t*2+i*.4)*9}; }
+      case 'panel': { const n=this.nodesC[i%3], o={x:200,y:400};
+        const c={x:540, y:400+(n.y-400)*.25+off*60}, u=1-s;
+        return {x:u*u*o.x+2*u*s*c.x+s*s*n.x,
+                y:u*u*o.y+2*u*s*c.y+s*s*n.y+Math.sin(s*12+t*2.4+i)*7*Math.sin(Math.PI*s)}; }
+      default: return {x:120+1040*s, y:400+off*70+Math.sin(s*5.5+t*.8+i*.35)*24+Math.sin(s*11-t*.5)*8};
+    }
+  }
+  drawC(t){
+    const ctx = this.ctxC; if(!ctx) return;
+    const en = this.props.energia ?? 1;
+    const s0 = this.state.sC, w = this.wc;
+    for (const k in w) w[k] += ((k===s0?1:0)-w[k])*.045;
+    let sum=0; for (const k in w) sum+=w[k];
+    ctx.setTransform(this.dprC,0,0,this.dprC,0,0);
+    ctx.clearRect(0,0,1280,800);
+    ctx.globalCompositeOperation='lighter';
+    if (w.panel>.05){
+      const g = ctx.createRadialGradient(200,400,4,200,400,70);
+      g.addColorStop(0,`rgba(220,190,255,${.9*w.panel})`); g.addColorStop(1,'rgba(120,80,220,0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(200,400,70,0,Math.PI*2); ctx.fill();
+    }
+    const N=24, S=56;
+    for (let i=0;i<N;i++){
+      const off=(i-(N-1)/2)/N, hue=192+i*5.4;
+      const pts=[];
+      for (let j=0;j<=S;j++){
+        const sv=j/S; let x=0,y=0;
+        for (const k in w){ if (w[k]<.012) continue;
+          const p=this.fnC(k,sv,i,t,off), wn=w[k]/sum; x+=p.x*wn; y+=p.y*wn; }
+        pts.push([x,y]);
+      }
+      for (const [lw,al] of [[6,.05*en],[1.35,.5*en]]){
+        ctx.strokeStyle=`hsla(${hue},95%,68%,${al})`; ctx.lineWidth=lw;
+        ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+        for (let j=1;j<=S;j++) ctx.lineTo(pts[j][0],pts[j][1]);
+        ctx.stroke();
+      }
+    }
+    ctx.globalCompositeOperation='source-over';
+  }
+}
+</script>
+</body>
+</html>

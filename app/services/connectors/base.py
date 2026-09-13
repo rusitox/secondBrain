@@ -64,3 +64,10 @@ class BaseConnector(abc.ABC):
     async def validate_token(self, access_token: str) -> bool:
         """Check whether the given token is still valid."""
         ...
+
+    async def get_own_account_id(self, access_token: str) -> Optional[str]:
+        """Return the connected account's own id on this platform, if the
+        platform's API exposes one cheaply (e.g. Slack's auth.test). Not
+        abstract — most connectors have no use for this yet, and default
+        to None rather than forcing every subclass to implement it."""
+        return None

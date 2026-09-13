@@ -89,6 +89,7 @@ def _create_sqlite_tables(connection) -> None:
             last_sync_status TEXT,
             last_sync_error TEXT,
             user_token TEXT,
+            external_account_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -254,10 +255,94 @@ def _create_sqlite_tables(connection) -> None:
         CREATE INDEX IF NOT EXISTS ix_knowledge_processed_documents_user_source
         ON knowledge_processed_documents(user_id, source)
     """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS user_interactions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL,
+            turn_id TEXT REFERENCES conversation_turns(id) ON DELETE SET NULL,
+            interrupt_id TEXT NOT NULL,
+            tool_use_id TEXT NOT NULL,
+            spec TEXT NOT NULL,
+            answer TEXT,
+            status TEXT DEFAULT 'open',
+            expires_at TIMESTAMP NOT NULL,
+            answered_at TIMESTAMP,
+            answered_via TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(session_id, interrupt_id)
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_user_interactions_user_status
+        ON user_interactions(user_id, status)
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_user_interactions_session
+        ON user_interactions(session_id)
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS agent_session_states (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL UNIQUE,
+            snapshot TEXT NOT NULL,
+            strands_version TEXT NOT NULL,
+            awaiting_input INTEGER DEFAULT 0,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS proposed_actions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL,
+            interaction_id TEXT REFERENCES user_interactions(id) ON DELETE SET NULL,
+            action_type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            artifact TEXT NOT NULL,
+            risk TEXT NOT NULL,
+            status TEXT DEFAULT 'proposed',
+            idempotency_key TEXT NOT NULL UNIQUE,
+            executor_version TEXT,
+            result TEXT,
+            error TEXT,
+            approved_at TIMESTAMP,
+            executed_at TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_proposed_actions_user_status
+        ON proposed_actions(user_id, status)
+    """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS action_audit_log (
+            id TEXT PRIMARY KEY,
+            action_id TEXT NOT NULL REFERENCES proposed_actions(id) ON DELETE CASCADE,
+            event TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            detail TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    connection.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_action_audit_log_action_id
+        ON action_audit_log(action_id)
+    """))
 
 
 def _drop_sqlite_tables(connection) -> None:
     for table in [
+        "action_audit_log", "proposed_actions",
+        "agent_session_states", "user_interactions",
         "knowledge_processed_documents",
         "pending_questions", "entity_links", "entity_claims", "entities",
         "conversation_turns", "api_keys", "commitments", "documents", "integrations", "identities", "users",

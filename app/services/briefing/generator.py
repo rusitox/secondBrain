@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import commitment_service, user_service
 from app.services.agent.tools.calendar_sync import CalendarSyncTool
 from app.services.agent.tools.task_manager import TaskManagerTool
 from app.services.agent.tools.style_analyzer import StyleAnalyzerTool
@@ -70,16 +71,33 @@ class BriefingGenerator:
         now = target_date or datetime.now(timezone.utc)
         date_str = now.strftime("%Y-%m-%d")
         result = BriefingResult(generated_at=now.isoformat())
+        user = await user_service.get_user(db, user_id)
+        user_timezone = (user.timezone if user is not None and user.timezone else "UTC")
 
-        # Step 1: Gather data from all tools
-        result.agenda = await self._calendar.get_today_events(db, user_id, now, upcoming_only=False)
-        result.pending_commitments = await self._tasks.list_pending(db, user_id)
-        result.overdue_commitments = await self._tasks.list_overdue(db, user_id)
-
-        # Step 2: Build contextual alerts
-        result.contextual_alerts = self._find_contextual_alerts(
-            result.agenda, result.pending_commitments + result.overdue_commitments
+        # Step 1: Gather data from all tools. list_pending/list_overdue return
+        # ALL of the account's ingested commitments, including ones owned by
+        # someone else (e.g. a task mentioned in a meeting that's actually a
+        # colleague's) — needed unfiltered for the alert cross-referencing
+        # below, which deliberately looks across other people's commitments.
+        result.agenda = await self._calendar.get_today_events(
+            db, user_id, now, upcoming_only=False, user_timezone=user_timezone
         )
+        all_pending = await self._tasks.list_pending(db, user_id)
+        all_overdue = await self._tasks.list_overdue(db, user_id)
+
+        # Step 2: Build contextual alerts from the unfiltered commitments
+        result.contextual_alerts = self._find_contextual_alerts(
+            result.agenda, all_pending + all_overdue
+        )
+
+        # Only commitments that clearly belong to the user are offered as
+        # "your pending items" — see commitment_service.is_owned_by_user.
+        result.pending_commitments = [
+            c for c in all_pending if commitment_service.is_owned_by_user(c.get("owner"), user)
+        ]
+        result.overdue_commitments = [
+            c for c in all_overdue if commitment_service.is_owned_by_user(c.get("owner"), user)
+        ]
 
         # Step 3: Get user style
         style = await self._style.get_style(db, user_id)

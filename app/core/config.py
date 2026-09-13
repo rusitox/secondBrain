@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     stt_mode: str = "api"           # "local" | "api"
     whisper_model: str = "base"     # tiny | base | small | medium | large
     tts_voice: str = "nova"         # alloy | echo | fable | onyx | nova | shimmer
-    tts_model: str = "tts-1"        # tts-1 | tts-1-hd
+    tts_model: str = "gpt-4o-mini-tts"  # tts-1 | tts-1-hd | gpt-4o-mini-tts
     voice_max_audio_mb: int = 25
 
     # Portal login (voice UI)
@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # backlog be drained manually (scripts/run_domain_agent.py) without the scheduler racing
     # it for the same rows every interval. Empty = no exclusions, the normal case.
     knowledge_agent_excluded_sources: str = ""
+
+    # Generative UI (MAREA redesign) — opt-in. Gates the request_user_input tool,
+    # which uses Strands' native interrupt/snapshot mechanism to pause a turn and
+    # ask the user a structured question. Off by default until the frontend (Fase 4-6)
+    # can actually render app.api.schemas.ui_protocol requests.
+    enable_generative_ui: bool = False
 
     @field_validator("fernet_key")
     @classmethod

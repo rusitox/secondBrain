@@ -28,7 +28,7 @@ class TestMSGraphConnector:
                 ],
             },
         ))
-        respx.get(f"{GRAPH_BASE_URL}/me/events").mock(return_value=Response(
+        respx.get(f"{GRAPH_BASE_URL}/me/calendarView").mock(return_value=Response(
             200, json={"value": []},
         ))
 
@@ -44,7 +44,7 @@ class TestMSGraphConnector:
         respx.get(f"{GRAPH_BASE_URL}/me/messages").mock(return_value=Response(
             200, json={"value": []},
         ))
-        respx.get(f"{GRAPH_BASE_URL}/me/events").mock(return_value=Response(
+        respx.get(f"{GRAPH_BASE_URL}/me/calendarView").mock(return_value=Response(
             200,
             json={
                 "value": [
@@ -58,6 +58,7 @@ class TestMSGraphConnector:
                         "attendees": [
                             {"emailAddress": {"address": "alice@corp.com"}},
                         ],
+                        "isCancelled": False,
                     },
                 ],
             },
@@ -93,7 +94,7 @@ class TestMSGraphConnector:
 
         respx.get(f"{GRAPH_BASE_URL}/me/messages").mock(side_effect=messages_handler)
         respx.get(page2_url).mock(side_effect=messages_handler)
-        respx.get(f"{GRAPH_BASE_URL}/me/events").mock(return_value=Response(
+        respx.get(f"{GRAPH_BASE_URL}/me/calendarView").mock(return_value=Response(
             200, json={"value": []},
         ))
 
@@ -119,7 +120,7 @@ class TestMSGraphConnector:
         route = respx.get(f"{GRAPH_BASE_URL}/me/messages").mock(return_value=Response(
             200, json={"value": []},
         ))
-        respx.get(f"{GRAPH_BASE_URL}/me/events").mock(return_value=Response(
+        respx.get(f"{GRAPH_BASE_URL}/me/calendarView").mock(return_value=Response(
             200, json={"value": []},
         ))
 
@@ -127,3 +128,123 @@ class TestMSGraphConnector:
         # Verify $filter was passed (URL-encoded as %24filter)
         call = route.calls[0]
         assert "%24filter" in str(call.request.url) or "$filter" in str(call.request.url)
+
+    async def test_get_own_account_id_defaults_to_none(self, connector: MSGraphConnector) -> None:
+        """MSGraphConnector doesn't implement this (no ingestion feature
+        needs it yet) — BaseConnector's default must apply, not raise."""
+        assert await connector.get_own_account_id("token") is None
+
+
+class TestCalendarViewRecurringOccurrences:
+    """Root cause of a real bug: /me/events with a start-date $filter only
+    matches an event whose OWN start falls in range — for a recurring
+    series, that's the series' first-ever occurrence, not whichever
+    occurrence actually lands on the day being asked about. A user with
+    daily/weekly recurring meetings got "no reuniones" for days that
+    genuinely had several, no matter how much history had been synced.
+    /me/calendarView expands recurring series into real occurrences."""
+
+    @respx.mock
+    async def test_uses_calendarview_not_events(self, connector: MSGraphConnector) -> None:
+        respx.get(f"{GRAPH_BASE_URL}/me/messages").mock(return_value=Response(200, json={"value": []}))
+        events_route = respx.get(f"{GRAPH_BASE_URL}/me/events").mock(
+            return_value=Response(200, json={"value": [{"id": "should-not-be-called"}]}),
+        )
+        respx.get(f"{GRAPH_BASE_URL}/me/calendarView").mock(return_value=Response(200, json={"value": []}))
+
+        await connector.fetch_items(access_token="test-token")
+
+        assert len(events_route.calls) == 0
+
+    @respx.mock
+    async def test_recurring_occurrence_is_captured(self, connector: MSGraphConnector) -> None:
+        """A recurring series' occurrence landing on a given day has its
+        own id and start time distinct from the series master — exactly
+        what calendarView returns and /events couldn't find."""
+        respx.get(f"{GRAPH_BASE_URL}/me/messages").mock(return_value=Response(200, json={"value": []}))
+        respx.get(f"{GRAPH_BASE_URL}/me/calendarView").mock(return_value=Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "occurrence-2026-09-14",
+                        "subject": "Daily I+D",
+                        "body": {"content": ""},
+                        "start": {"dateTime": "2026-09-14T12:15:00"},
+                        "end": {"dateTime": "2026-09-14T12:30:00"},
+                        "organizer": {"emailAddress": {"address": "boss@corp.com"}},
+                        "attendees": [],
+                        "type": "occurrence",
+                        "seriesMasterId": "series-master-abc",
+                        "isCancelled": False,
+                    },
+                ],
+            },
+        ))
+
+        items = await connector.fetch_items(access_token="test-token")
+
+        calendar_items = [i for i in items if i.metadata["type"] == "calendar_event"]
+        assert len(calendar_items) == 1
+        assert calendar_items[0].source_id == "occurrence-2026-09-14"
+        assert calendar_items[0].metadata["timestamp"] == "2026-09-14T12:15:00"
+
+    @respx.mock
+    async def test_cancelled_occurrence_is_excluded(self, connector: MSGraphConnector) -> None:
+        respx.get(f"{GRAPH_BASE_URL}/me/messages").mock(return_value=Response(200, json={"value": []}))
+        respx.get(f"{GRAPH_BASE_URL}/me/calendarView").mock(return_value=Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "cancelled-1",
+                        "subject": "Cancelado: Daily",
+                        "body": {"content": ""},
+                        "start": {"dateTime": "2026-09-14T12:15:00"},
+                        "end": {"dateTime": "2026-09-14T12:30:00"},
+                        "organizer": {"emailAddress": {"address": "boss@corp.com"}},
+                        "attendees": [],
+                        "isCancelled": True,
+                    },
+                    {
+                        "id": "kept-1",
+                        "subject": "Sync I+D Recap",
+                        "body": {"content": ""},
+                        "start": {"dateTime": "2026-09-14T13:00:00"},
+                        "end": {"dateTime": "2026-09-14T13:30:00"},
+                        "organizer": {"emailAddress": {"address": "boss@corp.com"}},
+                        "attendees": [],
+                        "isCancelled": False,
+                    },
+                ],
+            },
+        ))
+
+        items = await connector.fetch_items(access_token="test-token")
+
+        calendar_items = [i for i in items if i.metadata["type"] == "calendar_event"]
+        assert len(calendar_items) == 1
+        assert calendar_items[0].source_id == "kept-1"
+
+    @respx.mock
+    async def test_sends_a_bounded_sliding_window_not_since(self, connector: MSGraphConnector) -> None:
+        """calendarView has no open-ended "everything since X" mode — both
+        startDateTime and endDateTime must be sent, as a window around
+        "now", regardless of the incremental sync `since` cursor (which
+        still applies to email fetching, just not to calendar)."""
+        from datetime import datetime, timezone
+
+        respx.get(f"{GRAPH_BASE_URL}/me/messages").mock(return_value=Response(200, json={"value": []}))
+        route = respx.get(f"{GRAPH_BASE_URL}/me/calendarView").mock(
+            return_value=Response(200, json={"value": []}),
+        )
+
+        since = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        await connector.fetch_items(access_token="test-token", since=since)
+
+        call = route.calls[0]
+        query = str(call.request.url)
+        assert "startDateTime=" in query
+        assert "endDateTime=" in query
+        # The window is relative to "now", not to the old `since` cursor.
+        assert "2020-01-01" not in query

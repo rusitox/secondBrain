@@ -245,7 +245,10 @@ class APIClient:
     ) -> AsyncGenerator[Tuple[str, Dict[str, Any]], None]:
         """Stream an agent query via SSE. Yields (event_type, data_dict) tuples.
 
-        Event types: tool_call, tool_result, token, done, error
+        Event types: session, thinking, token, tool_result, done, error
+        (app.api.schemas.stream.EVENT_SCHEMAS is the backend's authoritative
+        vocabulary — mirror any future change here, not "tool_call"/
+        "tool_result"-as-calling-status, which this backend never emits).
         """
         import json as _json
 

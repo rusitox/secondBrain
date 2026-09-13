@@ -51,3 +51,9 @@ class AgentQueryResponse(BaseModel):
     query: str
     session_id: str = ""
     iterations: int = 0
+    # "end_turn" | "interrupt" | "error" (app.api.schemas.stream.StopReason).
+    # A caller of this non-streaming endpoint with enable_generative_ui on
+    # must check this — a request_user_input call ends the turn early, and
+    # `answer` alone doesn't say so.
+    stop_reason: str = "end_turn"
+    awaiting: List[str] = Field(default_factory=list)

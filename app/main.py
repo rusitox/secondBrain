@@ -8,7 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging
-from app.api.routers import health, users, commitments, integrations, ingestion, query, agent, briefing, identity, auth, sync, voice, knowledge
+from app.api.routers import (
+    health, users, commitments, integrations, ingestion, query, agent, briefing,
+    identity, auth, sync, voice, knowledge, interactions, systems,
+)
+# Populates app.services.actions.registry as an import side effect, so it's
+# ready before any request reaches propose_action (strands_tools.py) or the
+# approve endpoint (interactions.py) — neither of which imports this
+# package directly; see app/services/actions/registry.py's module docstring.
+from app.services.actions import executors as _action_executors  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +57,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else:
             logger.warning("Knowledge agent scheduler requested but APScheduler not installed")
 
+    # Action sweeper — always on when APScheduler is available. Pure DB
+    # housekeeping (no external API/LLM calls), recovering ProposedAction
+    # rows stuck in EXECUTING after a crash; see app/services/actions/
+    # sweeper.py's module docstring.
+    from app.services.actions.sweeper import ActionSweeper
+    action_sweeper = ActionSweeper()
+    if action_sweeper.is_available:
+        await action_sweeper.start()
+        app.state.action_sweeper = action_sweeper  # type: ignore[arg-type]
+        logger.info("Action sweeper started")
+    else:
+        logger.warning("Action sweeper requested but APScheduler not installed")
+
     yield
 
     # Shutdown sync scheduler
@@ -58,6 +79,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Shutdown knowledge agent scheduler
     if knowledge_scheduler and knowledge_scheduler.is_running:
         await knowledge_scheduler.shutdown()
+
+    # Shutdown action sweeper
+    if action_sweeper.is_running:
+        await action_sweeper.shutdown()
 
     logger.info("Shutting down %s", settings.app_name)
 
@@ -125,12 +150,33 @@ app.include_router(identity.router)
 app.include_router(sync.router)
 app.include_router(voice.router)
 app.include_router(knowledge.router)
+app.include_router(interactions.router)
+app.include_router(systems.router)
 
-# Mount static files for voice UI (only if directory exists)
+# Mount static frontends (only if built — `directory` must exist at mount
+# time). Historically this failed silently in production: the Dockerfile
+# never COPYed static/ into the image at all, so /voice-ui 404ed with no
+# log line explaining why (see Dockerfile's new frontend-builder stage and
+# its `COPY --from=frontend-builder /frontend/dist ./static/marea` /
+# `COPY static/voice ./static/voice`, which fix that). The warning below
+# means a future regression is at least visible in the startup log.
+from fastapi.staticfiles import StaticFiles
+
 _static_voice_dir = os.path.join(os.path.dirname(__file__), "..", "static", "voice")
 if os.path.isdir(_static_voice_dir):
-    from fastapi.staticfiles import StaticFiles
     app.mount("/voice-ui", StaticFiles(directory=_static_voice_dir, html=True), name="voice-ui")
+else:
+    logger.warning("static/voice not found — /voice-ui will 404")
+
+# MAREA (Svelte) — coexists with /voice-ui until it reaches feature parity,
+# per the redesign plan's Fase 4. Built from frontend/ via `npm run build`
+# (frontend/vite.config.ts sets outDir to ../static/marea and base to
+# /marea/ so its own asset URLs resolve correctly under this mount).
+_static_marea_dir = os.path.join(os.path.dirname(__file__), "..", "static", "marea")
+if os.path.isdir(_static_marea_dir):
+    app.mount("/marea", StaticFiles(directory=_static_marea_dir, html=True), name="marea")
+else:
+    logger.warning("static/marea not found — /marea will 404 (run `npm run build` in frontend/)")
 
 
 if __name__ == "__main__":

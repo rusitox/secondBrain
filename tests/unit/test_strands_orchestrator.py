@@ -1,13 +1,11 @@
 """Unit tests for StrandsOrchestrator — the production agent orchestrator.
 
 Covers session resolution/expiry, turn persistence, system prompt / style
-formatting, Strands message conversion, the reasoning_effort guard for
-reasoning models, and the streaming callback handler — none of which had
-test coverage before this file (StrandsOrchestrator shipped without tests,
-which is what let the SSE NameError and callback thread-safety bugs reach
-review undetected).
+formatting, Strands message conversion, and the reasoning_effort guard for
+reasoning models. The _StreamingCallbackHandler's own tests moved to
+tests/unit/test_streaming_callback.py when its contract changed from an
+async fire-and-forget token callback to a synchronous typed event emitter.
 """
-import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,11 +14,11 @@ import pytest
 
 from app.services.agent.strands_orchestrator import (
     StrandsOrchestrator,
-    _StreamingCallbackHandler,
     _build_system_prompt,
     _extract_last_assistant_text,
     _format_style,
     _history_to_strands_messages,
+    _normalize_stop_reason,
 )
 
 
@@ -172,7 +170,8 @@ class TestBuildAgentReasoningGuard:
                 user_tz="UTC",
                 system_prompt="sys",
                 history=[],
-                stream_callback=None,
+                emit=None,
+                session_id=uuid.uuid4(),
             )
         return mock_model_cls
 
@@ -193,57 +192,6 @@ class TestBuildAgentReasoningGuard:
         _, kwargs = mock_model_cls.call_args
         assert kwargs["params"] is None
         assert kwargs["model_id"] == "gpt-4o-mini"
-
-
-# ---------------------------------------------------------------------------
-# _StreamingCallbackHandler
-# ---------------------------------------------------------------------------
-
-class TestStreamingCallbackHandler:
-    def test_tracks_unique_tool_calls_and_increments_iterations(self) -> None:
-        handler = _StreamingCallbackHandler(stream_callback=None)
-        handler(current_tool_use={"name": "search_memory"})
-        handler(current_tool_use={"name": "search_memory"})  # duplicate, ignored
-        handler(current_tool_use={"name": "list_tasks"})
-
-        assert handler.tools_used == ["search_memory", "list_tasks"]
-        assert handler.iterations == 2
-
-    def test_ignores_tool_use_with_no_name(self) -> None:
-        handler = _StreamingCallbackHandler(stream_callback=None)
-        handler(current_tool_use={})
-        assert handler.tools_used == []
-        assert handler.iterations == 0
-
-    @pytest.mark.asyncio
-    async def test_forwards_text_tokens_to_stream_callback(self) -> None:
-        received: list = []
-
-        async def on_token(text: str) -> None:
-            received.append(text)
-
-        handler = _StreamingCallbackHandler(stream_callback=on_token)
-        handler(data="hola ")
-        handler(data="mundo")
-        # The handler schedules tasks on the running loop — let them run.
-        await asyncio.sleep(0)
-
-        assert received == ["hola ", "mundo"]
-
-    def test_no_stream_callback_does_not_raise(self) -> None:
-        handler = _StreamingCallbackHandler(stream_callback=None)
-        handler(data="token")  # must be a no-op, not an error
-
-    def test_callback_outside_event_loop_logs_and_does_not_raise(self) -> None:
-        """Regression guard for the thread-safety issue flagged in code review:
-        if Strands fires the callback off the event loop, tokens are dropped
-        but the handler must not crash the agent run."""
-        async def on_token(text: str) -> None:
-            pass
-
-        handler = _StreamingCallbackHandler(stream_callback=on_token)
-        with patch("asyncio.get_running_loop", side_effect=RuntimeError("no running loop")):
-            handler(data="token")  # should swallow and log, not raise
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +221,58 @@ class TestBuildSystemPrompt:
         )
         assert "Timezone: UTC" in prompt
         assert "Usuario:" not in prompt
+
+    def test_instructs_the_agent_to_use_save_learning(self) -> None:
+        """Fase 2's learning loop depends on the agent actually calling
+        save_learning on its own initiative — it existed as a tool before
+        this but was never mentioned in the workflow instructions."""
+        prompt = _build_system_prompt(
+            today_str="2026-09-04", user_name=None, user_email=None,
+            user_timezone="UTC", style_text="No style profile available.",
+        )
+        assert "save_learning" in prompt
+
+    def test_instructs_the_agent_to_use_recent_sort_for_recency_questions(self) -> None:
+        """Pure semantic search has no notion of recency — the agent needs an
+        explicit nudge to reach for search_memory(sort="recent") when asked
+        for the latest/most recent mentions of something."""
+        prompt = _build_system_prompt(
+            today_str="2026-09-04", user_name=None, user_email=None,
+            user_timezone="UTC", style_text="No style profile available.",
+        )
+        assert 'sort="recent"' in prompt
+
+    def test_instructs_the_agent_to_check_sync_status_before_claiming_nothing_found(self) -> None:
+        """get_calendar/get_emails return an empty list both when there's
+        genuinely nothing AND when that source's sync is broken — the agent
+        must check get_sync_status before confidently claiming absence,
+        instead of reporting a sync outage as "no tenés reuniones"."""
+        prompt = _build_system_prompt(
+            today_str="2026-09-04", user_name=None, user_email=None,
+            user_timezone="UTC", style_text="No style profile available.",
+        )
+        assert "get_sync_status" in prompt
+
+    def test_instructs_the_agent_to_use_day_param_for_relative_days(self) -> None:
+        """Observed live, three times in a row: asked about "mañana", the
+        agent correctly reasoned the actual date in its text reply but
+        called get_calendar with no `date`/`day` argument at all — which
+        silently defaults to TODAY — then reported "no tenés reuniones"
+        for the wrong day without noticing. A prompt instruction to
+        compute date= itself did NOT fix this reliably even worded very
+        explicitly with a worked example (see strands_tools.py's
+        _resolve_target_date docstring for the full story) — the
+        structural fix is get_calendar/get_emails's day= parameter, which
+        needs no date arithmetic at all. The prompt must point the agent
+        at day= as the primary mechanism, with date= as the fallback for
+        anything day doesn't cover."""
+        prompt = _build_system_prompt(
+            today_str="2026-09-04", user_name=None, user_email=None,
+            user_timezone="UTC", style_text="No style profile available.",
+        )
+        assert "day=" in prompt
+        assert "date=" in prompt
+        assert "mañana" in prompt
 
 
 class TestFormatStyle:
@@ -329,3 +329,25 @@ class TestExtractLastAssistantText:
 
     def test_empty_messages_returns_empty_string(self) -> None:
         assert _extract_last_assistant_text([]) == ""
+
+
+# ---------------------------------------------------------------------------
+# _normalize_stop_reason
+# ---------------------------------------------------------------------------
+
+class TestNormalizeStopReason:
+    @pytest.mark.parametrize("raw", ["end_turn", "interrupt"])
+    def test_known_reasons_pass_through(self, raw: str) -> None:
+        assert _normalize_stop_reason(raw) == raw
+
+    @pytest.mark.parametrize("raw", [
+        "max_tokens", "stop_sequence", "content_filtered", "guardrail_intervened",
+        "limit_turns", "limit_output_tokens", "limit_total_tokens", "cancelled",
+        "checkpoint", "tool_use", "some_future_strands_reason",
+    ])
+    def test_every_other_strands_stop_reason_normalizes_to_error(self, raw: str) -> None:
+        """Strands' own StopReason has 12 values (strands/types/event_loop.py)
+        but the SSE done event's contract only ever promises 3 — anything
+        else, known today or added by a future Strands version, must
+        collapse to "error" rather than leak an unlisted value to clients."""
+        assert _normalize_stop_reason(raw) == "error"

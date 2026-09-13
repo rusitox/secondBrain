@@ -25,6 +25,7 @@ def _make_integration(
     mock.last_sync_status = None
     mock.last_sync_error = None
     mock.user_token = None
+    mock.external_account_id = None
     return mock
 
 
@@ -254,6 +255,7 @@ class TestRunSync:
 
         mock_connector = MagicMock()
         mock_connector.fetch_items = AsyncMock(return_value=[])
+        mock_connector.get_own_account_id = AsyncMock(return_value=None)
 
         mock_pipeline_result = MagicMock()
         mock_pipeline_result.documents_created = 3
@@ -275,6 +277,91 @@ class TestRunSync:
         assert mock_integration.last_sync_error is None
         assert mock_integration.last_sync_at is not None
         mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_captures_own_account_id_when_missing(self) -> None:
+        """external_account_id is populated lazily from the connector on a
+        successful sync when the integration doesn't have one yet."""
+        scheduler = SyncScheduler()
+        integration_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+
+        mock_integration = _make_integration()
+        mock_integration.platform.value = "slack"
+        assert mock_integration.external_account_id is None
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_integration
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_session.commit = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        mock_factory = MagicMock(return_value=mock_session)
+
+        mock_connector = MagicMock()
+        mock_connector.fetch_items = AsyncMock(return_value=[])
+        mock_connector.get_own_account_id = AsyncMock(return_value="U_OWN")
+
+        mock_pipeline_result = MagicMock()
+        mock_pipeline_result.documents_created = 0
+        mock_pipeline_result.documents_updated = 0
+        mock_pipeline = MagicMock()
+        mock_pipeline.ingest_batch = AsyncMock(return_value=mock_pipeline_result)
+
+        with patch("app.services.sync.scheduler.get_session_factory", return_value=mock_factory), \
+             patch("app.api.routers.ingestion._CONNECTORS", {"slack": lambda: mock_connector}), \
+             patch("app.services.token_refresh.ensure_fresh_token", new=AsyncMock(return_value="tok")), \
+             patch("app.services.ingestion.pipeline.IngestionPipeline", return_value=mock_pipeline), \
+             patch("app.services.ingestion.embedder.Embedder", return_value=MagicMock()):
+            await scheduler._run_sync(integration_id, user_id)
+
+        assert mock_integration.external_account_id == "U_OWN"
+
+    @pytest.mark.asyncio
+    async def test_run_sync_does_not_overwrite_existing_account_id(self) -> None:
+        """Once captured, external_account_id shouldn't be re-fetched/
+        overwritten on every subsequent sync."""
+        scheduler = SyncScheduler()
+        integration_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+
+        mock_integration = _make_integration()
+        mock_integration.platform.value = "slack"
+        mock_integration.external_account_id = "U_ALREADY_SET"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_integration
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_session.commit = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        mock_factory = MagicMock(return_value=mock_session)
+
+        mock_connector = MagicMock()
+        mock_connector.fetch_items = AsyncMock(return_value=[])
+        mock_connector.get_own_account_id = AsyncMock(return_value="U_DIFFERENT")
+
+        mock_pipeline_result = MagicMock()
+        mock_pipeline_result.documents_created = 0
+        mock_pipeline_result.documents_updated = 0
+        mock_pipeline = MagicMock()
+        mock_pipeline.ingest_batch = AsyncMock(return_value=mock_pipeline_result)
+
+        with patch("app.services.sync.scheduler.get_session_factory", return_value=mock_factory), \
+             patch("app.api.routers.ingestion._CONNECTORS", {"slack": lambda: mock_connector}), \
+             patch("app.services.token_refresh.ensure_fresh_token", new=AsyncMock(return_value="tok")), \
+             patch("app.services.ingestion.pipeline.IngestionPipeline", return_value=mock_pipeline), \
+             patch("app.services.ingestion.embedder.Embedder", return_value=MagicMock()):
+            await scheduler._run_sync(integration_id, user_id)
+
+        assert mock_integration.external_account_id == "U_ALREADY_SET"
+        mock_connector.get_own_account_id.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_run_sync_integration_not_found(self) -> None:

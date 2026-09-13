@@ -19,3 +19,6 @@ infra/
 .DS_Store
 .dockerignore
 docker-compose*.yml
+frontend/node_modules/
+frontend/dist/
+static/marea/

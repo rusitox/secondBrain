@@ -31,8 +31,14 @@ class MemoryRetrieverTool:
         query: str,
         source: Optional[str] = None,
         top_k: int = 5,
+        sort: str = "relevance",
     ) -> List[Dict[str, Any]]:
-        """Search the knowledge base and return results."""
+        """Search the knowledge base and return results.
+
+        sort="recent" re-ranks by the source content's own timestamp instead
+        of similarity — use it for "latest/recent mentions of X" questions
+        that pure semantic similarity can't answer well on its own.
+        """
         filters = SearchFilters(source=source) if source else None
         results = await semantic_search(
             db=db,
@@ -41,5 +47,6 @@ class MemoryRetrieverTool:
             query=query,
             top_k=top_k,
             filters=filters,
+            sort=sort,
         )
         return [r.to_dict() for r in results]

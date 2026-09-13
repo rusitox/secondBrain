@@ -13,7 +13,17 @@ logger = logging.getLogger(__name__)
 
 
 class TaskManagerTool:
-    """Manages the user's commitments and action items."""
+    """Manages the user's commitments and action items.
+
+    Returns ALL of the account's ingested commitments, including ones whose
+    free-text `owner` names someone else entirely (e.g. a task mentioned in
+    a meeting that's actually Daniel's, not the account holder's) — callers
+    that present commitments to the user as "yours to do" must filter with
+    commitment_service.is_owned_by_user first. Unfiltered here because some
+    callers (e.g. BriefingGenerator's cross-referencing of meeting attendees
+    against commitment owners) need visibility into other people's
+    commitments too.
+    """
 
     name: str = "task_manager"
     description: str = (

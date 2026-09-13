@@ -35,6 +35,13 @@ class Integration(UUIDMixin, TimestampMixin, Base):
     # Optional User Token (xoxp-) for platforms that need it for extended access.
     # Slack: user_token grants access to personal DMs; access_token is the Bot Token.
     user_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The connected account's own id on the external platform (e.g. Slack's
+    # "user_id" from auth.test) — needed to tell "a message that mentions
+    # me" from "a message that mentions someone else", which a resolved
+    # display name alone can't disambiguate reliably. Populated lazily by
+    # the sync scheduler (see BaseConnector.get_own_account_id); nullable
+    # because most platforms don't implement it and existing rows predate it.
+    external_account_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     last_sync_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
