@@ -60,6 +60,13 @@ of this project used a custom multi-agent orchestrator with domain-specific sub-
 - `web_search` / `http_request` — opt-in, only registered when configured
 - `query_knowledge` / `get_pending_questions` / `confirm_pending_answer` — read/write access to
   the knowledge graph built by the domain agents below
+- `correct_knowledge` — fixes the graph right in conversation when the user says something in it
+  is wrong: a claim correction (new claim, `source="user"`, full confidence; optionally disputes
+  the specific wrong claim) and/or an identity correction (merge/unmerge two entities as the same
+  `same_as`), so the knowledge base updates from conversation, not only from ingestion
+- `ask_domain_agents` — triggers a real scoped-`Swarm` negotiation with the domain agents that
+  hold a claim about an entity, mid-conversation, to validate a doubt before answering — the same
+  negotiation mechanism a domain agent's own `ask_peer_agents` uses, just triggered from chat
 - `SequentialToolExecutor` forces one tool call at a time within a turn, since every tool closes
   over the same `AsyncSession`
 
@@ -93,6 +100,29 @@ candidate answer/confidence if the earlier steps produced one).
 
 **Ownership policy:** claims are never overwritten in place — a contradiction becomes a second,
 `disputed` claim, so both sides of a disagreement remain available to reconciliation.
+
+**Reconciliation's `same_as` threshold applies symmetrically:** at or above `SAME_AS_CONFIDENCE_THRESHOLD`
+(0.9), a swarm verdict is trusted whether it says "same entity" (auto-links) or "distinct" (no
+human review needed either) — only a genuinely uncertain verdict reaches `pending_questions`.
+Before this was symmetric, every confident "distinct" verdict (the large majority) escalated
+regardless of confidence, flooding the human review queue.
+
+### 3.2 Backoffice — Observability & Config (`specs/plan-knowledge-backoffice.md`)
+
+A web UI (`static/backoffice/`, static HTML/JS served by FastAPI) and REST API
+(`app/api/routers/backoffice.py`) over the knowledge system above, so it stops being a black box:
+
+| Component | Responsibility |
+|---|---|
+| `tracing.py` | Persists every agent/swarm run (`AgentRun`) and its full step-by-step conversation (`AgentRunEvent`) — previously discarded once a run returned its summary string. Own session, never raises — a tracing failure can't fail the run it's observing. Prunes rows past `trace_retention_days` |
+| `agent_config_service.py` | Resolves per-user overrides (model/prompt/tools/MCP servers) over the code defaults — no override row means byte-identical behavior to before this existed |
+| `mcp_server_service.py` | User-registered MCP servers (Fernet-encrypted key, same pattern as `Integration.access_token`) as an alternative to the `id_brain_mcp_url` env-var bootstrap |
+| `tool_registry.py` | Declarative catalog of every tool an agent can have enabled/disabled |
+| `run_query_service.py` | Read-only queries over runs/events for the API (pagination, filtering) |
+
+A negotiation triggered by another run (a domain agent's `ask_peer_agents`, reconciliation's
+`negotiate_same_as`, or the chat agent's `ask_domain_agents`) nests under it via `parent_run_id`,
+so the doubt and the swarm it spawned show up as one trace in the UI, not two disconnected rows.
 
 ### 4. Proactive Features
 
@@ -143,7 +173,7 @@ Daily Briefing / Weekly Digest / Meeting Prep → Notion
 ## Database Schema
 
 Core models, all with UUID primary keys and timestamps — see `specs/database-schema.md` for full
-field lists including the knowledge-graph tables:
+field lists including the knowledge-graph and backoffice tables:
 
 | Model | Key Fields | Notes |
 |---|---|---|
@@ -156,3 +186,7 @@ field lists including the knowledge-graph tables:
 | EntityClaim | entity_id, source, claim_text, confidence, status | One source's assertion about an Entity, never overwritten in place |
 | EntityLink | entity_id_a, entity_id_b, relation_type, resolved_by | `same_as` is the reconciliation merge relation |
 | PendingQuestion | raised_by_agent, question_text, target, candidate_answer, status | The resolution-ladder state machine |
+| AgentRun | agent_key, run_type, trigger, status, tokens, parent_run_id | One row per agent/swarm invocation; self-referential for nested negotiations |
+| AgentRunEvent | run_id, seq, event_type, actor, tool_name, payload | Ordered step within an AgentRun's conversation |
+| AgentConfig | user_id, agent_key, model_id, system_prompt, enabled_tools | NULL columns mean "use the code default" |
+| McpServer | name, url, api_key_encrypted, allowed_tools, rejected_tools | User-registered MCP servers, Fernet-encrypted key |

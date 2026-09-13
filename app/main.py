@@ -10,7 +10,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api.routers import (
     health, users, commitments, integrations, ingestion, query, agent, briefing,
-    identity, auth, sync, voice, knowledge, interactions, systems,
+    identity, auth, sync, voice, knowledge, interactions, systems, backoffice,
 )
 # Populates app.services.actions.registry as an import side effect, so it's
 # ready before any request reaches propose_action (strands_tools.py) or the
@@ -152,14 +152,16 @@ app.include_router(voice.router)
 app.include_router(knowledge.router)
 app.include_router(interactions.router)
 app.include_router(systems.router)
+app.include_router(backoffice.router)
 
 # Mount static frontends (only if built — `directory` must exist at mount
 # time). Historically this failed silently in production: the Dockerfile
 # never COPYed static/ into the image at all, so /voice-ui 404ed with no
-# log line explaining why (see Dockerfile's new frontend-builder stage and
-# its `COPY --from=frontend-builder /frontend/dist ./static/marea` /
-# `COPY static/voice ./static/voice`, which fix that). The warning below
-# means a future regression is at least visible in the startup log.
+# log line explaining why (see Dockerfile's frontend-builder stage and its
+# `COPY --from=frontend-builder /static/marea ./static/marea` /
+# `COPY static/voice ./static/voice` / `COPY static/backoffice
+# ./static/backoffice`, which fix that). The warning below means a future
+# regression is at least visible in the startup log.
 from fastapi.staticfiles import StaticFiles
 
 _static_voice_dir = os.path.join(os.path.dirname(__file__), "..", "static", "voice")
@@ -177,6 +179,14 @@ if os.path.isdir(_static_marea_dir):
     app.mount("/marea", StaticFiles(directory=_static_marea_dir, html=True), name="marea")
 else:
     logger.warning("static/marea not found — /marea will 404 (run `npm run build` in frontend/)")
+
+_static_backoffice_dir = os.path.join(os.path.dirname(__file__), "..", "static", "backoffice")
+if os.path.isdir(_static_backoffice_dir):
+    app.mount(
+        "/backoffice-ui", StaticFiles(directory=_static_backoffice_dir, html=True), name="backoffice-ui",
+    )
+else:
+    logger.warning("static/backoffice not found — /backoffice-ui will 404")
 
 
 if __name__ == "__main__":

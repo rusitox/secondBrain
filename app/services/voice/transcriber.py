@@ -2,6 +2,7 @@
 import io
 import logging
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -103,3 +104,16 @@ class WhisperTranscriber:
             language=detected_lang or language or "",
             duration_seconds=duration,
         )
+
+
+@lru_cache(maxsize=1)
+def get_transcriber() -> WhisperTranscriber:
+    """Shared transcriber wired from settings (voice endpoints + Slack audio ingestion)."""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    return WhisperTranscriber(
+        mode=settings.stt_mode,
+        model_name=settings.whisper_model,
+        openai_api_key=settings.openai_api_key,
+    )

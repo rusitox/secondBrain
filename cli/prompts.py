@@ -62,7 +62,8 @@ PLATFORM_INSTRUCTIONS: Dict[str, str] = {
         "You can create one at:\n"
         "  https://api.slack.com/apps -> OAuth & Permissions\n"
         "\n"
-        "Required scopes: channels:history, channels:read, im:history, users:read"
+        "Required scopes: channels:history, channels:read, im:history, users:read\n"
+        "Optional: files:read (needed to transcribe audio messages)"
     ),
     "teams": (
         "I need a Microsoft Graph API access token (same as Outlook).\n"

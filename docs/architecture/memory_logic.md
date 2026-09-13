@@ -56,7 +56,33 @@ table, plus an I+D-platform agent reading live from its own MCP server) runs a b
    produced one).
 5. A separate reconciliation pass periodically finds cross-source duplicate entities (embedding
    similarity, or a deterministic email match) and merges them via a `same_as` `entity_link`,
-   negotiating disagreements the same way (peer `Swarm`) before falling back to the human.
+   negotiating disagreements the same way (peer `Swarm`) before falling back to the human. The
+   confidence threshold for trusting a swarm verdict without human review (`SAME_AS_CONFIDENCE_THRESHOLD
+   = 0.9`) applies **symmetrically**: a confident "these are distinct entities" verdict auto-resolves
+   just like a confident "same entity" one — only a genuinely uncertain verdict reaches
+   `pending_questions`. Before this was symmetric, every confident "distinct" verdict (the large
+   majority) escalated regardless of confidence, flooding the human review queue.
 6. `GET /knowledge/status` exposes aggregate solidity metrics (entities by confidence bucket,
    claims by source, open pending questions, recent merges) so "the knowledge base gets more
    solid over time" is a verifiable claim, not an aspiration.
+7. The request-time agent loop (loop 5 above) closes the loop back into this one: `correct_knowledge`
+   lets the user fix a wrong claim or entity merge/unmerge right in conversation (writes with
+   `source="user"`, full confidence, no review queue), and `ask_domain_agents` lets the chat agent
+   trigger a real peer-`Swarm` negotiation mid-conversation to validate a doubt before answering,
+   instead of only ever consulting agents proactively during their own batch runs.
+
+## 8. The Backoffice Loop (Observability & Config)
+Every run from loop 7 — each domain agent's batch pass, each `rd_agent` cycle, reconciliation, and
+every peer-`Swarm` negotiation (including ones the chat agent triggers via `ask_domain_agents`) —
+persists as an `AgentRun` with its full step-by-step conversation as ordered `AgentRunEvent` rows
+(`app/services/agent/tracing.py`), instead of being discarded once a run returns its summary
+string. A negotiation triggered by another run nests under it via `parent_run_id`, so a domain
+agent's doubt and the swarm it spawned show up as one trace, not two disconnected rows. Old runs
+are pruned past `trace_retention_days`. Separately, `AgentConfig` rows let a user override any
+agent's model/prompt/enabled tools/MCP servers without a code change — no override row means
+byte-identical behavior to before the table existed — and `McpServer` rows let a user register
+additional MCP servers at runtime (Fernet-encrypted credentials, same pattern as
+`Integration.access_token`) as an alternative to the `id_brain_mcp_url` env-var bootstrap. The
+backoffice UI (`static/backoffice/`) is a static HTML/JS page over this: browse the knowledge
+graph, replay a run's conversation, answer pending questions, and edit agent config — see
+`specs/plan-knowledge-backoffice.md`.

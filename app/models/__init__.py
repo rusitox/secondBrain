@@ -18,6 +18,10 @@ from app.models.user_interaction import UserInteraction, InteractionStatus
 from app.models.agent_session_state import AgentSessionState
 from app.models.proposed_action import ProposedAction, ActionStatus
 from app.models.action_audit import ActionAuditLog
+from app.models.agent_run import AgentRun, RunType, RunTrigger, RunStatus
+from app.models.agent_run_event import AgentRunEvent, RunEventType
+from app.models.agent_config import AgentConfig
+from app.models.mcp_server import McpServer
 
 __all__ = [
     "Base",
@@ -51,4 +55,12 @@ __all__ = [
     "ProposedAction",
     "ActionStatus",
     "ActionAuditLog",
+    "AgentRun",
+    "RunType",
+    "RunTrigger",
+    "RunStatus",
+    "AgentRunEvent",
+    "RunEventType",
+    "AgentConfig",
+    "McpServer",
 ]

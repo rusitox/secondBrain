@@ -1,3 +1,5 @@
 - [Agent memory Phase 1](project_agent_memory_phase1.md) — AgentOrchestrator uses Anthropic tool-use loop; LLMClient.generate_with_tools() added; session_id+iterations in API
 - [Agent memory Phase 3](project_agent_memory_phase3.md) — Memory model + migration 010; save_learning/search_learnings tools; LearningExtractor; attr naming fix in AgentOrchestrator
 - [Voice interface backend](project_voice_interface.md) — STT/TTS endpoints, SSE /agent/stream, stream_callback in LLMClient; patch openai.AsyncOpenAI not transcriber module
+- [Strands migration Phase 2](project_strands_phase2.md) — make_agent_tools factory in strands_tools.py; 8 @tool wrappers over tools/ classes; embedder optional with graceful no-ops
+- [Strands migration Phase 3](project_strands_phase3.md) — StrandsOrchestrator; OpenAIModel with model_id stripped of provider prefix; stream_async for SSE; _StreamingCallbackHandler tracks tools via current_tool_use kwarg

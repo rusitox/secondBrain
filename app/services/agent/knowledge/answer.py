@@ -1,22 +1,22 @@
-"""Shared implementation for answering a knowledge-graph PendingQuestion.
+"""Supporting helpers for the generative-UI interaction/learn flow.
 
-Extracted from the confirm_pending_answer Strands tool
-(app/services/agent/strands_tools.py) so the tool and, from Fase 2 onward,
-the interactions inbox (app/api/routers/interactions.py) share one
-implementation and one idempotency guard instead of the tool being the
-only place this logic exists.
+Resolving a knowledge-graph PendingQuestion (the confirm_pending_answer
+Strands tool) is handled by app.services.agent.knowledge.reconciliation's
+apply_question_answer — this module used to duplicate that logic under a
+different name; it now only carries what's genuinely unique to the
+interactions inbox (app/api/routers/interactions.py): recording a claim
+straight from an answered UserInteraction (no PendingQuestion involved),
+and rendering a learn directive's claim template.
 """
 import logging
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entity_claim import ClaimStatus
-from app.models.entity_link import LinkResolvedBy
-from app.models.pending_question import QuestionStatus, ResolvedBy
 from app.services.agent.knowledge import reconciliation
 from app.services.agent.knowledge import store as knowledge_store
 
@@ -28,61 +28,6 @@ logger = logging.getLogger(__name__)
 # agree on the token shape, not share an import across a schema/service
 # boundary.
 _TEMPLATE_KEY_PATTERN = re.compile(r"\{([a-z][a-z0-9_]{0,31})\}")
-
-
-async def answer_pending_question(
-    db: AsyncSession,
-    user_id: uuid.UUID,
-    question_id: uuid.UUID,
-    answer_text: str,
-    confirmed: bool = True,
-) -> Dict[str, Any]:
-    """Record a human's answer to a knowledge-graph PendingQuestion.
-
-    A confirmed answer becomes a high-confidence claim (or a same_as link,
-    for an "are these the same entity" question); either way the question
-    is marked resolved. Idempotent: re-answering an already-resolved
-    question is a no-op that reports the conflict rather than double-writing
-    the claim/link and double-counting it in recompute_confidence.
-    """
-    question = await knowledge_store.get_question(db, user_id, question_id)
-    if question is None:
-        return {"error": f"question {question_id} not found"}
-    if question.status != QuestionStatus.OPEN:
-        return {"error": f"question {question_id} is already {question.status.value}"}
-
-    entity_id = question.context.get("entity_id")
-    candidate_entity_id = question.context.get("candidate_entity_id")
-    touched_entity_ids: List[str] = []
-
-    try:
-        async with db.begin_nested():
-            if confirmed and entity_id and candidate_entity_id:
-                await knowledge_store.link_entities(
-                    db, user_id, uuid.UUID(entity_id), uuid.UUID(candidate_entity_id),
-                    relation_type="same_as", resolved_by=LinkResolvedBy.USER, confidence=1.0,
-                )
-                touched_entity_ids = [entity_id, candidate_entity_id]
-            elif confirmed and entity_id:
-                await knowledge_store.add_claim(
-                    db, uuid.UUID(entity_id), user_id, source="user", claim_text=answer_text,
-                    asserted_by_agent="user", status=ClaimStatus.CONFIRMED_BY_USER, confidence=1.0,
-                )
-                touched_entity_ids = [entity_id]
-
-            await knowledge_store.resolve_question(
-                db, user_id, question.id, ResolvedBy.HUMAN, answer_text=answer_text,
-                status=QuestionStatus.ANSWERED if confirmed else QuestionStatus.DISMISSED,
-            )
-
-            for eid in touched_entity_ids:
-                new_confidence = await reconciliation.recompute_confidence(db, user_id, uuid.UUID(eid))
-                await knowledge_store.update_entity_confidence(db, user_id, uuid.UUID(eid), new_confidence)
-    except (SQLAlchemyError, ValueError) as e:
-        logger.warning("answer_pending_question failed for question_id=%s: %s", question_id, e)
-        return {"error": str(e)}
-
-    return {"resolved": True, "entities_updated": touched_entity_ids}
 
 
 async def record_user_claim(

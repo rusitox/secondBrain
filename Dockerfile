@@ -48,11 +48,14 @@ COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
 # static/ was never copied here before — app/main.py's mounts for
-# /voice-ui and /marea were silently 404ing in every deployed image ("if
-# os.path.isdir(...)" made the miss invisible; it now at least logs a
-# warning). static/voice/ is hand-written and copied as-is; static/marea/
-# is MAREA's build output from the frontend-builder stage above.
+# /voice-ui, /backoffice and /marea were silently 404ing in every deployed
+# image ("if os.path.isdir(...)" made the miss invisible; it now at least
+# logs a warning). static/voice/ and static/backoffice/ are hand-written
+# and copied as-is; static/marea/ is MAREA's build output from the
+# frontend-builder stage above (not checked into git, so it can't come
+# from a plain `COPY static/ ./static/`).
 COPY static/voice ./static/voice
+COPY static/backoffice ./static/backoffice
 COPY --from=frontend-builder /static/marea ./static/marea
 COPY infra/docker-entrypoint.sh /docker-entrypoint.sh
 

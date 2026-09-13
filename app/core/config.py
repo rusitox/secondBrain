@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     # can actually render app.api.schemas.ui_protocol requests.
     enable_generative_ui: bool = False
 
+    # Backoffice run/event trace retention (specs/plan-knowledge-backoffice.md, Phase 6) —
+    # agent_run_events in particular can carry near-full tool payloads per event (truncated,
+    # not unbounded, but still real volume at scale); rows past this window are pruned once per
+    # knowledge cycle. Independent of enable_knowledge_agents: cleanup runs whenever the cycle
+    # runs, since a disabled scheduler already means no new rows are being written.
+    trace_retention_days: int = 30
+
     @field_validator("fernet_key")
     @classmethod
     def validate_fernet_key(cls, v: str) -> str:

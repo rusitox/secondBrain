@@ -40,7 +40,8 @@ class TestFindCandidateDuplicates:
 
         with patch.object(reconciliation.store, "list_entities", fake_list_entities), \
              patch.object(reconciliation.store, "find_similar_entities", fake_find_similar), \
-             patch.object(reconciliation, "_already_linked", AsyncMock(return_value=False)):
+             patch.object(reconciliation, "_already_linked", AsyncMock(return_value=False)), \
+             patch.object(reconciliation.store, "links_exist", AsyncMock(return_value=False)):
             candidates = await reconciliation.find_candidate_duplicates(
                 MagicMock(), uuid.uuid4(), entity_type=EntityType.PERSON,
             )
@@ -65,6 +66,35 @@ class TestFindCandidateDuplicates:
             )
 
         assert candidates == []
+
+    async def test_confidently_distinct_pairs_are_excluded(self) -> None:
+        """A pair the swarm already decided is not_same_as (see
+        _run_reconciliation_pass) must not be rediscovered by embedding
+        similarity and re-negotiated — a real LLM call — on every future
+        cycle. Without this exclusion, only the same_as check existed, so a
+        confident "distinct" verdict had nothing stopping it from recurring
+        forever."""
+        a, b = _make_entity(), _make_entity()
+
+        async def fake_list_entities(db, user_id, entity_type=None):
+            return [a, b]
+
+        async def fake_find_similar(db, user_id, entity, max_distance=0.15, limit=5):
+            return [b] if entity is a else [a]
+
+        with patch.object(reconciliation.store, "list_entities", fake_list_entities), \
+             patch.object(reconciliation.store, "find_similar_entities", fake_find_similar), \
+             patch.object(reconciliation, "_already_linked", AsyncMock(return_value=False)), \
+             patch.object(reconciliation.store, "links_exist", AsyncMock(return_value=True)) as mock_links_exist:
+            candidates = await reconciliation.find_candidate_duplicates(
+                MagicMock(), uuid.uuid4(), entity_type=EntityType.PERSON,
+            )
+
+        assert candidates == []
+        mock_links_exist.assert_awaited_once()
+        call_kwargs = mock_links_exist.await_args.kwargs
+        assert call_kwargs["relation_type"] == "not_same_as"
+        assert {mock_links_exist.await_args.args[2], mock_links_exist.await_args.args[3]} == {a.id, b.id}
 
     async def test_no_similar_entities_returns_empty(self) -> None:
         a = _make_entity()

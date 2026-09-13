@@ -128,6 +128,8 @@ class KnowledgeAgentScheduler:
         isolating failures per integration.
         """
         from app.core.config import get_settings
+        from app.models.agent_run import RunTrigger
+        from app.services.agent import tracing
         from app.services.agent.knowledge.domain_agent import REGISTERED_SOURCES, run_domain_agent
         from app.services.agent.knowledge.rd_agent import run_rd_domain_agent
         from app.services.agent.knowledge.reconciliation import run_reconciliation
@@ -144,6 +146,7 @@ class KnowledgeAgentScheduler:
             async def _call(db: AsyncSession) -> Dict[str, Any]:
                 return await run_domain_agent(
                     source, db, uid, batch_size=settings.knowledge_agent_batch_size, embedder=embedder,
+                    trigger=RunTrigger.SCHEDULER,
                 )
             return _call
 
@@ -164,13 +167,19 @@ class KnowledgeAgentScheduler:
         if settings.id_brain_mcp_url:
             await self._run_step(
                 session_factory, "rd_agent", user_id,
-                lambda db: run_rd_domain_agent(db, uid, embedder=embedder),
+                lambda db: run_rd_domain_agent(db, uid, embedder=embedder, trigger=RunTrigger.SCHEDULER),
             )
 
         await self._run_step(
             session_factory, "reconciliation", user_id,
-            lambda db: run_reconciliation(db, uid),
+            lambda db: run_reconciliation(db, uid, trigger=RunTrigger.SCHEDULER),
         )
+
+        async def _prune_traces_call(db: AsyncSession) -> Dict[str, Any]:
+            deleted = await tracing.prune_traces(db, uid, settings.trace_retention_days)
+            return {"runs_deleted": deleted}
+
+        await self._run_step(session_factory, "prune_traces", user_id, _prune_traces_call)
 
     @staticmethod
     async def _run_step(

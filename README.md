@@ -197,15 +197,16 @@ Daily Briefing / Weekly Digest / Meeting Prep → Notion
 |-------|------|-------------|
 | Core | `app/core/` | Config, database, security, logging |
 | Models | `app/models/` | User, Identity, Integration, Document, Commitment, APIKey |
-| API | `app/api/routers/` | 13 REST routers (health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth, voice, knowledge) |
+| API | `app/api/routers/` | 14 REST routers (health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth, voice, knowledge, backoffice) |
 | Auth | `app/core/security.py` | API key authentication (Bearer token, bcrypt) |
 | Connectors | `app/services/connectors/` | Outlook, Teams, Slack, Fathom, Notion |
 | Ingestion | `app/services/ingestion/` | Cleaner, chunker, embedder, pipeline |
 | Retrieval | `app/services/retrieval/` | Semantic search with metadata filters |
 | LLM | `app/services/llm/` | Claude client + prompt templates |
 | Commitments | `app/services/commitments/` | AI-powered commitment detection |
-| Agent | `app/services/agent/` | Strands Agent (AWS Strands Agents framework) with tool-use loop |
+| Agent | `app/services/agent/` | Strands Agent (AWS Strands Agents framework) with tool-use loop; `correct_knowledge`/`ask_domain_agents` let the chat agent fix or validate the knowledge graph live in conversation |
 | Knowledge | `app/services/agent/knowledge/` | Multi-agent knowledge graph: one domain agent per data source proposes entities/claims, resolving doubts via peer-agent negotiation before ever asking the human |
+| Backoffice | `app/services/agent/{tracing,agent_config_service,mcp_server_service,tool_registry,run_query_service}.py` + `static/backoffice/` | Observability/config UI for the knowledge system: every agent run + its conversation persisted, per-agent model/prompt/tools/MCP overrides, user-registered MCP servers — see `specs/plan-knowledge-backoffice.md` |
 | Briefing | `app/services/briefing/` | Daily briefing generator + scheduler |
 | Sync | `app/services/sync/` | Server-side periodic sync (APScheduler) |
 | Notion | `app/services/notion/` | Publisher, sync, digest, blocks, config |
@@ -256,7 +257,7 @@ secondBrain/
 │   ├── core/               # Config, database, security (API key auth)
 │   ├── models/             # SQLAlchemy models (User, APIKey, etc.)
 │   ├── api/
-│   │   ├── routers/        # REST endpoints (13 routers)
+│   │   ├── routers/        # REST endpoints (14 routers)
 │   │   └── schemas/        # Pydantic models
 │   └── services/
 │       ├── connectors/     # Platform connectors (5)

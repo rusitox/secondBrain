@@ -41,8 +41,8 @@ docker compose up -d                      # Start local DB + server
 FastAPI backend with async SQLAlchemy, organized in layers:
 
 - **`app/core/`** — Config (pydantic-settings), database engine/session, security (Fernet encryption + API key auth), logging
-- **`app/models/`** — SQLAlchemy models: User, Identity, Integration, Document (with pgvector), Commitment, APIKey, plus the knowledge-graph models (Entity, EntityClaim, EntityLink, PendingQuestion, ProcessedDocument)
-- **`app/api/routers/`** — REST endpoints: health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth, voice, knowledge
+- **`app/models/`** — SQLAlchemy models: User, Identity, Integration, Document (with pgvector), Commitment, APIKey, the knowledge-graph models (Entity, EntityClaim, EntityLink, PendingQuestion, ProcessedDocument), and the backoffice models (AgentRun, AgentRunEvent, AgentConfig, McpServer)
+- **`app/api/routers/`** — REST endpoints: health, users, commitments, integrations, ingestion, query, agent, briefing, identity, sync, auth, voice, knowledge, backoffice
 - **`app/api/schemas/`** — Pydantic request/response models
 - **`app/services/`** — Business logic:
   - `connectors/` — Platform connectors: MSGraph (Outlook), Teams, Slack, Fathom, Notion
@@ -51,7 +51,8 @@ FastAPI backend with async SQLAlchemy, organized in layers:
   - `llm/` — Claude client + prompt templates
   - `commitments/` — AI-powered commitment detection
   - `agent/` — `StrandsOrchestrator` (AWS Strands Agents): builds a single stateless Strands `Agent` per request with all tools attached, runs Strands' native multi-turn tool-use loop, and returns the synthesized answer directly — no manual tool-use loop or sub-agent fan-out. Tools are `@tool`-decorated closures from `strands_tools.py` wrapping the implementations in `tools/`, plus knowledge-graph tools (`query_knowledge`, `get_pending_questions`, `confirm_pending_answer`) backed by `agent/knowledge/`.
-    - `knowledge/` — Multi-agent knowledge system (see `specs/plan-multi-agent-knowledge.md`): one Strands domain agent per data source (Slack/Outlook/Teams/Fathom/Notion, plus I+D via its own MCP server) proposes entities/claims into a shared graph. A resolution ladder — `consult_knowledge_base` → `ask_peer_agents` (scoped Strands `Swarm` negotiation) → `escalate_or_validate` (human validation) — means agents only ask the human as a last resort, carrying a candidate answer when they have one. `store.py` (CRUD + `get_knowledge_stats` observability), `resolution.py` (find-or-create-entity, consult), `reconciliation.py` (cross-source duplicate detection + `same_as` merging via embedding similarity), `swarm_negotiation.py` (shared Swarm core), `domain_agent.py` (Document-table-backed agents + shared resolution-ladder tools), `rd_agent.py` (I+D platform agent via MCP, read-only), `scheduler.py` (`KnowledgeAgentScheduler` — opt-in periodic per-user cycle: every source, then reconciliation; not tied to `is_production` since every cycle costs real LLM calls).
+    - `knowledge/` — Multi-agent knowledge system (see `specs/plan-multi-agent-knowledge.md`): one Strands domain agent per data source (Slack/Outlook/Teams/Fathom/Notion, plus I+D via its own MCP server) proposes entities/claims into a shared graph. A resolution ladder — `consult_knowledge_base` → `ask_peer_agents` (scoped Strands `Swarm` negotiation) → `escalate_or_validate` (human validation) — means agents only ask the human as a last resort, carrying a candidate answer when they have one. `store.py` (CRUD + `get_knowledge_stats` observability), `resolution.py` (find-or-create-entity, consult), `reconciliation.py` (cross-source duplicate detection + `same_as` merging via embedding similarity), `swarm_negotiation.py` (shared Swarm core), `domain_agent.py` (Document-table-backed agents + shared resolution-ladder tools), `rd_agent.py` (I+D platform agent via MCP, read-only), `scheduler.py` (`KnowledgeAgentScheduler` — opt-in periodic per-user cycle: every source, then reconciliation, then trace pruning; not tied to `is_production` since every cycle costs real LLM calls).
+    - Backoffice for the knowledge system (see `specs/plan-knowledge-backoffice.md`): `tracing.py` persists every agent/swarm run + its full conversation (`AgentRun`/`AgentRunEvent`, own session, never raises — a tracing failure can't fail the run it's observing) and prunes rows past `settings.trace_retention_days`; `agent_config_service.py` resolves per-user overrides (model/prompt/tools/MCPs) over the code defaults — no override row means byte-identical behavior to before this existed; `mcp_server_service.py` is user-registered MCP servers (Fernet-encrypted key, same pattern as `Integration.access_token`) as an alternative to the `id_brain_mcp_url` env-var bootstrap; `tool_registry.py` is the declarative tool catalog; `run_query_service.py` is read-only queries over runs/events for the API.
   - `briefing/` — Daily briefing generator + scheduler
   - `sync/` — Server-side periodic sync scheduler (APScheduler)
   - `notion/` — Notion publisher, bidirectional sync, weekly digest, block parsing, workspace config
@@ -110,11 +111,14 @@ Terminal-based chat interface consuming the REST API:
 - `app/core/database.py` — Async engine, session factory
 - `app/core/security.py` — API key authentication (Bearer token + bcrypt verification)
 - `app/models/` — SQLAlchemy models (Base, UUIDMixin, TimestampMixin, APIKey)
-- `app/api/routers/` — API endpoints (13 routers)
+- `app/api/routers/` — API endpoints (14 routers)
 - `app/services/connectors/` — Platform connectors (5: outlook, teams, slack, fathom, notion)
 - `app/services/agent/strands_orchestrator.py` — StrandsOrchestrator (main agent entry point)
 - `app/services/agent/strands_tools.py` — Strands `@tool`-decorated wrappers around `tools/`
-- `app/services/agent/knowledge/` — Multi-agent knowledge system: `store.py` (CRUD + observability), `domain_agent.py` (per-source Document agents), `rd_agent.py` (I+D platform via MCP), `resolution.py`, `reconciliation.py`, `swarm_negotiation.py`, `scheduler.py` (opt-in periodic knowledge cycles)
+- `app/services/agent/knowledge/` — Multi-agent knowledge system: `store.py` (CRUD + observability), `domain_agent.py` (per-source Document agents), `rd_agent.py` (I+D platform via MCP), `resolution.py`, `reconciliation.py`, `swarm_negotiation.py`, `scheduler.py` (opt-in periodic knowledge cycles + trace pruning)
+- `app/services/agent/{tracing,agent_config_service,mcp_server_service,tool_registry,run_query_service}.py` — Knowledge-system backoffice (see `specs/plan-knowledge-backoffice.md`): run/event tracing, per-agent config resolution, user-registered MCP servers, tool catalog, read-only run queries
+- `app/api/routers/backoffice.py` + `app/api/schemas/backoffice.py` — Backoffice REST API (agent config, tools, MCP servers, runs/traces, knowledge graph)
+- `static/backoffice/` — Backoffice admin UI (static HTML/JS/CSS, mounted at `/backoffice-ui`)
 - `app/services/ingestion/pipeline.py` — Central data flow
 - `app/services/retrieval/search.py` — Hybrid vector search
 - `app/services/sync/scheduler.py` — APScheduler-based periodic sync

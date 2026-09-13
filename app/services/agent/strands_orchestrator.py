@@ -4,6 +4,7 @@ Uses AWS Strands Agents with an OpenAI-compatible model backend. All tools are
 injected via ``make_agent_tools`` closures so the Strands Agent receives a
 flat list of ready-to-call tool functions — no sub-agent parallelism required.
 """
+import asyncio
 import json
 import logging
 import uuid
@@ -17,8 +18,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.stream import StreamEmitter
+from app.models.agent_run import RunStatus, RunTrigger, RunType
 from app.models.conversation_turn import ConversationTurn
-from app.services.agent import interactions_store
+from app.services.agent import agent_config_service, interactions_store, tracing
+from app.services.agent.agent_config_service import EffectiveAgentConfig
 
 if TYPE_CHECKING:
     from strands.agent.agent_result import AgentResult
@@ -401,28 +404,74 @@ class StrandsOrchestrator:
         )
 
         # 4. Build Strands Agent
-        agent = self._build_agent(
-            db=db,
-            user_id=user_id,
-            user_tz=user_tz,
-            system_prompt=system_prompt,
-            history=history,
-            emit=emit,
-            session_id=session_uuid,
+        # 4. Build Strands Agent
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        config = await agent_config_service.get_effective_config(
+            db, user_id, "orchestrator", default_system_prompt=system_prompt,
         )
+
+        # Started before _build_agent (not after, like every other tracing.start_run
+        # call site) so the run_id exists in time to hand to make_agent_tools as
+        # parent_run_id — the ask_domain_agents tool's own negotiation sub-run needs
+        # it to show up nested under this chat run in the backoffice, not floating.
+        run_id = await tracing.start_run(
+            user_id, agent_key="orchestrator", run_type=RunType.CHAT, trigger=RunTrigger.API,
+            model_id=config.model_id or settings.llm_model,
+        )
+
+        try:
+            agent = self._build_agent(
+                db=db,
+                user_id=user_id,
+                user_tz=user_tz,
+                system_prompt=system_prompt,
+                history=history,
+                emit=emit,
+                session_id=session_uuid,
+                config=config,
+                run_id=run_id,
+            )
+        except Exception as e:
+            # Before the run_id-before-_build_agent reorder above, a failure here
+            # happened before any AgentRun row existed — nothing to clean up. Now
+            # that start_run has already run, skipping this would leave the row
+            # RUNNING forever (no agent, so no agent.messages to persist either).
+            logger.exception("StrandsOrchestrator: _build_agent failed for user=%s", user_id)
+            await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
+            raise
 
         # 5. Run agent — capture the terminal AgentResult either way, instead
         # of reconstructing the answer from agent.messages, so stop_reason
         # and any interrupts are available.
         try:
             result = await self._run_agent(agent, question, emit)
-        except Exception:
+        except asyncio.CancelledError:
+            logger.info(
+                "StrandsOrchestrator: cancelled for user=%s session=%s", user_id, resolved_session_id,
+            )
+            await tracing.record_agent_events(run_id, agent, actor="orchestrator")
+            await tracing.finish_run(run_id, RunStatus.FAILED, error="cancelled")
+            raise
+        except Exception as e:
             logger.exception(
                 "StrandsOrchestrator: agent failed for user=%s question=%r",
                 user_id,
                 question[:80],
             )
+            await tracing.record_agent_events(run_id, agent, actor="orchestrator")
+            await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
             raise
+
+        # Preliminary answer text for the trace summary only — _finalize_turn
+        # below recomputes the real answer (and branches on interrupts), but
+        # tracing.finish_run needs to close out this AgentRun before that.
+        trace_summary = _extract_last_assistant_text([result.message]) or _extract_last_assistant_text(agent.messages)
+        await tracing.record_agent_events(run_id, agent, actor="orchestrator")
+        await tracing.finish_run(
+            run_id, RunStatus.COMPLETED, summary=trace_summary, usage_source=agent,
+        )
 
         # 6-7. Persist turns (branching on a clean end vs. a new interrupt)
         # and return the result dict.
@@ -497,14 +546,30 @@ class StrandsOrchestrator:
             style_text=style_text,
         )
 
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        config = await agent_config_service.get_effective_config(
+            db, user_id, "orchestrator", default_system_prompt=system_prompt,
+        )
+        run_id = await tracing.start_run(
+            user_id, agent_key="orchestrator", run_type=RunType.CHAT, trigger=RunTrigger.API,
+            model_id=config.model_id or settings.llm_model,
+        )
+
         # history=[] deliberately — load_snapshot below overwrites
         # agent.messages entirely with the paused conversation's own
         # history (which already includes the dangling toolUse), so
         # pre-seeding it here would just be discarded.
-        agent = self._build_agent(
-            db=db, user_id=user_id, user_tz=user_tz, system_prompt=system_prompt, history=[], emit=emit,
-            session_id=session_id,
-        )
+        try:
+            agent = self._build_agent(
+                db=db, user_id=user_id, user_tz=user_tz, system_prompt=system_prompt, history=[], emit=emit,
+                session_id=session_id, config=config, run_id=run_id,
+            )
+        except Exception as e:
+            logger.exception("StrandsOrchestrator: _build_agent failed for user=%s (resume)", user_id)
+            await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
+            raise
 
         from strands import Snapshot
 
@@ -520,12 +585,27 @@ class StrandsOrchestrator:
 
         try:
             result = await self._run_agent(agent, prompt, emit)
-        except Exception:
+        except asyncio.CancelledError:
+            logger.info(
+                "StrandsOrchestrator: resume cancelled for user=%s session=%s", user_id, session_id,
+            )
+            await tracing.record_agent_events(run_id, agent, actor="orchestrator")
+            await tracing.finish_run(run_id, RunStatus.FAILED, error="cancelled")
+            raise
+        except Exception as e:
             logger.exception(
                 "StrandsOrchestrator: resume failed for user=%s session=%s interrupt=%s",
                 user_id, session_id, interrupt_id,
             )
+            await tracing.record_agent_events(run_id, agent, actor="orchestrator")
+            await tracing.finish_run(run_id, RunStatus.FAILED, error=str(e))
             raise
+
+        trace_summary = _extract_last_assistant_text([result.message]) or _extract_last_assistant_text(agent.messages)
+        await tracing.record_agent_events(run_id, agent, actor="orchestrator")
+        await tracing.finish_run(
+            run_id, RunStatus.COMPLETED, summary=trace_summary, usage_source=agent,
+        )
 
         return await self._finalize_turn(db, user_id, session_id, turn_id, user_turn_content, agent, result)
 
@@ -737,6 +817,8 @@ class StrandsOrchestrator:
         history: List[Dict[str, Any]],
         emit: Optional[StreamEmitter],
         session_id: uuid.UUID,
+        config: Optional[EffectiveAgentConfig] = None,
+        run_id: Optional[uuid.UUID] = None,
     ) -> Any:
         """Instantiate a Strands Agent for a single request.
 
@@ -748,6 +830,26 @@ class StrandsOrchestrator:
         closes over this same AsyncSession, which is not safe for concurrent
         use from more than one task at a time (same reasoning as
         app/services/agent/knowledge/domain_agent.py's make_domain_agent).
+
+        config only overrides model_id and enabled_tools — never
+        system_prompt, unlike the domain agents. `system_prompt` here is
+        already dynamically composed per-request (identity, style, today's
+        date via _build_system_prompt) before this method is called; a config
+        row replacing it wholesale would silently drop that personalization,
+        so Phase 2 deliberately doesn't offer it for the orchestrator.
+
+        config.enabled is likewise never checked here, unlike run_domain_agent
+        / run_rd_domain_agent, which skip the run entirely when disabled. The
+        orchestrator is the user's whole chat interface, not a background
+        cycle — a stray `enabled=False` row (or a backoffice UI bug) silently
+        breaking the entire assistant is a worse failure mode than a knowledge
+        agent no-op, so this carve-out is deliberate, not an oversight.
+
+        run_id is this request's own AgentRun (already started by the caller
+        before calling this method) — passed through to make_agent_tools as
+        parent_run_id so a negotiation the ask_domain_agents tool triggers
+        mid-conversation is traced as a sub-run of this chat, not a
+        disconnected row.
         """
         from strands import Agent
         from strands.tools.executors import SequentialToolExecutor
@@ -755,7 +857,7 @@ class StrandsOrchestrator:
         from app.services.agent.strands_model import build_openai_model
         from app.services.agent.strands_tools import make_agent_tools
 
-        model = build_openai_model()
+        model = build_openai_model(model=config.model_id if config else None)
 
         tools = make_agent_tools(
             db=db,
@@ -763,7 +865,10 @@ class StrandsOrchestrator:
             user_timezone=user_tz,
             embedder=self._embedder,
             session_id=session_id,
+            parent_run_id=run_id,
         )
+        if config is not None:
+            tools = agent_config_service.filter_tools(tools, config.enabled_tools)
 
         callback_handler = _StreamingCallbackHandler(emit)
 
@@ -953,32 +1058,46 @@ Para preguntas acotadas a un día puntual (mails/eventos "de hoy", "de ayer"), u
 get_emails/get_calendar en vez de search_memory — son filtros de fecha exactos, \
 no similitud. Para "¿me mencionaron en Slack?" o similares, usá get_my_mentions \
 — es un match exacto contra tu propia cuenta de Slack, no similitud semántica.
-3. Al empezar la conversación (o cuando sea natural), llamá get_pending_questions — \
+3. Si lo que trae query_knowledge no te alcanza para responder con confianza — \
+fuentes que se contradicen entre sí, o una duda puntual sobre una entidad — \
+llamá a ask_domain_agents antes de responder. Dispara una negociación real entre \
+los agentes de dominio que tienen algo que decir sobre esa entidad (puede tardar \
+unos segundos), así que usalo con criterio: para una duda real, no para cada \
+pregunta trivial que el grafo ya responde. Si tampoco así se resuelve, decile al \
+usuario honestamente que no estás seguro en vez de presentar una conjetura como \
+si fuera un hecho confirmado.
+4. Al empezar la conversación (o cuando sea natural), llamá get_pending_questions — \
 son dudas que los agentes de dominio no pudieron resolver solos y te piden que se \
 las confirmes al humano. Si hay alguna relevante, planteala con naturalidad, no la \
 fuerces en cada respuesta. Si el usuario confirma o corrige, llamá \
 confirm_pending_answer para cerrar el loop — esa respuesta pasa a ser conocimiento \
 de alta confianza.
-4. Si el usuario te cuenta algo durable al pasar — una preferencia, una \
+5. Si el usuario te cuenta algo durable al pasar — una preferencia, una \
 corrección, un hecho sobre una persona o proyecto que no estaba en tu \
 contexto — llamá save_learning para que quede disponible en conversaciones \
 futuras. No hace falta que te lo pidan explícitamente; distilar lo que vale \
 la pena recordar es tu trabajo, no el del usuario.
-5. Si el usuario te dice que un pendiente/compromiso está mal armado — es de \
+6. Si el usuario te dice que un pendiente/compromiso está mal armado — es de \
 otra persona, ya está resuelto, o tiene mal el texto — NUNCA respondas como si \
 ya lo hubieras corregido: llamá propose_action con action_type="update_commitment" \
 (describe_action_types te da el payload exacto) para que lo apruebe antes de \
 aplicarse. Necesitás el commitment_id — si no lo tenés a mano, pedilo o buscalo \
 con las tools de lectura primero.
-6. get_calendar/get_emails/get_my_mentions devuelven lista vacía tanto si \
+7. get_calendar/get_emails/get_my_mentions devuelven lista vacía tanto si \
 genuinamente no hay nada como si la sincronización de esa fuente está rota — \
 la tool no puede distinguirlo. Antes de afirmar "no tenés reuniones/mails/etc." \
 como una respuesta segura, llamá get_sync_status y fijate el campo "status" de \
 la plataforma correspondiente (outlook/teams/slack): si dice "error", NO digas \
 que no hay nada — contale al usuario que hay un problema de sincronización \
 (podés citar el campo "error" si ayuda) en vez de una ausencia real de datos.
-7. Llamá otras tools según lo requiera la pregunta
-8. Sintetizá una respuesta clara y accionable
+8. Si en cualquier momento de la charla el usuario te señala que algo del \
+conocimiento está mal — un dato equivocado, dos cosas que se fusionaron como si \
+fueran la misma sin serlo, o dos que en realidad sí son la misma — confirmá en voz \
+alta qué entendiste y llamá a correct_knowledge para corregirlo ahí mismo. Así la \
+base de conocimiento queda viva: se corrige con la conversación, no sólo con lo que \
+ingieren los agentes de dominio.
+9. Llamá otras tools según lo requiera la pregunta
+10. Sintetizá una respuesta clara y accionable
 
 Respondé siempre en el idioma del usuario."""
 

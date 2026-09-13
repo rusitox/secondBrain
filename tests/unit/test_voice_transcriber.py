@@ -2,7 +2,8 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.services.voice.transcriber import WhisperTranscriber
+from app.core.config import get_settings
+from app.services.voice.transcriber import WhisperTranscriber, get_transcriber
 
 
 class TestWhisperTranscriberAPI:
@@ -41,3 +42,17 @@ class TestWhisperTranscriberAPI:
             result = await transcriber.transcribe(b"", "audio.webm")
 
         assert result.transcript == ""
+
+
+class TestGetTranscriber:
+    def test_wired_from_settings(self) -> None:
+        settings = get_settings()
+        transcriber = get_transcriber()
+        assert isinstance(transcriber, WhisperTranscriber)
+        assert transcriber._mode == settings.stt_mode
+        assert transcriber._model_name == settings.whisper_model
+        assert transcriber._openai_api_key == settings.openai_api_key
+
+    def test_returns_cached_singleton(self) -> None:
+        """Shared by the voice router and the Slack connector — same instance both times."""
+        assert get_transcriber() is get_transcriber()

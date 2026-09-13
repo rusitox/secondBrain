@@ -160,7 +160,7 @@ class APIClient:
 | Plataforma | URL para token | Tipo de token | Permisos necesarios |
 |---|---|---|---|
 | Outlook | `https://developer.microsoft.com/graph/graph-explorer` | OAuth2 access token | `Mail.Read`, `Calendars.Read` |
-| Slack | `https://api.slack.com/apps` → OAuth & Permissions | Bot token (`xoxb-`) | `channels:history`, `channels:read`, `im:history`, `users:read` |
+| Slack | `https://api.slack.com/apps` → OAuth & Permissions | Bot token (`xoxb-`) | `channels:history`, `channels:read`, `im:history`, `users:read`, `files:read` (opcional, transcribe audios) |
 | Teams | Mismo que Outlook (MS Graph) | OAuth2 access token | `Chat.Read` |
 | Fathom | `https://app.fathom.video/settings` → API | API key | Read access |
 

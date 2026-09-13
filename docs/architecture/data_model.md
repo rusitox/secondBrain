@@ -92,6 +92,51 @@ propose structured entities and claims into a shared, cross-source graph, reconc
 - `source`: Text — tracks which Document rows a domain agent already extracted, so a batch run
   never re-reads the same document twice
 
+## Backoffice (Knowledge System Observability & Config)
+
+Separate from the knowledge graph above — see `specs/plan-knowledge-backoffice.md`. Persists what
+every domain agent / reconciliation pass / peer negotiation / chat run actually did (previously
+discarded once a run returned its summary string), and lets model/prompt/tools/MCP servers be
+overridden per agent without a code change.
+
+### `agent_runs`
+- `id`: UUID (PK), `user_id`: UUID (FK -> users, CASCADE)
+- `agent_key`: Text (e.g. `slack`, `outlook`, `rd`, `reconciliation`, `orchestrator` — free text,
+  not an enum, so a new agent doesn't need a migration)
+- `run_type`: Enum (domain_agent, rd_agent, reconciliation, negotiation, chat)
+- `trigger`: Enum (scheduler, manual, api)
+- `status`: Enum (running, completed, failed), `model_id`: Text, nullable
+- `started_at`, `finished_at`, `duration_ms`, `input_tokens`, `output_tokens`, `total_tokens`
+- `summary`: Text, nullable, `error`: Text, nullable, `stats`: JSONB
+- `parent_run_id`: UUID (FK -> agent_runs, SET NULL) — a negotiation triggered by another run
+  (`ask_peer_agents`, `negotiate_same_as`, the chat agent's `ask_domain_agents`) nests under it
+
+### `agent_run_events`
+- `id`: UUID (PK), `run_id`: UUID (FK -> agent_runs, CASCADE), `seq`: Integer (ordering)
+- `event_type`: Enum (assistant_text, tool_call, tool_result, handoff, verdict, error)
+- `actor`: Text, nullable, `tool_name`: Text, nullable, `payload`: JSONB
+- `created_at`: Timestamp — immutable once written, no `updated_at`
+
+### `agent_configs`
+- `id`: UUID (PK), `user_id`: UUID (FK -> users, CASCADE)
+- `agent_key`: Text, `enabled`: Boolean, default true
+- `model_id`: Text, nullable, `system_prompt`: Text, nullable — `NULL` means "use the code
+  default"; a user with no row at all gets exactly the hardcoded behavior
+- `enabled_tools`: JSONB list, nullable, `mcp_server_ids`: JSONB list, default `[]`
+- `params`: JSONB, default `{}`
+- Unique on `(user_id, agent_key)`
+
+### `mcp_servers`
+- `id`: UUID (PK), `user_id`: UUID (FK -> users, CASCADE)
+- `name`: Text, `url`: Text, `auth_header`: Text, default `Authorization`
+- `api_key_encrypted`: Text, nullable — Fernet-encrypted, same pattern as
+  `Integration.access_token`, never stored/returned as plaintext outside the service layer
+- `enabled`: Boolean, default true
+- `allowed_tools` / `rejected_tools`: JSONB lists, nullable — map directly to Strands'
+  `MCPClient(tool_filters=...)`
+- `last_checked_at`: Timestamp, nullable, `last_status`: Text, nullable
+- `discovered_tools`: JSONB list, default `[]`
+
 ## Key Relationships
 - User -> Identities (1:N, cascade delete)
 - User -> Integrations (1:N, cascade delete)
@@ -101,6 +146,9 @@ propose structured entities and claims into a shared, cross-source graph, reconc
 - User -> Entities -> EntityClaims / EntityLinks / PendingQuestions (1:N, cascade delete)
 - Document -> ProcessedDocument (1:1 per source, cascade delete) — I+D platform data has no
   Document row; it's read live from its MCP server instead
+- User -> AgentRuns -> AgentRunEvents (1:N, cascade delete); AgentRun -> AgentRun (self-referential
+  `parent_run_id`, SET NULL on delete)
+- User -> AgentConfigs / McpServers (1:N, cascade delete)
 
 ## Data Flow
 - **Write**: Connector fetch -> Clean -> Chunk -> Embed (OpenAI batch) -> Upsert to `documents` -> Commitment detection (Claude) -> Store to `commitments`
