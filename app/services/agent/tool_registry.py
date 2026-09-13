@@ -65,6 +65,12 @@ ORCHESTRATOR_TOOLS: List[ToolInfo] = [
     ToolInfo("search_memory", "Semantic search across ingested documents.", "orchestrator"),
     ToolInfo("list_tasks", "List the user's open commitments/tasks.", "orchestrator"),
     ToolInfo("get_calendar", "Read upcoming calendar events.", "orchestrator"),
+    ToolInfo("get_emails", "Get the user's emails for a specific day.", "orchestrator"),
+    ToolInfo(
+        "get_my_mentions",
+        "Find Slack messages that @-mention the user — exact match, not semantic similarity.",
+        "orchestrator",
+    ),
     ToolInfo("get_user_style", "Fetch the user's communication style/persona profile.", "orchestrator"),
     ToolInfo("search_learnings", "Search previously saved learnings.", "orchestrator"),
     ToolInfo("save_learning", "Save a new learning for future recall.", "orchestrator"),
@@ -85,6 +91,21 @@ ORCHESTRATOR_TOOLS: List[ToolInfo] = [
     ),
     ToolInfo("web_search", "Brave web search (opt-in via brave_search_api_key).", "orchestrator"),
     ToolInfo("http_request", "Fetch a URL from an allowed domain (opt-in).", "orchestrator"),
+    ToolInfo(
+        "request_user_input",
+        "Pause and ask the human a structured question (opt-in via enable_generative_ui).",
+        "orchestrator",
+    ),
+    ToolInfo(
+        "describe_action_types",
+        "List every action_type propose_action can use, with its exact payload shape (opt-in via enable_generative_ui).",
+        "orchestrator",
+    ),
+    ToolInfo(
+        "propose_action",
+        "Propose a side-effecting action for the human to approve before it executes (opt-in via enable_generative_ui).",
+        "orchestrator",
+    ),
 ]
 
 DOCUMENT_WATERMARK_TOOLS: List[ToolInfo] = [

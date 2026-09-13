@@ -256,8 +256,8 @@ class TestBuildAgentWithConfig:
              ):
             orch._build_agent(
                 db=MagicMock(), user_id=uuid.uuid4(), user_tz="UTC",
-                system_prompt="dynamic per-request prompt", history=[], stream_callback=None,
-                config=config,
+                system_prompt="dynamic per-request prompt", history=[], emit=None,
+                session_id=uuid.uuid4(), config=config,
             )
         return mock_model_cls, mock_agent_cls
 
