@@ -195,3 +195,15 @@ class TestOpenAIGenerate:
         client = LLMClient(api_key="test-key", model="openai/gpt-4o-mini")
         result = await client.generate(system_prompt="sys", user_message="msg")
         assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_temperature_omitted_for_reasoning_model(self, mock_openai: MagicMock) -> None:
+        """Reasoning models (o1/o3/o4/gpt-5.x-luna) 400 on any non-default
+        temperature — omit the param entirely rather than send 0.1."""
+        mock_openai.chat.completions.create = AsyncMock(
+            return_value=_make_openai_response("ok")
+        )
+        client = LLMClient(api_key="test-key", model="openai/gpt-5.6-luna")
+        await client.generate(system_prompt="sys", user_message="msg", temperature=0.1)
+        call_kwargs = mock_openai.chat.completions.create.call_args.kwargs
+        assert "temperature" not in call_kwargs
