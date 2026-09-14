@@ -480,8 +480,10 @@ class TestRunSync:
         mock_session.commit.assert_called()
 
     @pytest.mark.asyncio
-    async def test_run_sync_fathom_skipped_silently(self) -> None:
-        """_run_sync skips Fathom gracefully — no REST API, no error status."""
+    async def test_run_sync_fathom_uses_generic_path(self) -> None:
+        """Fathom now syncs through the same generic path as any other
+        platform (via FathomConnector's MCP-based fetch_items) — the
+        old server-side skip is gone now that fetch_items actually works."""
         scheduler = SyncScheduler()
         mock_integration = _make_integration(platform="fathom")
 
@@ -496,14 +498,18 @@ class TestRunSync:
 
         mock_factory = MagicMock(return_value=mock_session)
 
+        mock_connector = MagicMock()
+        mock_connector.fetch_items = AsyncMock(return_value=[])
+        mock_connector.get_own_account_id = AsyncMock(return_value=None)
+
         with patch("app.services.sync.scheduler.get_session_factory", return_value=mock_factory), \
-             patch("app.api.routers.ingestion._CONNECTORS", {"fathom": MagicMock()}):
+             patch("app.api.routers.ingestion._CONNECTORS", {"fathom": lambda: mock_connector}), \
+             patch("app.services.token_refresh.ensure_fresh_token", new=AsyncMock(return_value="tok")):
             await scheduler._run_sync(str(mock_integration.id), str(mock_integration.user_id))
 
-        # Must NOT set error status — Fathom skip is intentional
-        assert mock_integration.last_sync_status != "error"
-        # Must NOT commit — early return before any DB mutation
-        mock_session.commit.assert_not_called()
+        mock_connector.fetch_items.assert_called_once()
+        assert mock_integration.last_sync_status == "success"
+        mock_session.commit.assert_called()
 
     @pytest.mark.asyncio
     async def test_run_sync_error_truncated(self) -> None:

@@ -149,15 +149,6 @@ class SyncScheduler:
                     await db.commit()
                     return
 
-                # Fathom has no public REST API — skip server-side sync silently.
-                # Use scripts/sync_fathom_incremental.py from a Claude Code session instead.
-                if platform == "fathom":
-                    logger.info(
-                        "Fathom uses MCP-based sync — skipping server-side job for user=%s",
-                        user_id,
-                    )
-                    return
-
                 from app.services.ingestion.embedder import Embedder
                 from app.services.token_refresh import ensure_fresh_token
 

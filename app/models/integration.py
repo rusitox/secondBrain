@@ -42,6 +42,16 @@ class Integration(UUIDMixin, TimestampMixin, Base):
     # the sync scheduler (see BaseConnector.get_own_account_id); nullable
     # because most platforms don't implement it and existing rows predate it.
     external_account_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # OAuth 2.1 client id from dynamic client registration (Fathom's MCP
+    # server) — needed to request a refresh_token grant later. Nullable
+    # because every other platform still uses a static token/MSAL cache.
+    oauth_client_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # When the current access_token expires — Fathom's isn't a JWT we can
+    # decode like MSAL's (see token_refresh.is_token_expiring_soon), so the
+    # expiry has to be tracked out-of-band from the token grant response.
+    token_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_sync_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

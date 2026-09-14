@@ -14,12 +14,15 @@ import base64
 import json
 import time
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.services.token_refresh import (
     _decode_jwt_exp,
+    _ensure_fresh_fathom_token,
+    _fathom_refresh_token_grant,
     _msal_refresh_sync,
     ensure_fresh_token,
     is_token_expiring_soon,
@@ -196,3 +199,151 @@ class TestEnsureFreshToken:
             token = await ensure_fresh_token(integration, MagicMock())
 
         assert token == expiring_token
+
+
+class TestFathomRefreshTokenGrant:
+    @pytest.mark.asyncio
+    async def test_success_returns_parsed_response(self) -> None:
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"access_token": "new-tok", "expires_in": 3600}
+
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            result = await _fathom_refresh_token_grant("old-refresh", "client-123")
+
+        assert result == {"access_token": "new-tok", "expires_in": 3600}
+
+    @pytest.mark.asyncio
+    async def test_non_200_returns_none(self) -> None:
+        mock_resp = MagicMock(status_code=400, text="invalid_grant")
+
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            result = await _fathom_refresh_token_grant("old-refresh", "client-123")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_connection_error_returns_none(self) -> None:
+        with patch(
+            "httpx.AsyncClient.post",
+            AsyncMock(side_effect=httpx.ConnectError("refused")),
+        ):
+            result = await _fathom_refresh_token_grant("old-refresh", "client-123")
+
+        assert result is None
+
+
+class TestEnsureFreshTokenFathom:
+    def _fathom_integration(self, **overrides: object) -> MagicMock:
+        from app.utils.encryption import encrypt_token
+
+        integration = MagicMock()
+        integration.platform = __import__("app.models.integration", fromlist=["Platform"]).Platform.FATHOM
+        integration.access_token = encrypt_token("current-access-token")
+        integration.refresh_token = encrypt_token("current-refresh-token")
+        integration.oauth_client_id = "client-123"
+        integration.token_expires_at = None
+        for key, value in overrides.items():
+            setattr(integration, key, value)
+        return integration
+
+    @pytest.mark.asyncio
+    async def test_never_set_up_returns_existing_token_no_refresh(self) -> None:
+        integration = self._fathom_integration(oauth_client_id=None)
+
+        with patch("app.services.token_refresh._fathom_refresh_token_grant") as mock_refresh:
+            token = await ensure_fresh_token(integration, MagicMock())
+
+        mock_refresh.assert_not_called()
+        assert token == "current-access-token"
+
+    @pytest.mark.asyncio
+    async def test_not_expiring_soon_skips_refresh(self) -> None:
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        integration = self._fathom_integration(token_expires_at=expires_at)
+
+        with patch("app.services.token_refresh._fathom_refresh_token_grant") as mock_refresh:
+            token = await ensure_fresh_token(integration, MagicMock())
+
+        mock_refresh.assert_not_called()
+        assert token == "current-access-token"
+
+    @pytest.mark.asyncio
+    async def test_no_tracked_expiry_refreshes_anyway(self) -> None:
+        """token_expires_at=None (legacy row, or never set) — refresh rather
+        than assume the token is still good."""
+        integration = self._fathom_integration(token_expires_at=None)
+        db = MagicMock()
+        db.flush = AsyncMock()
+
+        with patch(
+            "app.services.token_refresh._fathom_refresh_token_grant",
+            AsyncMock(return_value={"access_token": "fresh-tok", "expires_in": 3600}),
+        ) as mock_refresh:
+            token = await ensure_fresh_token(integration, db)
+
+        mock_refresh.assert_called_once_with("current-refresh-token", "client-123")
+        assert token == "fresh-tok"
+
+    @pytest.mark.asyncio
+    async def test_expiring_soon_refreshes_and_persists(self) -> None:
+        from app.utils.encryption import decrypt_token
+
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+        integration = self._fathom_integration(token_expires_at=expires_at)
+        db = MagicMock()
+        db.flush = AsyncMock()
+
+        with patch(
+            "app.services.token_refresh._fathom_refresh_token_grant",
+            AsyncMock(return_value={
+                "access_token": "fresh-tok", "refresh_token": "fresh-refresh", "expires_in": 3600,
+            }),
+        ):
+            token = await _ensure_fresh_fathom_token(integration, db)
+
+        assert token == "fresh-tok"
+        assert decrypt_token(integration.access_token) == "fresh-tok"
+        assert decrypt_token(integration.refresh_token) == "fresh-refresh"
+        assert integration.token_expires_at > datetime.now(timezone.utc) + timedelta(minutes=59)
+        db.flush.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_failure_returns_existing_token(self) -> None:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+        integration = self._fathom_integration(token_expires_at=expires_at)
+        db = MagicMock()
+        db.flush = AsyncMock()
+
+        with patch(
+            "app.services.token_refresh._fathom_refresh_token_grant", AsyncMock(return_value=None),
+        ):
+            token = await _ensure_fresh_fathom_token(integration, db)
+
+        assert token == "current-access-token"
+        db.flush.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_response_missing_access_token_returns_existing(self) -> None:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+        integration = self._fathom_integration(token_expires_at=expires_at)
+
+        with patch(
+            "app.services.token_refresh._fathom_refresh_token_grant",
+            AsyncMock(return_value={"error": "invalid_grant"}),
+        ):
+            token = await _ensure_fresh_fathom_token(integration, MagicMock())
+
+        assert token == "current-access-token"
+
+    @pytest.mark.asyncio
+    async def test_naive_expires_at_treated_as_utc(self) -> None:
+        """A token_expires_at without tzinfo (e.g. from a raw sqlite test
+        row) must not crash comparing against an aware datetime."""
+        naive_future = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
+        integration = self._fathom_integration(token_expires_at=naive_future)
+
+        with patch("app.services.token_refresh._fathom_refresh_token_grant") as mock_refresh:
+            token = await ensure_fresh_token(integration, MagicMock())
+
+        mock_refresh.assert_not_called()
+        assert token == "current-access-token"
