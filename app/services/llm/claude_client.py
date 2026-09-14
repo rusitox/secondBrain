@@ -532,7 +532,9 @@ class LLMClient:
                         {"role": "user", "content": user_message},
                     ],
                 }
-                if temperature is not None:
+                # Reasoning models (o1/o3/o4/gpt-5.x-luna) only accept the
+                # default temperature (1) — passing anything else is a 400.
+                if temperature is not None and not _is_reasoning_model(self._model_id):
                     kwargs["temperature"] = temperature
                 response = await client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content
