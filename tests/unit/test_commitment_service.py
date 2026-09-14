@@ -52,6 +52,15 @@ class TestIsOwnedByUser:
         user = make_user(full_name="Daniela Perez", email="daniela.perez@company.com")
         assert is_owned_by_user("Daniel", user) is False
 
+    def test_accepts_agent_created_sentinel(self) -> None:
+        """owner="assistant" (create_commitment executor) is unambiguously the
+        account holder's own — every Commitment is already scoped to a single
+        user_id, unlike text an LLM pulled out of someone else's meeting."""
+        assert is_owned_by_user("assistant", make_user()) is True
+
+    def test_agent_created_sentinel_case_insensitive(self) -> None:
+        assert is_owned_by_user("Assistant", make_user()) is True
+
 
 class TestUpdateCommitmentOwnerAndText:
     """CommitmentUpdate.owner/commitment_text — added so the agent can
@@ -104,3 +113,18 @@ class TestUpdateCommitmentOwnerAndText:
 
         assert updated.owner == "Daniel"
         assert updated.status == CommitmentStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_corrects_delivered_to(self, db_session: AsyncSession) -> None:
+        user = make_persisted_user()
+        db_session.add(user)
+        await db_session.flush()
+        c = make_commitment(user_id=user.id)
+        db_session.add(c)
+        await db_session.commit()
+
+        updated = await update_commitment(
+            db_session, c, CommitmentUpdate(delivered_to="Marilyn"),
+        )
+
+        assert updated.delivered_to == "Marilyn"

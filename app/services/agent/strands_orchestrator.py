@@ -1099,7 +1099,9 @@ ingieren los agentes de dominio.
 9. Si en la charla surge algo que hay que hacer — vos lo detectás o el usuario te pide \
 que se lo recuerdes — llamá a propose_action con action_type="create_commitment" \
 (describe_action_types te da el payload exacto) para que lo apruebe antes de crearse. \
-Para marcarlo resuelto más tarde, usá update_commitment (paso 6) con status="completed".
+Cuando el usuario te avise que ya lo resolvió, llamá a propose_action con \
+action_type="update_commitment" y status="completed" (mismo mecanismo del paso 6, \
+sin necesidad de que haya nada mal armado — sirve igual para el cierre normal).
 10. Llamá otras tools según lo requiera la pregunta
 11. Sintetizá una respuesta clara y accionable
 

@@ -46,7 +46,7 @@ class CreateCommitmentExecutor:
             db, CommitmentCreate(
                 user_id=user_id,
                 commitment_text=payload.commitment_text,
-                owner="assistant",
+                owner=commitment_service.AGENT_CREATED_OWNER,
                 due_date=payload.due_date,
                 delivered_to=payload.delivered_to,
             ),

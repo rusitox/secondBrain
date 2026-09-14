@@ -101,3 +101,20 @@ class TestUpdateCommitmentExecutor:
     def test_payload_rejects_unknown_fields(self) -> None:
         with pytest.raises(ValueError):
             UpdateCommitmentPayload(commitment_id=uuid.uuid4(), unexpected="nope")
+
+    @pytest.mark.asyncio
+    async def test_corrects_delivered_to(self, db_session: AsyncSession) -> None:
+        user = make_user()
+        db_session.add(user)
+        await db_session.flush()
+        c = make_commitment(user_id=user.id, owner="assistant")
+        db_session.add(c)
+        await db_session.commit()
+
+        executor = UpdateCommitmentExecutor()
+        result = await executor.execute(
+            db_session, user.id,
+            UpdateCommitmentPayload(commitment_id=c.id, delivered_to="Marilyn"),
+        )
+
+        assert result["delivered_to"] == "Marilyn"

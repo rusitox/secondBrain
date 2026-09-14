@@ -75,3 +75,29 @@ class TestCreateCommitmentExecutor:
     def test_payload_rejects_unknown_fields(self) -> None:
         with pytest.raises(ValueError):
             CreateCommitmentPayload(commitment_text="x", unexpected="nope")
+
+    def test_payload_rejects_commitment_text_over_max_length(self) -> None:
+        with pytest.raises(ValueError):
+            CreateCommitmentPayload(commitment_text="x" * 2001)
+
+    def test_payload_rejects_delivered_to_over_max_length(self) -> None:
+        with pytest.raises(ValueError):
+            CreateCommitmentPayload(commitment_text="x", delivered_to="y" * 201)
+
+    @pytest.mark.asyncio
+    async def test_created_task_is_visible_as_the_users_own(self, db_session: AsyncSession) -> None:
+        """owner="assistant" must pass commitment_service.is_owned_by_user —
+        otherwise the task the agent just created is invisible to list_tasks
+        and the daily briefing's "your commitments" filtering."""
+        from app.services.commitment_service import is_owned_by_user
+
+        user = make_user()
+        db_session.add(user)
+        await db_session.commit()
+
+        executor = CreateCommitmentExecutor()
+        result = await executor.execute(
+            db_session, user.id, CreateCommitmentPayload(commitment_text="Visible task"),
+        )
+
+        assert is_owned_by_user(result["owner"], user) is True

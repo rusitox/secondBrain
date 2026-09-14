@@ -23,6 +23,7 @@ class CommitmentUpdate(BaseModel):
     priority: Optional[int] = Field(default=None, ge=1, le=5)
     owner: Optional[str] = None
     commitment_text: Optional[str] = None
+    delivered_to: Optional[str] = None
 
 
 class CommitmentRead(BaseModel):
