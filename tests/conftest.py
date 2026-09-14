@@ -91,6 +91,8 @@ def _create_sqlite_tables(connection) -> None:
             last_sync_error TEXT,
             user_token TEXT,
             external_account_id TEXT,
+            oauth_client_id TEXT,
+            token_expires_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )

@@ -73,11 +73,11 @@ PLATFORM_INSTRUCTIONS: Dict[str, str] = {
         "Required permissions: Chat.Read"
     ),
     "fathom": (
-        "I need your Fathom API key.\n"
-        "Find it at:\n"
-        "  https://app.fathom.video/settings -> API\n"
-        "\n"
-        "Read access is sufficient."
+        "Fathom's MCP server needs OAuth, not a pasted token — enter any\n"
+        "placeholder here, then run `python scripts/connect_fathom_oauth.py`\n"
+        "once to authorize it in your browser (this replaces the placeholder\n"
+        "with a real access/refresh token pair, refreshed automatically\n"
+        "afterwards)."
     ),
 }
 

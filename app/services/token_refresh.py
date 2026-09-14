@@ -1,7 +1,8 @@
 """Automatic token refresh for OAuth2 integrations.
 
-Currently handles Microsoft Graph tokens (Outlook + Teams) via MSAL silent
-refresh. Slack and Fathom tokens are long-lived and do not need refreshing.
+Handles Microsoft Graph tokens (Outlook + Teams) via MSAL silent refresh,
+and Fathom's MCP server OAuth tokens via a plain refresh_token grant.
+Slack tokens are long-lived and do not need refreshing.
 
 Usage:
     token = await ensure_fresh_token(integration, db)
@@ -11,10 +12,11 @@ import base64
 import json
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.integration import Integration, Platform
@@ -24,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Platforms that use short-lived Microsoft Graph tokens
 _MS_PLATFORMS = {Platform.OUTLOOK, Platform.TEAMS}
+
+# Fathom's MCP server OAuth token endpoint — see scripts/connect_fathom_oauth.py
+# for the one-time authorization_code+PKCE setup that first obtains a
+# refresh_token; this module only ever uses the refresh_token grant.
+_FATHOM_TOKEN_ENDPOINT = "https://api.fathom.ai/mcp/oauth/token"
 
 # Outlook and Teams share ONE MSAL cache file (same MS account, same
 # client_id) — their sync jobs run independently via APScheduler and can
@@ -117,12 +124,85 @@ def _msal_refresh_sync(client_id: str, authority: str, scopes: str, cache_path: 
         return result["access_token"]
 
 
-async def ensure_fresh_token(integration: Integration, db: AsyncSession) -> str:
-    """Return a valid access token, refreshing via MSAL if it's expiring soon.
+async def _fathom_refresh_token_grant(refresh_token: str, client_id: str) -> Optional[Dict[str, Any]]:
+    """POST a refresh_token grant to Fathom's OAuth token endpoint.
 
-    For non-Microsoft platforms (Slack, Fathom, Notion) the token is returned
-    as-is — those are long-lived and don't require periodic refresh.
+    Returns the parsed token response (access_token, refresh_token,
+    expires_in) on success, None on any failure — the caller falls back to
+    the existing (possibly stale) access token rather than raising, same
+    failure mode as a failed MSAL silent refresh.
     """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(_FATHOM_TOKEN_ENDPOINT, data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+            })
+        if resp.status_code != 200:
+            logger.warning(
+                "Fathom OAuth refresh failed: HTTP %d %s", resp.status_code, resp.text[:200],
+            )
+            return None
+        return resp.json()
+    except httpx.HTTPError as e:
+        logger.warning("Fathom OAuth refresh request failed: %s", e)
+        return None
+
+
+async def _ensure_fresh_fathom_token(integration: Integration, db: AsyncSession) -> str:
+    """Refresh Fathom's OAuth access token if it's expiring soon.
+
+    Unlike MSAL's JWT access tokens, Fathom's aren't decodable for an `exp`
+    claim, so expiry is tracked in Integration.token_expires_at (set by the
+    initial setup script and by this refresh). No oauth_client_id or
+    refresh_token means the one-time interactive setup
+    (scripts/connect_fathom_oauth.py) hasn't run yet — return the existing
+    token as-is and let the actual MCP call surface the real auth error.
+    """
+    current_token = decrypt_token(integration.access_token)
+
+    if not integration.oauth_client_id or not integration.refresh_token:
+        return current_token
+
+    if integration.token_expires_at is not None:
+        expires_at = integration.token_expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        buffer = timedelta(seconds=_EXPIRY_BUFFER_SECONDS)
+        if datetime.now(timezone.utc) < expires_at - buffer:
+            return current_token
+
+    logger.info("Fathom OAuth token expiring soon — refreshing")
+    token_data = await _fathom_refresh_token_grant(
+        decrypt_token(integration.refresh_token), integration.oauth_client_id,
+    )
+    if token_data is None or "access_token" not in token_data:
+        logger.warning("Fathom OAuth refresh returned no token — using existing token")
+        return current_token
+
+    integration.access_token = encrypt_token(token_data["access_token"])
+    if token_data.get("refresh_token"):
+        integration.refresh_token = encrypt_token(token_data["refresh_token"])
+    expires_in = token_data.get("expires_in")
+    if expires_in:
+        integration.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+    await db.flush()
+
+    logger.info("Fathom OAuth token refreshed")
+    return token_data["access_token"]
+
+
+async def ensure_fresh_token(integration: Integration, db: AsyncSession) -> str:
+    """Return a valid access token, refreshing via MSAL (Outlook/Teams) or
+    an OAuth refresh_token grant (Fathom) if it's expiring soon.
+
+    For platforms that don't need this (Slack, Notion) the token is
+    returned as-is — those are long-lived and don't require refreshing.
+    """
+    if integration.platform == Platform.FATHOM:
+        return await _ensure_fresh_fathom_token(integration, db)
+
     current_token = decrypt_token(integration.access_token)
 
     if integration.platform not in _MS_PLATFORMS:
