@@ -52,6 +52,7 @@ async def create_commitment(db: AsyncSession, data: CommitmentCreate) -> Commitm
         document_id=data.document_id,
         commitment_text=data.commitment_text,
         owner=data.owner,
+        delivered_to=data.delivered_to,
         due_date=data.due_date,
         priority=data.priority,
     )
@@ -63,7 +64,9 @@ async def create_commitment(db: AsyncSession, data: CommitmentCreate) -> Commitm
 
 async def get_commitment(db: AsyncSession, commitment_id: uuid.UUID) -> Optional[Commitment]:
     result = await db.execute(
-        select(Commitment).where(Commitment.id == commitment_id)
+        select(Commitment)
+        .where(Commitment.id == commitment_id)
+        .options(selectinload(Commitment.document))
     )
     return result.scalar_one_or_none()
 

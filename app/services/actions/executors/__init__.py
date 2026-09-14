@@ -6,3 +6,4 @@ the one place that populates the registry.
 """
 from app.services.actions.executors import notion  # noqa: F401
 from app.services.actions.executors import update_commitment  # noqa: F401
+from app.services.actions.executors import create_commitment  # noqa: F401
