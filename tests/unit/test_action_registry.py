@@ -87,6 +87,15 @@ class TestUpdateCommitmentExecutorIsRegistered:
         assert found.risk == "low"
 
 
+class TestCreateCommitmentExecutorIsRegistered:
+    def test_importing_executors_package_registers_create_commitment(self) -> None:
+        assert executors is not None  # the import itself is the side effect under test
+        found = registry.get("create_commitment")
+        assert found is not None
+        assert found.action_type == "create_commitment"
+        assert found.risk == "low"
+
+
 class TestImportBoundaryGuard:
     def test_strands_tools_never_imports_the_executors_package(self) -> None:
         source = inspect.getsource(strands_tools_module)

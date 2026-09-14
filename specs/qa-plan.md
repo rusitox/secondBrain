@@ -47,6 +47,19 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
 - [x] No falsos positivos en frases condicionales
 - [x] Asignación correcta de prioridad
 
+#### Services — Agent Actions (propose_action / executor registry)
+- [x] `registry.py`: whitelist de `action_type`, import-boundary guard (`strands_tools.py`
+  nunca importa `app.services.actions.executors` — el modelo propone, nunca ejecuta directo)
+- [x] `notion_publish` executor
+- [x] `update_commitment` executor: reasignar owner, marcar completado, corregir texto,
+  corregir `delivered_to`, rechaza otro usuario, respeta la transición pending-only
+- [x] `create_commitment` executor: crear con/sin fecha y destinatario, persistencia,
+  `owner="assistant"` visible para `is_owned_by_user` (no queda invisible en el briefing
+  ni en `list_tasks`)
+- [ ] `propose_action`/`describe_action_types`/approve-execute end-to-end vía HTTP
+  (cubierto por `tests/integration/test_propose_action.py` y `test_approve_action.py`,
+  no revisado en detalle en esta sesión)
+
 #### Services — Daily Briefing
 - [x] Generación del briefing con agenda vacía (sin meetings)
 - [x] Generación con commitments pendientes

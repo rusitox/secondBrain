@@ -119,6 +119,7 @@ def _create_sqlite_tables(connection) -> None:
             document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
             commitment_text TEXT NOT NULL,
             owner TEXT DEFAULT 'unknown',
+            delivered_to TEXT,
             due_date TIMESTAMP,
             status TEXT DEFAULT 'pending',
             priority INTEGER DEFAULT 3,

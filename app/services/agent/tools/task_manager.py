@@ -1,8 +1,11 @@
-"""Task manager tool — query and update commitments."""
+"""Task manager tool — query commitments. Writing (create/update) goes
+through the propose_action/executor path (app.services.actions.executors.
+create_commitment/update_commitment), never a direct tool write — see
+app.services.actions.registry's module docstring."""
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,6 +75,7 @@ class TaskManagerTool:
             "id": str(commitment.id),
             "commitment_text": commitment.commitment_text,
             "owner": commitment.owner,
+            "delivered_to": commitment.delivered_to,
             "due_date": commitment.due_date.isoformat() if commitment.due_date else None,
             "created_at": commitment.created_at.isoformat() if getattr(commitment, "created_at", None) else None,
             "status": commitment.status.value,

@@ -26,6 +26,7 @@ class UpdateCommitmentPayload(BaseModel):
     owner: Optional[str] = Field(default=None, max_length=200)
     status: Optional[CommitmentStatus] = None
     commitment_text: Optional[str] = Field(default=None, max_length=2000)
+    delivered_to: Optional[str] = Field(default=None, max_length=200)
 
 
 class UpdateCommitmentExecutor:
@@ -47,6 +48,7 @@ class UpdateCommitmentExecutor:
             owner=payload.owner,
             status=payload.status,
             commitment_text=payload.commitment_text,
+            delivered_to=payload.delivered_to,
         )
         try:
             updated = await commitment_service.update_commitment(db, commitment, update)
@@ -58,6 +60,7 @@ class UpdateCommitmentExecutor:
             "owner": updated.owner,
             "status": updated.status.value,
             "commitment_text": updated.commitment_text,
+            "delivered_to": updated.delivered_to,
         }
 
 

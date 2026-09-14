@@ -14,6 +14,14 @@ from app.api.schemas.commitment import CommitmentCreate, CommitmentUpdate
 # identify a specific person — never treat these as "the account holder".
 _AMBIGUOUS_OWNERS: Set[str] = {"", "unknown", "speaker"}
 
+# Sentinel owner used by the create_commitment action executor for tasks the
+# agent adds to the backlog directly (as opposed to ones the passive detector
+# pulled out of someone else's meeting/message content). Unlike the ambiguous
+# values above, this is unambiguously the account holder's own — every
+# Commitment is already scoped to a single user_id, and the agent only ever
+# creates these on behalf of the user it's talking to.
+AGENT_CREATED_OWNER = "assistant"
+
 
 def is_owned_by_user(owner: Optional[str], user: Optional[User]) -> bool:
     """Whether a commitment's free-text `owner` clearly refers to `user`.
@@ -29,6 +37,8 @@ def is_owned_by_user(owner: Optional[str], user: Optional[User]) -> bool:
     if not owner or user is None:
         return False
     owner_norm = owner.strip().lower()
+    if owner_norm == AGENT_CREATED_OWNER:
+        return True
     if not owner_norm or owner_norm in _AMBIGUOUS_OWNERS:
         return False
 
@@ -52,6 +62,7 @@ async def create_commitment(db: AsyncSession, data: CommitmentCreate) -> Commitm
         document_id=data.document_id,
         commitment_text=data.commitment_text,
         owner=data.owner,
+        delivered_to=data.delivered_to,
         due_date=data.due_date,
         priority=data.priority,
     )
@@ -63,7 +74,9 @@ async def create_commitment(db: AsyncSession, data: CommitmentCreate) -> Commitm
 
 async def get_commitment(db: AsyncSession, commitment_id: uuid.UUID) -> Optional[Commitment]:
     result = await db.execute(
-        select(Commitment).where(Commitment.id == commitment_id)
+        select(Commitment)
+        .where(Commitment.id == commitment_id)
+        .options(selectinload(Commitment.document))
     )
     return result.scalar_one_or_none()
 
@@ -110,6 +123,8 @@ async def update_commitment(
         commitment.owner = data.owner
     if data.commitment_text is not None:
         commitment.commitment_text = data.commitment_text
+    if data.delivered_to is not None:
+        commitment.delivered_to = data.delivered_to
     await db.flush()
     await db.refresh(commitment)
     return commitment

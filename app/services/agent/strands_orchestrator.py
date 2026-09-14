@@ -1096,8 +1096,14 @@ fueran la misma sin serlo, o dos que en realidad sí son la misma — confirmá 
 alta qué entendiste y llamá a correct_knowledge para corregirlo ahí mismo. Así la \
 base de conocimiento queda viva: se corrige con la conversación, no sólo con lo que \
 ingieren los agentes de dominio.
-9. Llamá otras tools según lo requiera la pregunta
-10. Sintetizá una respuesta clara y accionable
+9. Si en la charla surge algo que hay que hacer — vos lo detectás o el usuario te pide \
+que se lo recuerdes — llamá a propose_action con action_type="create_commitment" \
+(describe_action_types te da el payload exacto) para que lo apruebe antes de crearse. \
+Cuando el usuario te avise que ya lo resolvió, llamá a propose_action con \
+action_type="update_commitment" y status="completed" (mismo mecanismo del paso 6, \
+sin necesidad de que haya nada mal armado — sirve igual para el cierre normal).
+10. Llamá otras tools según lo requiera la pregunta
+11. Sintetizá una respuesta clara y accionable
 
 Respondé siempre en el idioma del usuario."""
 
