@@ -90,7 +90,12 @@ como procesado con mark_document_processed y seguí con el siguiente documento.
 3. Del resto, identificá entidades relevantes (personas, proyectos, iniciativas, \
 temas) y qué afirma el documento sobre ellas.
 4. Antes de crear una entidad nueva, usá find_or_create_entity — puede que ya exista.
-5. Guardá cada afirmación con add_claim, citando tu fuente y tu confianza real (0-1).
+5. Guardá cada afirmación con add_claim, citando tu fuente y tu confianza real (0-1). \
+Además de los hechos transaccionales de siempre, si el documento revela algo sobre el \
+ROL, el VÍNCULO con el usuario, la FORMA DE COMUNICARSE, la FORMA DE LLEGAR A ACUERDOS \
+o la AUTORIDAD DE DECISIÓN de una entidad de tipo persona, guardalo también como claim \
+usando el claim_type correspondiente (ver la documentación de add_claim) — esto no \
+aplica a proyectos, temas u organizaciones.
 6. Marcá el documento como procesado con mark_document_processed, incluso si no \
 encontraste nada relevante en él — así no lo volvés a leer en el próximo ciclo.
 
@@ -223,14 +228,30 @@ def make_resolution_ladder_tools(
         claim_text: str,
         confidence: float = 0.5,
         source_ref: Optional[str] = None,
+        claim_type: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Record what this document asserts about an entity, with your real confidence (0-1)."""
+        """Record what this document asserts about an entity, with your real confidence (0-1).
+
+        claim_type is optional free text, but for PERSON entities use one of
+        this fixed vocabulary when it applies — it's what lets a profile view
+        group claims meaningfully instead of showing an unsorted pile of text:
+        - "role": su cargo/función (ej. "Head of Product en Trainly")
+        - "relationship_to_user": cómo se vincula con el usuario (cliente,
+          proveedor, manager directo, par de otro equipo)
+        - "communication_style": cómo prefiere/suele comunicarse (formal vs
+          directo, canal preferido, tono)
+        - "decision_authority": qué puede decidir sin escalar (ej. "aprueba
+          gastos hasta U$S 10k", "necesita sign-off de su manager")
+        - "agreement_style": cómo llegar a acuerdos con esta persona (ej.
+          "prefiere propuesta por escrito antes de la llamada")
+        Leave it unset for anything else (claims about projects, topics,
+        organizations, or any other fact about a person not covered above)."""
         try:
             async with db.begin_nested():
                 claim = await store.add_claim(
                     db, uuid.UUID(entity_id), user_id, source, claim_text,
                     asserted_by_agent=f"{source}_domain_agent",
-                    source_ref=source_ref, confidence=confidence,
+                    source_ref=source_ref, confidence=confidence, claim_type=claim_type,
                 )
         except (SQLAlchemyError, ValueError) as e:
             logger.warning("add_claim failed for entity_id=%s: %s", entity_id, e)

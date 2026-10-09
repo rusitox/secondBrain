@@ -152,6 +152,35 @@ class TestEntityCRUD:
 
 
 class TestClaimCRUD:
+    async def test_claim_type_is_normalized_to_lowercase_stripped(self, db_session: AsyncSession) -> None:
+        """Regression: an LLM-emitted near-miss like "Role" or " role " must
+        still land in the same claim_groups bucket as "role" — otherwise
+        get_entity_profile's grouping (and _role_from_profile's exact-match
+        lookup in app/api/routers/people.py) silently misses it."""
+        user_id = await _make_persisted_user(db_session, email="claimtype1@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        await db_session.commit()
+
+        claim = await store.add_claim(
+            db_session, entity.id, user_id, "slack", "Head of Product", "slack_domain_agent",
+            claim_type="  Role  ",
+        )
+        await db_session.commit()
+
+        assert claim.claim_type == "role"
+
+    async def test_blank_claim_type_normalizes_to_none(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="claimtype2@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "X")
+        await db_session.commit()
+
+        claim = await store.add_claim(
+            db_session, entity.id, user_id, "slack", "algo", "slack_domain_agent", claim_type="   ",
+        )
+        await db_session.commit()
+
+        assert claim.claim_type is None
+
     async def test_add_and_list_claims(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="e@example.com")
         entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Y")
@@ -320,6 +349,155 @@ class TestEntityLinkCRUD:
         await db_session.commit()
 
         assert await store.unlink_entities(db_session, user_id, entity_a.id, entity_b.id) == 0
+
+
+class TestGetEntityProfile:
+    async def test_unknown_entity_returns_none(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="prof1@example.com")
+
+        profile = await store.get_entity_profile(db_session, user_id, uuid.uuid4())
+
+        assert profile is None
+
+    async def test_entity_from_another_user_returns_none(self, db_session: AsyncSession) -> None:
+        owner_id = await _make_persisted_user(db_session, email="prof2a@example.com")
+        other_id = await _make_persisted_user(db_session, email="prof2b@example.com")
+        entity = await store.create_entity(db_session, owner_id, EntityType.PERSON, "X")
+        await db_session.commit()
+
+        assert await store.get_entity_profile(db_session, other_id, entity.id) is None
+
+    async def test_entity_with_no_claims_or_links(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="prof3@example.com")
+        entity = await store.create_entity(
+            db_session, user_id, EntityType.PERSON, "Juan", attributes={"email": "juan@x.com"},
+        )
+        await db_session.commit()
+
+        profile = await store.get_entity_profile(db_session, user_id, entity.id)
+
+        assert profile is not None
+        assert profile["entity"].id == entity.id
+        assert profile["attributes"] == {"email": "juan@x.com"}
+        assert profile["claim_groups"] == {}
+        assert profile["links"] == []
+
+    async def test_claims_grouped_by_type_newest_first_untyped_bucketed(
+        self, db_session: AsyncSession
+    ) -> None:
+        # SQLite's func.now() (used by TimestampMixin's server_default in
+        # tests) only has second-level resolution — claims created back-to-
+        # back in the same test can tie on created_at, making sort order
+        # non-deterministic. Explicit, clearly-ordered timestamps avoid that.
+        from datetime import datetime, timedelta, timezone
+
+        user_id = await _make_persisted_user(db_session, email="prof4@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        general_claim = await store.add_claim(
+            db_session, entity.id, user_id, "slack", "trabaja en plataforma", "slack_domain_agent",
+        )
+        older_role_claim = await store.add_claim(
+            db_session, entity.id, user_id, "slack", "Head of Product", "slack_domain_agent",
+            claim_type="role",
+        )
+        newer_role_claim = await store.add_claim(
+            db_session, entity.id, user_id, "outlook", "Ahora es VP de Producto", "outlook_domain_agent",
+            claim_type="role",
+        )
+        general_claim.created_at = base
+        older_role_claim.created_at = base + timedelta(minutes=1)
+        newer_role_claim.created_at = base + timedelta(minutes=2)
+        await db_session.commit()
+
+        profile = await store.get_entity_profile(db_session, user_id, entity.id)
+
+        assert profile is not None
+        assert set(profile["claim_groups"].keys()) == {"general", "role"}
+        assert len(profile["claim_groups"]["general"]) == 1
+        assert profile["claim_groups"]["general"][0].claim_text == "trabaja en plataforma"
+        role_claims = profile["claim_groups"]["role"]
+        assert len(role_claims) == 2
+        # Newest first: the VP claim was added after the Head of Product one.
+        assert role_claims[0].claim_text == "Ahora es VP de Producto"
+        assert role_claims[1].claim_text == "Head of Product"
+
+    async def test_disputed_claims_are_excluded(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="prof5@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+        claim = await store.add_claim(
+            db_session, entity.id, user_id, "slack", "info vieja", "slack_domain_agent",
+            claim_type="role",
+        )
+        await db_session.commit()
+        await store.dispute_claim(db_session, user_id, claim.id)
+        await db_session.commit()
+
+        profile = await store.get_entity_profile(db_session, user_id, entity.id)
+
+        assert profile is not None
+        assert profile["claim_groups"] == {}
+
+    async def test_includes_links(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="prof6@example.com")
+        entity_a = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        entity_b = await store.create_entity(db_session, user_id, EntityType.ORGANIZATION, "Acme")
+        await db_session.commit()
+        await store.link_entities(
+            db_session, user_id, entity_a.id, entity_b.id,
+            relation_type="works_at", resolved_by=LinkResolvedBy.DETERMINISTIC,
+        )
+        await db_session.commit()
+
+        profile = await store.get_entity_profile(db_session, user_id, entity_a.id)
+
+        assert profile is not None
+        assert len(profile["links"]) == 1
+        assert profile["links"][0].relation_type == "works_at"
+
+
+class TestResolveRelatedEntities:
+    async def test_resolves_the_other_side_of_each_link_regardless_of_order(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Regression: app/api/routers/people.py and the get_person_profile
+        agent tool both used to loop and call get_entity once per link —
+        this batches via list_entities_by_ids instead (one query), which
+        matters once an entity has accumulated many links."""
+        user_id = await _make_persisted_user(db_session, email="rre1@example.com")
+        person = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        org_a = await store.create_entity(db_session, user_id, EntityType.ORGANIZATION, "Acme")
+        org_b = await store.create_entity(db_session, user_id, EntityType.ORGANIZATION, "Globex")
+        await db_session.commit()
+        # One link with person as entity_id_a, one with person as entity_id_b —
+        # resolve_related_entities must pick the OTHER side correctly both ways.
+        await store.link_entities(
+            db_session, user_id, person.id, org_a.id,
+            relation_type="works_at", resolved_by=LinkResolvedBy.DETERMINISTIC,
+        )
+        await store.link_entities(
+            db_session, user_id, org_b.id, person.id,
+            relation_type="same_as", resolved_by=LinkResolvedBy.SWARM,
+        )
+        await db_session.commit()
+
+        links = await store.list_links_for_entity(db_session, user_id, person.id)
+        related = await store.resolve_related_entities(db_session, user_id, person.id, links)
+
+        assert len(related) == 2
+        by_relation = {r["relation_type"]: r for r in related}
+        assert by_relation["works_at"]["canonical_name"] == "Acme"
+        assert by_relation["same_as"]["canonical_name"] == "Globex"
+
+    async def test_empty_links_returns_empty_list(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="rre2@example.com")
+        person = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+
+        assert await store.resolve_related_entities(db_session, user_id, person.id, []) == []
 
 
 class TestPendingQuestionLifecycle:

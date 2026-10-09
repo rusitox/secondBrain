@@ -197,9 +197,19 @@ async def add_claim(
     confidence: float = 0.5,
     status: ClaimStatus = ClaimStatus.ACTIVE,
 ) -> EntityClaim:
-    """Raises ValueError if entity_id doesn't exist or belongs to another user."""
+    """Raises ValueError if entity_id doesn't exist or belongs to another user.
+
+    claim_type is normalized (stripped + lowercased) rather than validated
+    against a fixed vocabulary — callers like domain_agent.py's add_claim
+    tool document a taxonomy (role/relationship_to_user/etc.) but an LLM can
+    still emit a near-miss like "Role" or " role "; without normalization
+    that would land in its own claim_groups bucket, invisible to anything
+    doing an exact-match lookup on the real value (e.g. app/api/routers/
+    people.py's _role_from_profile)."""
     if await get_entity(db, user_id, entity_id) is None:
         raise ValueError(f"entity {entity_id} not found for this user")
+    if claim_type is not None:
+        claim_type = claim_type.strip().lower() or None
 
     claim = EntityClaim(
         entity_id=entity_id,
@@ -387,6 +397,86 @@ async def list_links_for_user(
         .limit(limit)
     )
     return list((await db.execute(stmt)).scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Entity profile — "everything we know about entity X", assembled on read.
+# ---------------------------------------------------------------------------
+
+#: Bucket name for claims that were never given a claim_type (the vast
+#: majority of claims today, since add_claim only started accepting it with
+#: relationship-intelligence — see domain_agent.py).
+UNTYPED_CLAIM_BUCKET = "general"
+
+
+async def get_entity_profile(
+    db: AsyncSession, user_id: uuid.UUID, entity_id: uuid.UUID,
+) -> Optional[Dict[str, Any]]:
+    """Assemble everything known about one entity: its own fields, ACTIVE
+    claims grouped by claim_type (untyped claims fall into
+    UNTYPED_CLAIM_BUCKET), and its links to other entities.
+
+    This is the one place that builds a full profile — query_knowledge
+    (resolution.consult_knowledge_base) is a search result, not a profile:
+    it drops attributes, claim_type, and links entirely. Both the
+    get_person_profile agent tool and the /people REST endpoint call this
+    function rather than re-deriving the same shape twice.
+
+    Within each claim_type bucket, claims are ordered newest-first. This is
+    a read-time workaround, not a real fix: ClaimStatus.SUPERSEDED exists
+    but nothing ever sets it (see entity_claim.py's docstring), so if
+    someone's role changes and nobody calls correct_knowledge to dispute the
+    stale claim, both the old and new claim stay ACTIVE side by side —
+    newest-first at least surfaces the more likely-current one first.
+
+    Returns None if the entity doesn't exist or belongs to another user.
+    """
+    entity = await get_entity(db, user_id, entity_id)
+    if entity is None:
+        return None
+
+    claims = await list_claims(db, user_id, entity_id, status=ClaimStatus.ACTIVE)
+    claims.sort(key=lambda c: c.created_at, reverse=True)
+    claim_groups: Dict[str, List[EntityClaim]] = {}
+    for claim in claims:
+        bucket = claim.claim_type or UNTYPED_CLAIM_BUCKET
+        claim_groups.setdefault(bucket, []).append(claim)
+
+    links = await list_links_for_entity(db, user_id, entity_id)
+
+    return {
+        "entity": entity,
+        "attributes": entity.attributes,
+        "claim_groups": claim_groups,
+        "links": links,
+    }
+
+
+async def resolve_related_entities(
+    db: AsyncSession, user_id: uuid.UUID, entity_id: uuid.UUID, links: List[EntityLink],
+) -> List[Dict[str, Any]]:
+    """Resolve each link's "other side" to its canonical_name, batched via
+    list_entities_by_ids (one query) instead of one get_entity call per
+    link — the get_entity_profile detail view and get_person_profile agent
+    tool both need this, so it lives here once rather than being
+    reimplemented in each caller. Matters in practice: some PERSON entities
+    have accumulated dozens of same_as links from a pre-existing
+    reconciliation.py issue (unrelated to this function, not fixed here),
+    which would otherwise mean dozens of extra round-trips per profile."""
+    other_ids = [
+        link.entity_id_b if link.entity_id_a == entity_id else link.entity_id_a
+        for link in links
+    ]
+    others = await list_entities_by_ids(db, user_id, other_ids)
+    names_by_id = {other.id: other.canonical_name for other in others}
+    return [
+        {
+            "relation_type": link.relation_type,
+            "entity_id": str(other_id),
+            "canonical_name": names_by_id.get(other_id),
+        }
+        for link, other_id in zip(links, other_ids)
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -308,6 +308,77 @@ def make_agent_tools(
         return await resolution.consult_knowledge_base(db, user_id, query, entity_type=parsed_type)
 
     @tool
+    async def get_person_profile(name_or_entity_id: str) -> Dict[str, Any]:
+        """Get everything known about one specific person: their role, how
+        they relate to the user, their communication style, how to reach
+        agreements with them, and what decisions they can make on their own
+        — each grouped from the claims the domain agents have gathered over
+        time, plus any linked entities (e.g. the organization they work at).
+
+        Use this before drafting a message to someone, prepping for a
+        meeting with them, or when asked something like "cómo es fulano" /
+        "cómo le pido esto a fulano" — it's a fuller picture than
+        query_knowledge, which only returns a flat claim list with no
+        grouping and no linked entities.
+
+        Args:
+            name_or_entity_id: The person's name (or an entity_id if you
+                already have one from an earlier query_knowledge/
+                get_person_profile call).
+        """
+        import uuid as _uuid
+
+        from app.models.entity import EntityType
+        from app.services.agent.knowledge import resolution
+        from app.services.agent.knowledge import store as knowledge_store
+
+        entity_id: Optional[_uuid.UUID]
+        try:
+            entity_id = _uuid.UUID(name_or_entity_id)
+        except ValueError:
+            entity_id = None
+
+        if entity_id is None:
+            matches = await resolution.consult_knowledge_base(
+                db, user_id, name_or_entity_id, entity_type=EntityType.PERSON,
+            )
+            if not matches:
+                return {"error": f"no person found matching {name_or_entity_id!r}"}
+            if len(matches) > 1:
+                return {
+                    "error": "more than one person matches — ask the user to be more specific",
+                    "candidates": [
+                        {"entity_id": m["entity_id"], "canonical_name": m["canonical_name"]}
+                        for m in matches
+                    ],
+                }
+            entity_id = _uuid.UUID(matches[0]["entity_id"])
+
+        profile = await knowledge_store.get_entity_profile(db, user_id, entity_id)
+        if profile is None:
+            return {"error": f"no person found with id {entity_id}"}
+
+        related_entities = await knowledge_store.resolve_related_entities(
+            db, user_id, entity_id, profile["links"],
+        )
+
+        entity = profile["entity"]
+        return {
+            "entity_id": str(entity.id),
+            "canonical_name": entity.canonical_name,
+            "confidence": entity.confidence,
+            "attributes": profile["attributes"],
+            "claims_by_type": {
+                claim_type: [
+                    {"claim_text": c.claim_text, "source": c.source, "confidence": c.confidence}
+                    for c in claims
+                ]
+                for claim_type, claims in profile["claim_groups"].items()
+            },
+            "related_entities": related_entities,
+        }
+
+    @tool
     async def get_pending_questions() -> List[Dict[str, Any]]:
         """Get open questions the domain agents couldn't resolve on their own
         and need you to ask the human. Each includes question_text and, when
@@ -538,6 +609,7 @@ def make_agent_tools(
         get_sync_status,
         get_current_datetime,
         query_knowledge,
+        get_person_profile,
         ask_domain_agents,
         get_pending_questions,
         confirm_pending_answer,

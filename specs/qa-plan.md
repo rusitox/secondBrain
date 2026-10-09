@@ -4,7 +4,7 @@
 
 Definir la estrategia de testing para garantizar la calidad del sistema. Cubre unit tests, integration tests, y E2E tests alineados a todas las features implementadas.
 
-**Estado actual:** 1234 tests, todos passing (salvo 6 fallos preexistentes conocidos y no relacionados en `test_teams_connector.py`, y un test probabilístico ocasional — `test_key_prefix_is_unique` — que genera colisiones de prefix al azar en una fracción muy chica de corridas).
+**Estado actual:** 1610 tests, todos passing (salvo 6 fallos preexistentes conocidos y no relacionados en `test_teams_connector.py`, y un test probabilístico ocasional — `test_key_prefix_is_unique` — que genera colisiones de prefix al azar en una fracción muy chica de corridas).
 
 ---
 
@@ -119,6 +119,40 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
   per-step failure isolation within a cycle (one source failing doesn't block the rest,
   reconciliation, or trace pruning, and a rollback that itself raises doesn't abort the cycle
   either) (`test_knowledge_scheduler.py`)
+- [x] Relationship intelligence (rama `feat/relationship-intelligence`): domain agents' `add_claim`
+  tool gained an optional `claim_type` (the DB column existed, nothing ever wrote it — the tool
+  signature itself didn't accept it) with a fixed taxonomy for PERSON entities (`role`,
+  `relationship_to_user`, `communication_style`, `decision_authority`, `agreement_style`), extraction
+  purely passive (no new agent, no scheduler step) (`test_domain_agent.py`). New
+  `store.get_entity_profile`: the single aggregation point for "everything known about entity X" —
+  active claims grouped by claim_type (untyped → `"general"` bucket), newest-first within each group
+  as a read-time workaround for `ClaimStatus.SUPERSEDED` never actually being set, plus `attributes`
+  and `EntityLink`s; reused by both the new chat tool and the new REST endpoint instead of duplicated
+  (`test_knowledge_store.py::TestGetEntityProfile`). New chat tool `get_person_profile` — resolves a
+  name via the same substring matching as `consult_knowledge_base`, returns `candidates` instead of
+  guessing when a name is ambiguous, resolves related entities' names too
+  (`test_strands_tools_knowledge.py::TestGetPersonProfileTool`); registered in `make_agent_tools`,
+  `tool_registry.py`, and the two tool-count tests (`CORE_TOOL_COUNT`,
+  `test_orchestrator_has_twenty_one_tools`). New `GET /people` / `GET /people/{entity_id}`
+  (`app/api/routers/people.py`), zero LLM, same shape as `/systems/status`
+  (`test_people_endpoints.py`) — found live against a real account (1937 PERSON entities) that
+  profiling every one of them just to list names/roles projected to ~5s and only grows over time;
+  fixed by sorting by confidence and capping to `PEOPLE_LIST_LIMIT=50` *before* profiling, not after
+  (`test_people_endpoints.py::test_caps_at_people_list_limit_keeping_highest_confidence`). **Known,
+  pre-existing, explicitly out-of-scope finding from the same live test**: some PERSON entities have
+  dozens of spurious `same_as` `EntityLink` rows (3530 total `same_as` links for that one account,
+  2593 from Swarm negotiation) — a `reconciliation.py` data-quality bug, not introduced by and not
+  fixed in this feature; the new `related_entities` list in the UI faithfully (and now visibly)
+  reflects it. Code review (0 CRITICAL, 4 WARNING, all fixed): a stale error could survive a
+  successful retry on one `PeoplePanel.svelte` card (clear the error at the start of a new attempt,
+  not just on success); related-entity name resolution was N+1'd AND duplicated between the router
+  and the chat tool — factored into one `store.resolve_related_entities` using the existing
+  `list_entities_by_ids` batch helper, used by both; `claim_type` had no normalization, so an LLM
+  near-miss like `"Role"` would silently land in its own bucket — `store.add_claim` now
+  strips+lowercases it; wake-word-triggered recording didn't close the People panel the way
+  push-to-talk does (`handleWake` was missing the same `peopleOpen = false` reset).
+  (`test_knowledge_store.py::TestResolveRelatedEntities`, claim_type normalization tests in
+  `TestClaimCRUD`)
 
 #### Services — Knowledge Backoffice (see `specs/plan-knowledge-backoffice.md`)
 - [x] `tracing.py`: run/event persistence for every trigger point (domain agent, rd agent,
@@ -175,6 +209,10 @@ Tests aislados sin dependencias externas. Mocks para DB, APIs externas, y embedd
 - [x] Endpoints de auth — API key creation, listing, revocation
 - [x] Endpoint de voice — transcripción y TTS
 - [x] `GET /knowledge/status` — observabilidad de la base de conocimiento (buckets de confianza, claims por fuente, preguntas pendientes, merges recientes, estado del `KnowledgeAgentScheduler`)
+- [x] `GET /people` / `GET /people/{entity_id}` — panel de inteligencia de relaciones: lista de
+  personas (capada a `PEOPLE_LIST_LIMIT=50` por confianza, nunca sin capar) y perfil individual
+  agrupado por `claim_type`, ambos sin LLM; 404 propio (no el 404 fail-closed genérico) para una
+  entidad de otro usuario o inexistente (`test_people_endpoints.py`)
 - [x] `GET /users/me` — Authenticated user profile
 - [x] `GET /users/me/preferences` — Preferences, onboarding, Notion config
 - [x] `PATCH /users/me/preferences` — Merge preferences
@@ -370,7 +408,8 @@ tests/
 │   ├── test_rd_agent.py               # I+D platform agent via MCP + registered MCP servers + agent config
 │   ├── test_backoffice_api.py         # Full /backoffice/* HTTP stack — agents, tools, MCPs, runs, graph
 │   ├── test_reconciliation.py         # Cross-source duplicate detection + same_as merging
-│   ├── test_strands_tools_knowledge.py # query_knowledge/get_pending_questions/confirm_pending_answer
+│   ├── test_strands_tools_knowledge.py # query_knowledge/get_pending_questions/confirm_pending_answer/get_person_profile
+│   ├── test_people_endpoints.py       # GET /people, GET /people/{entity_id} — relationship intelligence panel
 │   ├── test_msgraph_connector.py      # Outlook/Calendar connector
 │   ├── test_teams_connector.py        # Teams connector
 │   ├── test_slack_connector.py        # Slack connector

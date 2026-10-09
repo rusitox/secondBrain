@@ -70,6 +70,79 @@ class TestQueryKnowledgeTool:
         assert result == []
 
 
+class TestGetPersonProfileTool:
+    async def test_resolves_by_name_and_groups_claims_by_type(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="gpp1@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        await db_session.commit()
+        await store.add_claim(
+            db_session, entity.id, user_id, "slack", "Head of Product en Trainly", "slack_domain_agent",
+            claim_type="role",
+        )
+        await store.add_claim(
+            db_session, entity.id, user_id, "outlook", "trabaja los martes desde casa", "outlook_domain_agent",
+        )
+        await db_session.commit()
+
+        tools = _build_tools(db_session, user_id)
+        profile = await _tool(tools, "get_person_profile")(name_or_entity_id="Juan")
+
+        assert profile["canonical_name"] == "Juan"
+        assert profile["claims_by_type"]["role"][0]["claim_text"] == "Head of Product en Trainly"
+        assert profile["claims_by_type"]["general"][0]["claim_text"] == "trabaja los martes desde casa"
+        assert profile["related_entities"] == []
+
+    async def test_resolves_by_entity_id(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="gpp2@example.com")
+        entity = await store.create_entity(db_session, user_id, EntityType.PERSON, "Ana")
+        await db_session.commit()
+
+        tools = _build_tools(db_session, user_id)
+        profile = await _tool(tools, "get_person_profile")(name_or_entity_id=str(entity.id))
+
+        assert profile["canonical_name"] == "Ana"
+        assert profile["entity_id"] == str(entity.id)
+
+    async def test_no_match_returns_error(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="gpp3@example.com")
+        tools = _build_tools(db_session, user_id)
+
+        result = await _tool(tools, "get_person_profile")(name_or_entity_id="nadie")
+        assert "error" in result
+
+    async def test_ambiguous_name_returns_candidates(self, db_session: AsyncSession) -> None:
+        user_id = await _make_persisted_user(db_session, email="gpp4@example.com")
+        await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan Perez")
+        await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan Gomez")
+        await db_session.commit()
+
+        tools = _build_tools(db_session, user_id)
+        result = await _tool(tools, "get_person_profile")(name_or_entity_id="Juan")
+
+        assert "error" in result
+        assert len(result["candidates"]) == 2
+
+    async def test_includes_related_entity_name(self, db_session: AsyncSession) -> None:
+        from app.models.entity_link import LinkResolvedBy
+
+        user_id = await _make_persisted_user(db_session, email="gpp5@example.com")
+        person = await store.create_entity(db_session, user_id, EntityType.PERSON, "Juan")
+        org = await store.create_entity(db_session, user_id, EntityType.ORGANIZATION, "Acme")
+        await db_session.commit()
+        await store.link_entities(
+            db_session, user_id, person.id, org.id,
+            relation_type="works_at", resolved_by=LinkResolvedBy.DETERMINISTIC,
+        )
+        await db_session.commit()
+
+        tools = _build_tools(db_session, user_id)
+        profile = await _tool(tools, "get_person_profile")(name_or_entity_id="Juan")
+
+        assert len(profile["related_entities"]) == 1
+        assert profile["related_entities"][0]["canonical_name"] == "Acme"
+        assert profile["related_entities"][0]["relation_type"] == "works_at"
+
+
 class TestAskDomainAgentsTool:
     async def test_invalid_entity_id_returns_error_without_negotiating(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="ada1@example.com")

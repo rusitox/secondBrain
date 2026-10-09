@@ -10,7 +10,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api.routers import (
     health, users, commitments, integrations, ingestion, query, agent, briefing,
-    identity, auth, sync, voice, knowledge, interactions, systems, backoffice,
+    identity, auth, sync, voice, knowledge, interactions, systems, backoffice, people,
 )
 # Populates app.services.actions.registry as an import side effect, so it's
 # ready before any request reaches propose_action (strands_tools.py) or the
@@ -153,6 +153,7 @@ app.include_router(knowledge.router)
 app.include_router(interactions.router)
 app.include_router(systems.router)
 app.include_router(backoffice.router)
+app.include_router(people.router)
 
 # Mount static frontends (only if built — `directory` must exist at mount
 # time). Historically this failed silently in production: the Dockerfile
