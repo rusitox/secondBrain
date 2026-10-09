@@ -41,6 +41,19 @@
     { state: 'respond', label: 'Respuesta' },
     { state: 'panel', label: 'Panel' },
   ];
+  // For the screen-reader-only live region below — not the visual UI copy
+  // (SystemsHeader.svelte owns that), just a terse spoken announcement.
+  const STATE_ANNOUNCEMENTS: Record<MareaVisualState, string> = {
+    idle: 'En reposo',
+    listen: 'Escuchando',
+    think: 'Procesando tu consulta',
+    respond: 'MAREA está respondiendo',
+    panel: 'Panel de agenda abierto',
+  };
+  // Matches the voice-return command Dashboard.svelte's own hint promises
+  // ("Decí «volvé» para retomar"), tolerant of accent-stripping STT output
+  // and trailing punctuation ("volvé", "volver", "volvete", "Volvé.").
+  const RETURN_COMMAND_RE = /^volve(te)?[.!¡]*$/;
 
   // State chips + the AUTO demo cycle are a QA/debug tool (per
   // marea-state.ts's own docstring) for previewing every MAREA visual
@@ -62,6 +75,11 @@
   // or automatically the moment the user asks something (so a typed
   // question's answer is never invisible), and closable at any time.
   let chatDeckOpen = false;
+
+  // Screen-reader-only announcer: state changes and new action-card
+  // arrivals are otherwise silent (no aria-live region existed at all).
+  let liveAnnouncement = '';
+  let previousActionCount = 0;
 
   // Only the first is actually rendered as a modal (see the template) —
   // Strands' one-snapshot-per-session limitation (strands_orchestrator.py's
@@ -106,6 +124,15 @@
     );
   }
   $: liveLevel = recording ? audioLevel : ttsLevel;
+
+  $: {
+    if (proposedActionIds.length > previousActionCount) {
+      liveAnnouncement = 'Nueva acción propuesta por MAREA. Revisala en pantalla.';
+    } else {
+      liveAnnouncement = STATE_ANNOUNCEMENTS[$mareaState];
+    }
+    previousActionCount = proposedActionIds.length;
+  }
 
   function scrollToBottom(): void {
     requestAnimationFrame(() => {
@@ -153,6 +180,11 @@
     try {
       const transcript = await transcribe($apiKey, blob);
       if (transcript) {
+        if ($mareaState === 'panel' && isReturnCommand(transcript)) {
+          releaseMareaManualOverride();
+          showToast('Volviendo a MAREA');
+          return;
+        }
         question = transcript;
         await send();
       } else {
@@ -161,6 +193,15 @@
     } catch {
       showToast('Error al transcribir el audio');
     }
+  }
+
+  function isReturnCommand(transcript: string): boolean {
+    const normalized = transcript
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+    return RETURN_COMMAND_RE.test(normalized);
   }
 
   // Design item 2 — push-to-talk replaces the footer mic toggle: recording
@@ -181,6 +222,25 @@
 
   function handlePushToTalkEnd(): void {
     if (recording) void stopRecording();
+  }
+
+  // pointerdown/up gives mouse+touch a hold gesture for free, but a native
+  // <button> never fires those from a keyboard — Space/Enter only ever
+  // fires `click` on key-up, with no way to distinguish "pressed" from
+  // "released". Without these, push-to-talk was entirely unreachable by
+  // keyboard. preventDefault blocks the browser's own Space-activates-click
+  // default so it doesn't double-fire alongside this.
+  function handlePushToTalkKeydown(e: KeyboardEvent): void {
+    if (e.key !== ' ' && e.key !== 'Enter') return;
+    e.preventDefault();
+    if (e.repeat) return;
+    handlePushToTalkStart();
+  }
+
+  function handlePushToTalkKeyup(e: KeyboardEvent): void {
+    if (e.key !== ' ' && e.key !== 'Enter') return;
+    e.preventDefault();
+    handlePushToTalkEnd();
   }
 
   async function send(): Promise<void> {
@@ -269,6 +329,18 @@
   function pickStateChip(state: MareaVisualState): void {
     setMareaState(state, { manual: true });
   }
+
+  // The real, discoverable entry point to the Dashboard — previously only
+  // reachable through the debug state-chips (?debug) or by saying the
+  // "volvé" voice command while already there, neither a real way in.
+  // Toggles, so the same control also exits back to the live sphere.
+  function toggleDashboard(): void {
+    if ($mareaState === 'panel') {
+      releaseMareaManualOverride();
+    } else {
+      setMareaState('panel', { manual: true });
+    }
+  }
 </script>
 
 <div class="layout">
@@ -277,20 +349,40 @@
   <SystemsHeader state={$mareaState} />
 
   <div class="toolbar">
+    <button
+      class:active={$mareaState === 'panel'}
+      on:click={toggleDashboard}
+      title="Ver tu agenda y compromisos pendientes"
+    >
+      📋 agenda
+    </button>
     <button class:active={chatDeckOpen} on:click={() => (chatDeckOpen = !chatDeckOpen)} title="Mostrar/ocultar chat">
       💬 chat
     </button>
-    <button class:active={$autoPlay} on:click={() => autoPlay.set(!$autoPlay)}>▶ auto TTS</button>
-    <button class:active={$wakeEnabled} on:click={toggleWake} disabled={!wakeWord.isSupported}>
+    <button
+      class:active={$autoPlay}
+      on:click={() => autoPlay.set(!$autoPlay)}
+      title="Leer en voz alta las respuestas automáticamente"
+    >
+      ▶ auto TTS
+    </button>
+    <button
+      class:active={$wakeEnabled}
+      on:click={toggleWake}
+      disabled={!wakeWord.isSupported}
+      title={wakeWord.isSupported ? 'Activar palabra de activación por voz' : 'No soportado en este navegador'}
+    >
       👂 wake
     </button>
-    <select bind:value={$ttsVoice}>
+    <select bind:value={$ttsVoice} title="Voz de síntesis para las respuestas habladas">
       {#each VOICES as v (v)}
         <option value={v}>{v}</option>
       {/each}
     </select>
-    <button on:click={logout}>Salir</button>
+    <button on:click={logout} title="Cerrar sesión">Salir</button>
   </div>
+
+  <div class="sr-only" role="status" aria-live="polite">{liveAnnouncement}</div>
 
   {#if $mareaState === 'panel'}
     <Dashboard />
@@ -312,7 +404,9 @@
         on:pointerup={handlePushToTalkEnd}
         on:pointerleave={handlePushToTalkEnd}
         on:pointercancel={handlePushToTalkEnd}
-        aria-label={recording ? 'Soltá para enviar' : 'Mantené para hablar'}
+        on:keydown={handlePushToTalkKeydown}
+        on:keyup={handlePushToTalkKeyup}
+        aria-label={recording ? 'Soltá para enviar' : 'Mantené presionado o mantené Espacio para hablar'}
       ></button>
 
       <div class="ptt-hint" class:recording style:--level={recording ? audioLevel : 0}>
@@ -356,7 +450,7 @@
   {/if}
 
   {#if proposedActionIds.length > 0}
-    <div class="action-cards">
+    <div class="action-cards" role="region" aria-label="Acciones propuestas por MAREA">
       {#each proposedActionIds as id (id)}
         <ActionCard actionId={id} on:resolved={() => handleActionResolved(id)} />
       {/each}
@@ -403,31 +497,52 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
-    background: radial-gradient(1100px 760px at 50% 44%, #0b1c36 0%, #060d1c 55%, #030710 100%);
+    background: var(--gradient-base);
   }
 
   .toolbar {
     position: relative;
     z-index: 2;
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
     align-items: center;
     padding: 8px 32px 0;
   }
+  /* min-height (not just padding) so the hit target clears 44px even
+     though the visible pill stays compact — WCAG 2.5.5. flex-wrap above
+     is the overflow fix: below ~600px this row no longer fits in one
+     line, and .layout's overflow:hidden meant anything that didn't fit
+     was simply clipped and unreachable, including "Salir". */
   .toolbar button,
   .toolbar select {
-    padding: 5px 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 5px 14px;
     border-radius: 999px;
     border: 1px solid rgba(120, 200, 255, 0.28);
     background: rgba(8, 28, 56, 0.5);
     color: rgba(205, 238, 255, 0.85);
     font-size: 0.7rem;
     cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
+  }
+  .toolbar button:hover:not(:disabled),
+  .toolbar select:hover {
+    border-color: rgba(120, 200, 255, 0.5);
+    background: rgba(8, 28, 56, 0.75);
+    transform: translateY(-1px);
   }
   .toolbar button.active {
-    background: #54e0ff;
-    color: #052540;
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+  }
+  .toolbar button.active:hover:not(:disabled) {
+    background: var(--color-accent);
+    filter: brightness(1.08);
   }
 
   .state-chips {
@@ -439,6 +554,10 @@
     padding: 8px 0;
   }
   .state-chips button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
     padding: 7px 14px;
     border-radius: 999px;
     border: 1px solid rgba(120, 200, 255, 0.28);
@@ -447,10 +566,15 @@
     font-size: 0.7rem;
     font-weight: 500;
     cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  .state-chips button:hover:not(.active) {
+    border-color: rgba(120, 200, 255, 0.5);
+    background: rgba(8, 28, 56, 0.75);
   }
   .state-chips button.active {
-    background: #54e0ff;
-    color: #052540;
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
     box-shadow: 0 0 18px rgba(84, 224, 255, 0.45);
   }
 
@@ -492,6 +616,20 @@
     cursor: default;
   }
 
+  /* The surface itself draws no chrome by design (see the comment above
+     it), so a keyboard focus ring on the button itself would be invisible.
+     Route the focus signal to the one visible affordance for this control
+     instead — the status pill — so keyboard users still get one. */
+  .body:has(.push-to-talk-surface:focus-visible) .ptt-hint {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 4px;
+  }
+  /* Same relay for mouse hover — the surface itself has no chrome to
+     visibly react, so the pointer affordance shows up on its pill instead. */
+  .body:has(.push-to-talk-surface:hover:not(:disabled)) .ptt-hint {
+    border-color: rgba(120, 200, 255, 0.45);
+  }
+
   /* The actual visible affordance — a small fixed pill, not centered on
      the sphere, so it never competes with or has to track the water's own
      shape/position. Purely informational (clicks pass through to the
@@ -511,7 +649,7 @@
     backdrop-filter: blur(10px);
     border: 1px solid rgba(120, 200, 255, 0.24);
     color: rgba(220, 245, 255, 0.8);
-    font-size: 0.68rem;
+    font-size: var(--text-floor-size);
     letter-spacing: 0.06em;
     pointer-events: none;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -597,19 +735,27 @@
     align-items: center;
     justify-content: space-between;
     padding: 14px 16px;
-    font-size: 0.65rem;
+    font-size: var(--text-floor-size);
     letter-spacing: 0.2em;
-    color: #6fc9ff;
+    color: var(--color-label);
     border-bottom: 1px solid rgba(120, 200, 255, 0.14);
     flex-shrink: 0;
   }
   .deck-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
     background: none;
     border: none;
     color: rgba(220, 245, 255, 0.7);
     font-size: 0.85rem;
     cursor: pointer;
-    padding: 2px 6px;
+    transition: color 0.15s ease;
+  }
+  .deck-close:hover {
+    color: var(--color-text);
   }
 
   /* Always visible (unlike the chat transcript deck) — this is a live
@@ -630,9 +776,9 @@
     overflow-y: auto;
   }
   .thinking h2 {
-    font-size: 0.65rem;
-    letter-spacing: 0.25em;
-    color: #6fc9ff;
+    font-size: var(--text-floor-size);
+    letter-spacing: 0.22em;
+    color: var(--color-label);
     margin: 0 0 12px;
     font-weight: 400;
   }
@@ -645,15 +791,15 @@
     font-size: 0.75rem;
   }
   .badge {
-    font-size: 0.6rem;
-    letter-spacing: 0.1em;
+    font-size: var(--text-floor-size);
+    letter-spacing: 0.08em;
     padding: 2px 6px;
     border-radius: 5px;
     flex-shrink: 0;
   }
   .badge.AGENTE {
     background: rgba(84, 224, 255, 0.16);
-    color: #54e0ff;
+    color: var(--color-accent);
   }
   .badge.HERRAMIENTA {
     background: rgba(140, 160, 255, 0.16);
@@ -661,7 +807,7 @@
   }
   .badge.SISTEMA {
     background: rgba(110, 242, 197, 0.14);
-    color: #6ef2c5;
+    color: var(--color-success);
   }
   .badge.RAZONAMIENTO {
     background: rgba(255, 255, 255, 0.09);
@@ -675,13 +821,13 @@
     white-space: nowrap;
   }
   .status.done {
-    color: #6ef2c5;
+    color: var(--color-success);
   }
   .status.active {
-    color: #54e0ff;
+    color: var(--color-accent);
   }
   .status.error {
-    color: #ff6b6b;
+    color: var(--color-danger-strong);
   }
 
   .chat {
@@ -742,7 +888,7 @@
     border-radius: 12px;
     border: 1px solid rgba(120, 200, 255, 0.2);
     background: rgba(4, 16, 34, 0.6);
-    color: #eaf6ff;
+    color: var(--color-text);
     font-size: 0.9rem;
     font-family: inherit;
   }
@@ -750,14 +896,49 @@
     padding: 10px 18px;
     border-radius: 12px;
     border: none;
-    background: #54e0ff;
-    color: #052540;
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
     font-weight: 600;
     cursor: pointer;
     flex-shrink: 0;
+    transition: filter 0.15s ease;
+  }
+  .send:hover:not(:disabled) {
+    filter: brightness(1.08);
   }
   .send:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Below this, .thinking's fixed 260px alone ate most of a phone screen,
+     and .chat-deck's min(420px, 100vw - 300px) formula degraded to a
+     usability-free sliver (it avoided overlapping .thinking, but a ~75px
+     chat column at 375px fits no readable bubble). Both become full-width
+     overlays instead — .chat-deck's existing open/closed transform already
+     means only one is ever actually visible at a time here, since an open
+     deck now fully covers the thinking feed underneath it. */
+  @media (max-width: 640px) {
+    .thinking {
+      width: 100%;
+      border-right: none;
+      border-bottom: 1px solid rgba(120, 200, 255, 0.18);
+    }
+    .chat-deck {
+      width: 100%;
+      border-left: none;
+    }
   }
 </style>

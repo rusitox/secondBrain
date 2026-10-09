@@ -27,10 +27,10 @@
 <div class="overlay">
   <form on:submit|preventDefault={handleSubmit}>
     <h1>MAREA</h1>
-    <input type="email" placeholder="Email" bind:value={email} autocomplete="username" />
+    <input type="email" placeholder="Correo electrónico" bind:value={email} autocomplete="username" />
     <input type="password" placeholder="Contraseña" bind:value={password} autocomplete="current-password" />
     {#if error}
-      <p class="error">{error}</p>
+      <p class="error" role="alert">{error}</p>
     {/if}
     <button type="submit" disabled={loading}>{loading ? 'Entrando…' : 'Entrar'}</button>
   </form>
@@ -43,7 +43,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: radial-gradient(1100px 760px at 50% 44%, #0b1c36 0%, #060d1c 55%, #030710 100%);
+    background: var(--gradient-base);
   }
   form {
     display: flex;
@@ -55,32 +55,47 @@
     text-align: center;
     letter-spacing: 0.3em;
     font-size: 1rem;
-    color: #9fd8ff;
+    color: var(--color-accent-soft);
     margin-bottom: 1rem;
     font-weight: 400;
   }
   input,
   button {
+    min-height: 44px;
     padding: 0.6rem 0.8rem;
     border-radius: 10px;
     border: 1px solid rgba(120, 190, 255, 0.25);
     background: rgba(4, 16, 34, 0.6);
-    color: #eaf6ff;
+    color: var(--color-text);
     font-size: 0.9rem;
   }
+  /* The detector measured the browser's default placeholder color here at
+     4.0:1 against this background — under the 4.5:1 WCAG AA floor. */
+  input::placeholder {
+    color: rgba(159, 216, 255, 0.72);
+  }
+  input:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
   button {
-    background: #54e0ff;
-    color: #052540;
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
     font-weight: 600;
     border: none;
     cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+  button:hover:not(:disabled) {
+    filter: brightness(1.08);
   }
   button:disabled {
     opacity: 0.6;
     cursor: default;
   }
   .error {
-    color: #ff6b6b;
+    color: var(--color-danger-strong);
     font-size: 0.85rem;
     margin: 0;
   }

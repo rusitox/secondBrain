@@ -83,7 +83,9 @@
 
 <style>
   .dashboard {
-    padding: 98px 44px 32px;
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 44px 32px;
     position: relative;
     z-index: 1;
   }
@@ -96,16 +98,25 @@
   .hint {
     font-size: 11px;
     letter-spacing: 0.14em;
-    color: rgba(190, 225, 255, 0.6);
+    color: var(--color-text-dim);
   }
   .refresh {
-    padding: 5px 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 5px 16px;
     border-radius: 999px;
     border: 1px solid rgba(120, 200, 255, 0.28);
     background: rgba(8, 28, 56, 0.5);
     color: rgba(205, 238, 255, 0.85);
     font-size: 0.7rem;
     cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  .refresh:hover:not(:disabled) {
+    border-color: rgba(120, 200, 255, 0.5);
+    background: rgba(8, 28, 56, 0.75);
   }
   .grid {
     display: grid;
@@ -123,14 +134,14 @@
     margin: 0 0 12px;
     font-size: 13px;
     letter-spacing: 0.08em;
-    color: #6fc9ff;
+    color: var(--color-label);
     font-weight: 500;
   }
   .card-subtitle {
     margin: -6px 0 14px;
     font-size: 11.5px;
     line-height: 1.4;
-    color: rgba(190, 225, 255, 0.6);
+    color: var(--color-text-dim);
   }
   .row {
     display: flex;
@@ -145,14 +156,14 @@
   .title {
     font-size: 13px;
     font-weight: 500;
-    color: #eaf6ff;
+    color: var(--color-text);
   }
   .secondary {
     font-size: 12px;
     color: rgba(190, 225, 255, 0.8);
   }
   .secondary.overdue {
-    color: #ff9696;
+    color: var(--color-danger-text);
   }
   .loading,
   .error,
@@ -161,6 +172,6 @@
     color: rgba(224, 245, 255, 0.75);
   }
   .error {
-    color: #ff9696;
+    color: var(--color-danger-text);
   }
 </style>

@@ -27,7 +27,15 @@
   let loadError = '';
   let submitting = false;
   let answers: Record<string, unknown> = {};
-  let formEl: HTMLFormElement | undefined;
+  let modalEl: HTMLDivElement | undefined;
+
+  const FOCUSABLE_SELECTOR =
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  function getFocusable(): HTMLElement[] {
+    if (!modalEl) return [];
+    return Array.from(modalEl.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+  }
 
   onMount(async () => {
     try {
@@ -52,7 +60,7 @@
       }
       // Focus the first interactive control for keyboard users.
       requestAnimationFrame(() => {
-        formEl?.querySelector<HTMLElement>('button, input, textarea')?.focus();
+        getFocusable()[0]?.focus();
       });
     } catch {
       loadError = 'No se pudo cargar esta pregunta.';
@@ -106,14 +114,33 @@
   }
 
   function handleKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape' && detail?.spec.allow_dismiss) dismiss();
+    if (e.key === 'Escape' && detail?.spec.allow_dismiss) {
+      dismiss();
+      return;
+    }
+    // Focus trap: this is a true blocking modal (unlike ActionCard, which
+    // stays non-blocking so the user can keep chatting while one sits open)
+    // — Tab must not escape it into the rest of the page underneath.
+    if (e.key === 'Tab') {
+      const focusable = getFocusable();
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
   }
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
 
 <div class="overlay">
-  <div class="modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Pregunta de MAREA" bind:this={modalEl}>
     {#if loadError}
       <p class="error">{loadError}</p>
       <button class="ghost" on:click={dismiss}>Cerrar</button>
@@ -130,7 +157,7 @@
         {/each}
       </p>
 
-      <form bind:this={formEl} on:submit|preventDefault={submit} class="fields">
+      <form on:submit|preventDefault={submit} class="fields">
         {#each detail.spec.fields as field (field.key)}
           <DynamicField {field} bind:value={answers[field.key]} />
         {/each}
@@ -174,17 +201,20 @@
     gap: 16px;
   }
   .kicker {
-    font-size: 10px;
+    font-size: var(--text-floor-size);
     letter-spacing: 0.2em;
-    color: #6fc9ff;
+    color: var(--color-label);
   }
   .prompt {
     margin: 0;
     font-size: 19px;
     line-height: 1.5;
-    color: #eaf6ff;
+    color: var(--color-text);
   }
   .prompt .entity {
+    /* Distinct semantic meaning from --color-focus (keyboard focus rings)
+       even though the literal value happens to match — not tokenized
+       together so the two can diverge independently later. */
     color: #7fe3ff;
     font-weight: 600;
   }
@@ -199,15 +229,26 @@
     gap: 10px;
     margin-top: 4px;
   }
+  .primary,
+  .ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    transition: filter 0.15s ease, border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
+  }
   .primary {
     padding: 10px 20px;
     border-radius: 10px;
     border: none;
-    background: #54e0ff;
-    color: #052540;
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
     font-weight: 600;
     cursor: pointer;
     box-shadow: 0 0 18px rgba(84, 224, 255, 0.4);
+  }
+  .primary:hover:not(:disabled) {
+    filter: brightness(1.08);
   }
   .primary:disabled {
     opacity: 0.6;
@@ -222,9 +263,14 @@
     color: rgba(205, 238, 255, 0.85);
     cursor: pointer;
   }
+  .ghost:hover:not(:disabled) {
+    border-color: rgba(120, 200, 255, 0.5);
+    background: rgba(8, 28, 56, 0.4);
+    transform: translateY(-1px);
+  }
   .ghost:focus-visible,
   .primary:focus-visible {
-    outline: 2px solid #7fe3ff;
+    outline: 2px solid var(--color-focus);
     outline-offset: 2px;
   }
   .loading,
@@ -234,6 +280,6 @@
     color: rgba(224, 245, 255, 0.75);
   }
   .error {
-    color: #ff9696;
+    color: var(--color-danger-text);
   }
 </style>

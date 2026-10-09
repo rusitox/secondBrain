@@ -3,7 +3,7 @@
 </script>
 
 {#if $toast}
-  <div class="toast">{$toast.message}</div>
+  <div class="toast" role="status" aria-live="polite">{$toast.message}</div>
 {/if}
 
 <style>
@@ -14,7 +14,7 @@
     transform: translateX(-50%);
     background: rgba(8, 28, 56, 0.9);
     border: 1px solid rgba(120, 190, 255, 0.3);
-    color: #eaf6ff;
+    color: var(--color-text);
     padding: 10px 18px;
     border-radius: 999px;
     font-size: 0.85rem;

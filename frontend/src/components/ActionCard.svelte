@@ -25,6 +25,11 @@
   let loadError = '';
   let busy = false;
   let resolution: 'approved' | 'rejected' | null = null;
+  // Gate on a second explicit click for RIESGO ALTO — approving one of
+  // these (an email that actually gets sent, etc.) was previously a single
+  // click, same as a low-risk action, with no extra friction at the one
+  // checkpoint this product's whole "ask-human-last" trust model leans on.
+  let confirmingHighRisk = false;
 
   const STATUS_LABELS: Record<string, string> = {
     approved: 'ACCIÓN APROBADA — EN CURSO',
@@ -54,6 +59,10 @@
 
   async function approve(): Promise<void> {
     if (!detail || busy) return;
+    if (detail.risk === 'high' && !confirmingHighRisk) {
+      confirmingHighRisk = true;
+      return;
+    }
     busy = true;
     try {
       await approveAction($apiKey, actionId, detail.payload_sha256);
@@ -63,11 +72,13 @@
       console.error(err);
     } finally {
       busy = false;
+      confirmingHighRisk = false;
     }
   }
 
   async function reject(): Promise<void> {
     if (busy) return;
+    confirmingHighRisk = false;
     busy = true;
     try {
       await rejectAction($apiKey, actionId);
@@ -78,6 +89,10 @@
     } finally {
       busy = false;
     }
+  }
+
+  function cancelHighRiskConfirm(): void {
+    confirmingHighRisk = false;
   }
 
   function close(): void {
@@ -109,7 +124,10 @@
           <p>{p}</p>
         {/each}
         {#if detail.artifact.footnote_token === 'drafted_by_assistant'}
-          <div class="footnote">Redactado por MAREA — editable antes de enviar.</div>
+          <div class="footnote">
+            Redactado por MAREA. Revisalo con atención: lo que ves acá es exactamente lo que se va a enviar si
+            aprobás.
+          </div>
         {/if}
       </div>
     {:else}
@@ -128,12 +146,20 @@
       <p class="error">{detail.error}</p>
     {/if}
 
-    <div class="actions">
+    <div class="actions" aria-live="polite">
       {#if isActionable}
-        <button class="ghost" on:click={reject} disabled={busy}>Rechazar</button>
-        <button class="primary" on:click={approve} disabled={busy}>
-          {busy ? 'Procesando…' : 'Aprobar ✓'}
-        </button>
+        {#if confirmingHighRisk}
+          <span class="confirm-hint">¿Confirmás? Esto no se puede deshacer.</span>
+          <button class="ghost" on:click={cancelHighRiskConfirm} disabled={busy}>Cancelar</button>
+          <button class="primary danger" on:click={approve} disabled={busy}>
+            {busy ? 'Procesando…' : 'Confirmar y aprobar ✓'}
+          </button>
+        {:else}
+          <button class="ghost" on:click={reject} disabled={busy}>Rechazar</button>
+          <button class="primary" on:click={approve} disabled={busy}>
+            {busy ? 'Procesando…' : 'Aprobar ✓'}
+          </button>
+        {/if}
       {:else}
         <button class="ghost" on:click={close}>Cerrar</button>
       {/if}
@@ -160,16 +186,16 @@
     justify-content: space-between;
   }
   .kicker {
-    font-size: 10px;
+    font-size: var(--text-floor-size);
     letter-spacing: 0.2em;
-    color: #6fc9ff;
+    color: var(--color-label);
   }
   .kicker.good {
-    color: #6ef2c5;
+    color: var(--color-success);
   }
   .risk-badge {
-    font-size: 9px;
-    letter-spacing: 0.12em;
+    font-size: var(--text-floor-size);
+    letter-spacing: 0.1em;
     padding: 3px 8px;
     border-radius: 999px;
     background: rgba(255, 107, 107, 0.18);
@@ -182,7 +208,7 @@
     padding: 16px 18px;
     font-size: 14.5px;
     line-height: 1.6;
-    color: #eaf6ff;
+    color: var(--color-text);
   }
   .email-meta {
     font-size: 11px;
@@ -193,14 +219,14 @@
     margin: 0 0 10px;
   }
   .footnote {
-    font-size: 10.5px;
+    font-size: var(--text-floor-size);
     color: rgba(190, 225, 255, 0.55);
   }
   .key-values h3 {
     margin: 0 0 10px;
     font-size: 13px;
     font-weight: 500;
-    color: #eaf6ff;
+    color: var(--color-text);
   }
   .kv-row {
     display: flex;
@@ -213,25 +239,47 @@
     color: rgba(190, 225, 255, 0.8);
   }
   .kv-value.tone-good {
-    color: #6ef2c5;
+    color: var(--color-success);
   }
   .kv-value.tone-warn {
     color: #f5c451;
   }
   .actions {
     display: flex;
+    align-items: center;
     justify-content: flex-end;
     gap: 10px;
+  }
+  .confirm-hint {
+    font-size: 12px;
+    color: var(--color-danger-text);
+    margin-right: auto;
+  }
+  .primary.danger {
+    background: #ff8a8a;
+    color: #2f0808;
+    box-shadow: 0 0 18px rgba(255, 107, 107, 0.4);
+  }
+  .primary,
+  .ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    transition: filter 0.15s ease, border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
   }
   .primary {
     padding: 10px 20px;
     border-radius: 10px;
     border: none;
-    background: #6ef2c5;
-    color: #04301f;
+    background: var(--color-success);
+    color: var(--color-success-ink);
     font-weight: 600;
     cursor: pointer;
     box-shadow: 0 0 18px rgba(110, 242, 197, 0.4);
+  }
+  .primary:hover:not(:disabled) {
+    filter: brightness(1.08);
   }
   .primary:disabled {
     opacity: 0.6;
@@ -246,9 +294,14 @@
     color: rgba(205, 238, 255, 0.85);
     cursor: pointer;
   }
+  .ghost:hover:not(:disabled) {
+    border-color: rgba(120, 200, 255, 0.5);
+    background: rgba(8, 28, 56, 0.4);
+    transform: translateY(-1px);
+  }
   .ghost:focus-visible,
   .primary:focus-visible {
-    outline: 2px solid #7fe3ff;
+    outline: 2px solid var(--color-focus);
     outline-offset: 2px;
   }
   .loading,
@@ -258,6 +311,6 @@
     color: rgba(224, 245, 255, 0.75);
   }
   .error {
-    color: #ff9696;
+    color: var(--color-danger-text);
   }
 </style>

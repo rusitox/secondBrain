@@ -57,6 +57,17 @@
 
   let labelEls: (HTMLDivElement | null)[] = [];
 
+  // Audit finding: this loop ran at full rate unconditionally, with no
+  // accommodation for a user who's asked for less motion. A full freeze
+  // would itself be the thing the craft floor warns against — it would
+  // destroy the only feedback this surface gives (state transitions, the
+  // audio-reactive pulse) — so this throttles to a slow, still-live
+  // cadence instead of stopping outright.
+  const prefersReducedMotion =
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const REDUCED_MOTION_FRAME_MS = 500;
+  let lastFrameTime = 0;
+
   onMount(() => {
     engine = new WaterEngine(canvasEl);
 
@@ -73,16 +84,19 @@
     engine.resize(initial.width, initial.height);
     engine.setState($mareaState);
 
-    const tick = (): void => {
-      const t = (performance.now() - t0) / 1000;
-      try {
-        engine?.draw(t);
-      } catch (e) {
-        // A WebGL error here (e.g. context loss) must not silently kill
-        // the loop forever with no trace — log and keep rescheduling.
-        console.error('MAREA water draw() failed', e);
+    const tick = (now: number): void => {
+      if (!prefersReducedMotion || now - lastFrameTime >= REDUCED_MOTION_FRAME_MS) {
+        lastFrameTime = now;
+        const t = (performance.now() - t0) / 1000;
+        try {
+          engine?.draw(t);
+        } catch (e) {
+          // A WebGL error here (e.g. context loss) must not silently kill
+          // the loop forever with no trace — log and keep rescheduling.
+          console.error('MAREA water draw() failed', e);
+        }
+        updateLabelPositions();
       }
-      updateLabelPositions();
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -158,8 +172,8 @@
     display: flex;
     align-items: center;
     gap: 5px;
-    font-size: 10px;
-    letter-spacing: 0.16em;
+    font-size: var(--text-floor-size);
+    letter-spacing: 0.14em;
     color: #bfe9ff;
     white-space: nowrap;
     pointer-events: none;
