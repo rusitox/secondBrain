@@ -333,6 +333,30 @@ class TestAddClaimAndConsultKnowledgeBase:
         entity = await _tool(agent, "find_or_create_entity")(entity_type="person", name="X")
         assert entity["created"] is True
 
+    async def test_add_claim_persists_claim_type(self, db_session: AsyncSession) -> None:
+        """Regression: add_claim's tool signature didn't accept claim_type at
+        all until this change, so every claim in the graph had claim_type=NULL
+        — relationship-intelligence claims (role/communication_style/etc.)
+        need this threaded through to store.add_claim, which already
+        supported it but was never called with it."""
+        user_id = await _make_persisted_user(db_session, email="claim_type1@example.com")
+        agent = _build_agent(db_session, user_id)
+
+        entity = await _tool(agent, "find_or_create_entity")(entity_type="person", name="Juan")
+        await db_session.commit()
+        claim = await _tool(agent, "add_claim")(
+            entity_id=entity["entity_id"],
+            claim_text="Prefiere que le escriban por email antes de llamar",
+            confidence=0.7,
+            claim_type="communication_style",
+        )
+        await db_session.commit()
+
+        claims = await store.list_claims(db_session, user_id, uuid.UUID(entity["entity_id"]))
+        assert len(claims) == 1
+        assert claims[0].claim_type == "communication_style"
+        assert str(claims[0].id) == claim["claim_id"]
+
     async def test_invalid_entity_type_returns_empty_list(self, db_session: AsyncSession) -> None:
         user_id = await _make_persisted_user(db_session, email="claim2@example.com")
         agent = _build_agent(db_session, user_id)

@@ -38,8 +38,8 @@ def _tool_names(tools) -> set:
     return {t.tool_name for t in tools}
 
 
-CORE_TOOL_COUNT = 15  # 8 original + query_knowledge, ask_domain_agents, get_pending_questions,
-# confirm_pending_answer, correct_knowledge, get_emails, get_my_mentions
+CORE_TOOL_COUNT = 16  # 8 original + query_knowledge, ask_domain_agents, get_pending_questions,
+# confirm_pending_answer, correct_knowledge, get_emails, get_my_mentions, get_person_profile
 
 
 class TestToolComposition:

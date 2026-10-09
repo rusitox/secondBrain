@@ -173,3 +173,41 @@ export interface SystemsStatusResponse {
   sync_scheduler_active: boolean;
   knowledge_scheduler_active: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Relationship intelligence (app/api/schemas/people.py) — who the user
+// interacts with: role, relationship, communication style, decision
+// authority, grouped from the knowledge graph's claims. Read-only, no LLM.
+// ---------------------------------------------------------------------------
+
+export interface PersonSummary {
+  entity_id: string;
+  canonical_name: string;
+  confidence: number;
+  role?: string | null;
+}
+
+export interface PeopleListResponse {
+  people: PersonSummary[];
+}
+
+export interface PersonClaim {
+  claim_text: string;
+  source: string;
+  confidence: number;
+}
+
+export interface RelatedEntity {
+  relation_type: string;
+  entity_id: string;
+  canonical_name?: string;
+}
+
+export interface PersonProfile {
+  entity_id: string;
+  canonical_name: string;
+  confidence: number;
+  attributes: Record<string, unknown>;
+  claims_by_type: Record<string, PersonClaim[]>;
+  related_entities: RelatedEntity[];
+}

@@ -111,7 +111,7 @@ Terminal-based chat interface consuming the REST API:
 - `app/core/database.py` — Async engine, session factory
 - `app/core/security.py` — API key authentication (Bearer token + bcrypt verification)
 - `app/models/` — SQLAlchemy models (Base, UUIDMixin, TimestampMixin, APIKey)
-- `app/api/routers/` — API endpoints (14 routers)
+- `app/api/routers/` — API endpoints (17 routers)
 - `app/services/connectors/` — Platform connectors (5: outlook, teams, slack, fathom, notion)
 - `app/services/agent/strands_orchestrator.py` — StrandsOrchestrator (main agent entry point)
 - `app/services/agent/strands_tools.py` — Strands `@tool`-decorated wrappers around `tools/`

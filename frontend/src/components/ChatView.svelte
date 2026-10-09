@@ -29,6 +29,7 @@
   import ActionCard from './ActionCard.svelte';
   import Dashboard from './Dashboard.svelte';
   import InteractionModal from './InteractionModal.svelte';
+  import PeoplePanel from './PeoplePanel.svelte';
   import SystemsHeader from './SystemsHeader.svelte';
   import WaterCanvas from './WaterCanvas.svelte';
   import type { MareaVisualState } from '../lib/water-engine';
@@ -62,6 +63,11 @@
   // or automatically the moment the user asks something (so a typed
   // question's answer is never invisible), and closable at any time.
   let chatDeckOpen = false;
+  // Not $mareaState === 'panel': that state is debug-only (only reachable
+  // via a hidden chip behind ?debug) and gets silently released by any
+  // real interaction (talking, sending a question) — a plain boolean,
+  // same pattern as chatDeckOpen, closed only by explicit code below.
+  let peopleOpen = false;
 
   // Only the first is actually rendered as a modal (see the template) —
   // Strands' one-snapshot-per-session limitation (strands_orchestrator.py's
@@ -127,6 +133,7 @@
   function handleWake(): void {
     if (!$isStreaming && !recording) {
       showToast('Wake word detectado');
+      peopleOpen = false; // same reset as handlePushToTalkStart — talking closes the people panel
       void startRecording();
     }
   }
@@ -176,6 +183,7 @@
     // used for gapless playback to start/resume within the same task as a
     // real user gesture (see TTSPlayer.unlock's docstring).
     tts.unlock();
+    peopleOpen = false; // talking to MAREA closes the people panel, deliberately
     void startRecording();
   }
 
@@ -196,6 +204,7 @@
     messages.update((m) => [...m, { id: crypto.randomUUID(), role: 'user', text }]);
     isStreaming.set(true);
     chatDeckOpen = true;
+    peopleOpen = false; // asking MAREA something closes the people panel, deliberately
     tts.stop();
 
     try {
@@ -255,6 +264,7 @@
     resetDashboardCache();
     pendingInteractionIds = [];
     proposedActionIds = [];
+    peopleOpen = false;
     releaseMareaManualOverride();
     mareaState.set('idle');
   }
@@ -280,6 +290,9 @@
     <button class:active={chatDeckOpen} on:click={() => (chatDeckOpen = !chatDeckOpen)} title="Mostrar/ocultar chat">
       💬 chat
     </button>
+    <button class:active={peopleOpen} on:click={() => (peopleOpen = !peopleOpen)} title="Ver personas">
+      🧑‍🤝‍🧑 personas
+    </button>
     <button class:active={$autoPlay} on:click={() => autoPlay.set(!$autoPlay)}>▶ auto TTS</button>
     <button class:active={$wakeEnabled} on:click={toggleWake} disabled={!wakeWord.isSupported}>
       👂 wake
@@ -292,7 +305,9 @@
     <button on:click={logout}>Salir</button>
   </div>
 
-  {#if $mareaState === 'panel'}
+  {#if peopleOpen}
+    <PeoplePanel on:close={() => (peopleOpen = false)} />
+  {:else if $mareaState === 'panel'}
     <Dashboard />
   {:else}
     <div class="body">

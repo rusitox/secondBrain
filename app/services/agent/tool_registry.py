@@ -78,6 +78,11 @@ ORCHESTRATOR_TOOLS: List[ToolInfo] = [
     ToolInfo("get_current_datetime", "Get the current date/time in the user's timezone.", "orchestrator"),
     ToolInfo("query_knowledge", "Query the multi-agent knowledge graph's consolidated view.", "orchestrator"),
     ToolInfo(
+        "get_person_profile",
+        "Get a person's role, relationship, communication style, and decision authority, grouped.",
+        "orchestrator",
+    ),
+    ToolInfo(
         "ask_domain_agents",
         "Validate a doubt with the relevant domain agents (Swarm negotiation) before answering.",
         "orchestrator",
