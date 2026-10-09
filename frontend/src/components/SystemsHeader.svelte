@@ -114,7 +114,7 @@
     font-family: 'Michroma', monospace;
     font-size: 13px;
     letter-spacing: 0.3em;
-    color: #9fd8ff;
+    color: var(--color-accent-soft);
   }
   .status-row {
     display: flex;
@@ -125,7 +125,7 @@
     width: 7px;
     height: 7px;
     border-radius: 999px;
-    background: #54e0ff;
+    background: var(--color-accent);
     box-shadow: 0 0 8px rgba(84, 224, 255, 0.8);
   }
   .dot.pulse {
@@ -145,7 +145,7 @@
     text-align: right;
   }
   .kicker {
-    font-size: 10px;
+    font-size: var(--text-floor-size);
     letter-spacing: 0.2em;
     color: rgba(160, 210, 255, 0.6);
   }
@@ -166,14 +166,21 @@
   .chip {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
-    padding: 4px 10px;
+    min-height: 44px;
+    padding: 4px 12px;
     border-radius: 999px;
     border: 1px solid rgba(120, 200, 255, 0.2);
     background: rgba(8, 28, 56, 0.5);
     color: rgba(224, 245, 255, 0.85);
     font-size: 11px;
     cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  .chip:hover {
+    border-color: rgba(120, 200, 255, 0.4);
+    background: rgba(8, 28, 56, 0.75);
   }
   .light {
     width: 7px;

@@ -21,14 +21,26 @@
       ? current.filter((v) => v !== optionId)
       : [...current, optionId];
   }
+
+  // Audit finding: the label's `for` only ever matched a real element's
+  // `id` for text/datetime — every chip-based kind had a dangling
+  // `for={field.key}` AND a dangling `aria-labelledby={field.key}` (no
+  // element anywhere carried that id), so a screen reader got no
+  // accessible name for the group at all. The label now always carries
+  // its own id; chip-based kinds reference it via aria-labelledby, and
+  // only the kinds with a real matching input still use `for`.
+  const labelId = `${field.key}-label`;
+  const isTextLikeField = field.kind === 'text' || field.kind === 'datetime';
 </script>
 
 <div class="field">
-  <label class="field-label" for={field.key}>{field.label}{field.required ? ' *' : ''}</label>
+  <label class="field-label" id={labelId} for={isTextLikeField ? field.key : undefined}>
+    {field.label}{field.required ? ' *' : ''}
+  </label>
   {#if field.help}<p class="help">{field.help}</p>{/if}
 
   {#if field.kind === 'single_select' || field.kind === 'entity_pick'}
-    <div class="chips" role="radiogroup" aria-labelledby={field.key}>
+    <div class="chips" role="radiogroup" aria-labelledby={labelId}>
       {#each field.options ?? [] as opt (opt.id)}
         <button
           type="button"
@@ -49,7 +61,7 @@
     </div>
 
   {:else if field.kind === 'multi_select'}
-    <div class="chips">
+    <div class="chips" role="group" aria-labelledby={labelId}>
       {#each field.options ?? [] as opt (opt.id)}
         {@const selected = Array.isArray(value) && value.includes(opt.id)}
         <button
@@ -65,7 +77,7 @@
     </div>
 
   {:else if field.kind === 'confirm'}
-    <div class="chips">
+    <div class="chips" role="group" aria-labelledby={labelId}>
       <button type="button" class="chip" class:active={value === true} on:click={() => (value = true)}>
         {field.affirm_label ?? 'Sí'}
       </button>
@@ -116,7 +128,7 @@
   }
   .field-label {
     font-size: 0.8rem;
-    color: #eaf6ff;
+    color: var(--color-text);
     font-weight: 500;
   }
   .help {
@@ -130,7 +142,11 @@
     gap: 8px;
   }
   .chip {
-    padding: 7px 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 7px 16px;
     border-radius: 999px;
     border: 1px solid rgba(120, 200, 255, 0.28);
     background: rgba(8, 28, 56, 0.5);
@@ -138,28 +154,35 @@
     font-size: 0.78rem;
     font-weight: 500;
     cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease, filter 0.15s ease;
   }
-  .chip:hover {
+  .chip:hover:not(.active) {
+    border-color: rgba(120, 200, 255, 0.5);
+    background: rgba(8, 28, 56, 0.75);
     transform: translateY(-1px);
   }
   .chip.active {
-    background: #54e0ff;
-    color: #052540;
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
     box-shadow: 0 0 18px rgba(84, 224, 255, 0.4);
+  }
+  .chip.active:hover {
+    filter: brightness(1.08);
   }
   .chip:focus-visible,
   input:focus-visible,
   textarea:focus-visible {
-    outline: 2px solid #7fe3ff;
+    outline: 2px solid var(--color-focus);
     outline-offset: 2px;
   }
   input,
   textarea {
+    min-height: 44px;
     padding: 10px 14px;
     border-radius: 10px;
     border: 1px solid rgba(120, 200, 255, 0.3);
     background: rgba(4, 16, 34, 0.6);
-    color: #eaf6ff;
+    color: var(--color-text);
     font-size: 0.85rem;
     font-family: inherit;
   }
